@@ -1,0 +1,32 @@
+# kitsune-whisper configuration template.
+#
+# Copy this file to `kitsune.yaml` and edit it. The Docker Server mounts it at
+# /config/kitsune.yaml, and the Client will read the same file. Each process
+# reads only its own section, and unknown keys are a startup error, so keep
+# typos out.
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  # Model size (tiny/base/small/medium/large-v3) or a local CTranslate2 path.
+  # GPU is recommended; on CPU use base/tiny for lower latency.
+  model: small
+  # auto resolves CUDA when available, else CPU (see docs/adr/0003).
+  device: auto
+  compute_type: auto
+  # 0 lets the server size its worker pool from the resolved device.
+  workers: 0
+  # The Docker image overrides this with KITSUNE_SERVER_DOWNLOAD_ROOT=/models,
+  # which lives on a named volume that persists between runs.
+  download_root: ~/.cache/kitsune-whisper/models
+  offline: false
+  max_audio_seconds: 300
+  max_upload_mb: 30
+  log_level: info
+  decode:
+    task: transcribe
+    language: auto
+    beam_size: 5
+    temperature: 0.0
+    vad_filter: false
+    initial_prompt: ""

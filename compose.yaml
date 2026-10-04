@@ -1,0 +1,51 @@
+name: kitsune-whisper
+
+# CPU runs anywhere; GPU needs the NVIDIA driver plus nvidia-container-toolkit
+# (Linux) or GPU support in WSL2 (Windows). See the README for prerequisites.
+#
+#   cp kitsune.example.yaml kitsune.yaml
+#   docker compose --profile cpu up -d
+#   docker compose --profile gpu up -d
+
+x-server: &server
+  restart: unless-stopped
+  ports:
+    - "8000:8000"
+  volumes:
+    - type: bind
+      source: ./kitsune.yaml
+      target: /config/kitsune.yaml
+      read_only: true
+      bind:
+        create_host_path: false
+    - kitsune-models:/models
+
+services:
+  server-cpu:
+    <<: *server
+    profiles: ["cpu"]
+    image: ghcr.io/foxred-cmd/kitsune-whisper-server:cpu
+    build:
+      context: ./server
+      args:
+        BASE_IMAGE: python:3.11-slim
+
+  server-gpu:
+    <<: *server
+    profiles: ["gpu"]
+    image: ghcr.io/foxred-cmd/kitsune-whisper-server:gpu
+    build:
+      context: ./server
+      args:
+        BASE_IMAGE: nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
+        UV_SYNC_ARGS: "--extra cuda"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  kitsune-models:

@@ -1,6 +1,9 @@
 ### VS Code ###
 .vscode/
 
+### Local config (copy kitsune.example.yaml) ###
+/kitsune.yaml
+
 ### Agent skills (installed from skills-lock.json) ###
 .agents/skills/
 .claude/skills/
