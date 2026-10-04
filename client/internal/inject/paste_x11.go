@@ -22,8 +22,6 @@ const (
 // yields an error, and the transcript stays on the clipboard.
 type x11Paster struct{}
 
-func newPaster() Paster { return x11Paster{} }
-
 func (x11Paster) Paste(shortcut Shortcut) error {
 	conn, err := xgb.NewConn()
 	if err != nil {
@@ -65,12 +63,12 @@ func (x11Paster) Paste(shortcut Shortcut) error {
 // the keyboard mapping, so remapped layouts still paste.
 func keysymToKeycode(conn *xgb.Conn, keysym xproto.Keysym) (xproto.Keycode, error) {
 	setup := xproto.Setup(conn)
-	min := int(setup.MinKeycode)
-	max := int(setup.MaxKeycode)
-	if max < min {
-		return 0, fmt.Errorf("invalid keyboard range %d..%d", min, max)
+	minKeycode := int(setup.MinKeycode)
+	maxKeycode := int(setup.MaxKeycode)
+	if maxKeycode < minKeycode {
+		return 0, fmt.Errorf("invalid keyboard range %d..%d", minKeycode, maxKeycode)
 	}
-	count := max - min + 1
+	count := maxKeycode - minKeycode + 1
 	if count > 255 {
 		count = 255
 	}
@@ -89,7 +87,7 @@ func keysymToKeycode(conn *xgb.Conn, keysym xproto.Keysym) (xproto.Keycode, erro
 				break
 			}
 			if reply.Keysyms[idx] == keysym {
-				return xproto.Keycode(min + i), nil
+				return xproto.Keycode(minKeycode + i), nil
 			}
 		}
 	}

@@ -36,6 +36,11 @@ client:
   # is the Server process's own config and is not read by the Client.
   server_url: http://localhost:8000
   hotkey: Ctrl+Shift+Space
+  # auto | portal | x11. auto uses the GlobalShortcuts portal on Wayland when
+  # available (GNOME >=48 / KDE Plasma >=5.27) and the external trigger
+  # (kitsune-client toggle) otherwise; on an X11 session it uses the X11 global
+  # grab. Set x11 explicitly to force the XWayland grab on Wayland.
+  hotkey_backend: auto
   cancel_hotkey: Esc
   # toggle (press to start, press again to stop) or hold (push-to-talk).
   trigger: toggle
@@ -59,6 +64,10 @@ client:
   # synthetic paste is consumed and safe restore is impossible. always is a
   # best-effort restore even there; never always keeps the transcription.
   clipboard_restore: auto
+  # auto | wtype | ydotool | none. Wayland injection tries wtype, then ydotool,
+  # then falls back to clipboard-only. ydotool is used only when already
+  # installed; it is never bundled. Ignored on X11/Windows.
+  wayland_tool: auto
   feedback:
     earcons: false
   # "" = default cache path (~/.cache/kitsune-whisper/spool).

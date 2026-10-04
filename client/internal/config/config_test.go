@@ -107,6 +107,54 @@ func TestInvalidEnumValue(t *testing.T) {
 	assertErrorContains(t, err, "client.trigger")
 }
 
+func TestWaylandDefaults(t *testing.T) {
+	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.HotkeyBackend != "auto" {
+		t.Fatalf("hotkey_backend = %q, want auto", cfg.HotkeyBackend)
+	}
+	if cfg.WaylandTool != "auto" {
+		t.Fatalf("wayland_tool = %q, want auto", cfg.WaylandTool)
+	}
+}
+
+func TestWaylandEnumsAccepted(t *testing.T) {
+	cases := map[string]map[string]any{
+		"portal backend": {"hotkey_backend": "portal"},
+		"x11 backend":    {"hotkey_backend": "x11"},
+		"wtype tool":     {"wayland_tool": "wtype"},
+		"ydotool tool":   {"wayland_tool": "ydotool"},
+		"none tool":      {"wayland_tool": "none"},
+	}
+	for name, values := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, values)
+			if _, err := load(t, config.LoadOptions{CLIConfig: path}); err != nil {
+				t.Fatalf("load: %v", err)
+			}
+		})
+	}
+}
+
+func TestWaylandEnumsRejected(t *testing.T) {
+	cases := map[string]struct {
+		values map[string]any
+		path   string
+	}{
+		"bad backend": {map[string]any{"hotkey_backend": "wayland"}, "client.hotkey_backend"},
+		"bad tool":    {map[string]any{"wayland_tool": "xdotool"}, "client.wayland_tool"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, tc.values)
+			_, err := load(t, config.LoadOptions{CLIConfig: path})
+			assertErrorContains(t, err, tc.path)
+		})
+	}
+}
+
 func TestNegativeTimeoutRejected(t *testing.T) {
 	path := writeConfig(t, map[string]any{"timeout_seconds": -1})
 	_, err := load(t, config.LoadOptions{CLIConfig: path})

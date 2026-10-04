@@ -2,16 +2,9 @@
 
 package inject
 
-import "errors"
-
-// unsupportedPaster is the fallback on platforms without a paste backend.
-type unsupportedPaster struct{}
-
-func newPaster() Paster { return unsupportedPaster{} }
-
-func (unsupportedPaster) Paste(Shortcut) error {
-	return errors.New("synthetic paste is not supported on this platform")
-}
+// newPaster returns no paster: this platform has no synthetic-paste backend, so
+// the Injector degrades to clipboard-only.
+func newPaster(string) (Paster, error) { return nil, nil }
 
 // unsupportedFocus cannot identify the focused app.
 type unsupportedFocus struct{}

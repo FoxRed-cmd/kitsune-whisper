@@ -40,6 +40,7 @@ type FeedbackConfig struct {
 type ClientConfig struct {
 	ServerURL           string         `yaml:"server_url"`
 	Hotkey              string         `yaml:"hotkey"`
+	HotkeyBackend       string         `yaml:"hotkey_backend"`
 	CancelHotkey        string         `yaml:"cancel_hotkey"`
 	Trigger             string         `yaml:"trigger"`
 	MaxRecordingSeconds float64        `yaml:"max_recording_seconds"`
@@ -51,6 +52,7 @@ type ClientConfig struct {
 	Paste               bool           `yaml:"paste"`
 	PasteShortcut       string         `yaml:"paste_shortcut"`
 	ClipboardRestore    string         `yaml:"clipboard_restore"`
+	WaylandTool         string         `yaml:"wayland_tool"`
 	Feedback            FeedbackConfig `yaml:"feedback"`
 	SpoolDir            string         `yaml:"spool_dir"`
 	LogLevel            string         `yaml:"log_level"`
@@ -62,6 +64,7 @@ func Default() ClientConfig {
 	return ClientConfig{
 		ServerURL:           "http://localhost:8000",
 		Hotkey:              "Ctrl+Shift+Space",
+		HotkeyBackend:       "auto",
 		CancelHotkey:        "Esc",
 		Trigger:             "toggle",
 		MaxRecordingSeconds: defaultMaxRec,
@@ -73,6 +76,7 @@ func Default() ClientConfig {
 		Paste:               true,
 		PasteShortcut:       "auto",
 		ClipboardRestore:    "auto",
+		WaylandTool:         "auto",
 		Feedback:            FeedbackConfig{Earcons: false},
 		SpoolDir:            "",
 		LogLevel:            "info",
@@ -250,6 +254,7 @@ func deepMerge(base, override map[string]any) map[string]any {
 var schema = map[string]any{
 	"server_url":            nil,
 	"hotkey":                nil,
+	"hotkey_backend":        nil,
 	"cancel_hotkey":         nil,
 	"trigger":               nil,
 	"max_recording_seconds": nil,
@@ -261,6 +266,7 @@ var schema = map[string]any{
 	"paste":                 nil,
 	"paste_shortcut":        nil,
 	"clipboard_restore":     nil,
+	"wayland_tool":          nil,
 	"feedback":              map[string]any{"earcons": nil},
 	"spool_dir":             nil,
 	"log_level":             nil,
@@ -377,6 +383,12 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	if cfg.Hotkey, err = stringField(m, "hotkey", "client.hotkey"); err != nil {
 		return cfg, err
 	}
+	if cfg.HotkeyBackend, err = stringField(m, "hotkey_backend", "client.hotkey_backend"); err != nil {
+		return cfg, err
+	}
+	if err = oneOf(cfg.HotkeyBackend, "client.hotkey_backend", "auto", "portal", "x11"); err != nil {
+		return cfg, err
+	}
 	if cfg.CancelHotkey, err = stringField(m, "cancel_hotkey", "client.cancel_hotkey"); err != nil {
 		return cfg, err
 	}
@@ -438,6 +450,12 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 		return cfg, err
 	}
 	if err = oneOf(cfg.ClipboardRestore, "client.clipboard_restore", "auto", "always", "never"); err != nil {
+		return cfg, err
+	}
+	if cfg.WaylandTool, err = stringField(m, "wayland_tool", "client.wayland_tool"); err != nil {
+		return cfg, err
+	}
+	if err = oneOf(cfg.WaylandTool, "client.wayland_tool", "auto", "wtype", "ydotool", "none"); err != nil {
 		return cfg, err
 	}
 

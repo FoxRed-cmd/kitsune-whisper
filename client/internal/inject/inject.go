@@ -102,6 +102,9 @@ type Options struct {
 	PasteShortcut string
 	// ClipboardRestore is "auto", "always", or "never".
 	ClipboardRestore string
+	// WaylandTool is "auto", "wtype", "ydotool", or "none" and selects the
+	// synthetic-paste helper on a Wayland session.
+	WaylandTool string
 
 	// Clipboard, Paster, and Focus override the platform ports; nil uses the
 	// real implementation.
@@ -155,7 +158,14 @@ func New(opts Options) (*Injector, error) {
 	}
 	paste := opts.Paster
 	if paste == nil {
-		paste = newPaster()
+		tool := opts.WaylandTool
+		if tool == "" {
+			tool = "auto"
+		}
+		paste, err = newPaster(tool)
+		if err != nil {
+			return nil, err
+		}
 	}
 	focus := opts.Focus
 	if focus == nil {
@@ -169,8 +179,11 @@ func New(opts Options) (*Injector, error) {
 	if log == nil {
 		log = func(string) {}
 	}
+	if opts.Paste && paste == nil {
+		log("no synthetic-paste backend available: using clipboard-only")
+	}
 	return &Injector{
-		paste:         opts.Paste,
+		paste:         opts.Paste && paste != nil,
 		pasteShortcut: mode,
 		restore:       restore,
 		clipboard:     clip,

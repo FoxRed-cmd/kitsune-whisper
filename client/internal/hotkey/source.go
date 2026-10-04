@@ -16,15 +16,41 @@ type Options struct {
 	CancelHotkey string
 	// Mode selects toggle or hold-to-talk behavior for the main hotkey.
 	Mode Mode
+	// Backend is "auto", "portal", or "x11"; empty means "auto". It is honored
+	// on Linux and ignored where the desktop has a single native mechanism.
+	Backend string
+	// AppID is the stable application id the GlobalShortcuts portal is told to
+	// associate with the Client.
+	AppID string
 	// Retry bounds the startup registration retries.
 	Retry RetryPolicy
 	// OnRetry is an optional hook invoked for each failed registration.
 	OnRetry func(attempt int, err error)
+	// OnLog receives human-readable progress; nil is silent.
+	OnLog func(string)
 }
 
-// Source grabs the configured global hotkeys and emits cycle triggers. It is
-// the thin desktop adapter: the edge gating lives in Reducer, which is tested.
-type Source struct {
+// Source drives Dictation-cycle triggers from a desktop input mechanism: a
+// global hotkey, the GlobalShortcuts portal, or nothing when the External
+// trigger's control socket is the only option.
+type Source interface {
+	// Run emits triggers until ctx ends, returning nil on a clean shutdown.
+	Run(ctx context.Context, triggers chan<- cycle.Trigger) error
+}
+
+// New builds the Source for the configured backend, resolving the session and
+// portal on Linux.
+func New(opts Options) (Source, error) {
+	if opts.Backend == "" {
+		opts.Backend = "auto"
+	}
+	return newPlatformSource(opts)
+}
+
+// keySource grabs the configured global hotkeys through golang.design/x/hotkey.
+// It is the thin desktop adapter: the edge gating lives in Reducer, which is
+// tested.
+type keySource struct {
 	main    *xhotkey.Hotkey
 	cancel  *xhotkey.Hotkey
 	mode    Mode
@@ -32,9 +58,9 @@ type Source struct {
 	onRetry func(int, error)
 }
 
-// New parses the hotkey specs and builds a Source. It does not touch the
-// desktop until Run registers the hotkeys.
-func New(opts Options) (*Source, error) {
+// newKeySource parses the hotkey specs and builds a keySource. It does not touch
+// the desktop until Run registers the hotkeys.
+func newKeySource(opts Options) (*keySource, error) {
 	mods, key, err := ParseSpec(opts.Hotkey)
 	if err != nil {
 		return nil, err
@@ -43,7 +69,7 @@ func New(opts Options) (*Source, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Source{
+	return &keySource{
 		main:    xhotkey.New(mods, key),
 		cancel:  xhotkey.New(cancelMods, cancelKey),
 		mode:    opts.Mode,
@@ -55,7 +81,7 @@ func New(opts Options) (*Source, error) {
 // Run registers the hotkeys -- retrying while the display is not ready -- then
 // pumps key edges into triggers until ctx ends. It returns nil on clean
 // shutdown, or the registration error if the retry policy gives up.
-func (s *Source) Run(ctx context.Context, triggers chan<- cycle.Trigger) error {
+func (s *keySource) Run(ctx context.Context, triggers chan<- cycle.Trigger) error {
 	if err := s.register(ctx); err != nil {
 		return err
 	}
@@ -70,18 +96,18 @@ func (s *Source) Run(ctx context.Context, triggers chan<- cycle.Trigger) error {
 		case <-ctx.Done():
 			return nil
 		case <-s.main.Keydown():
-			s.emit(ctx, triggers, reducer, Main, Down)
+			emit(ctx, triggers, reducer, Main, Down)
 		case <-s.main.Keyup():
-			s.emit(ctx, triggers, reducer, Main, Up)
+			emit(ctx, triggers, reducer, Main, Up)
 		case <-s.cancel.Keydown():
-			s.emit(ctx, triggers, reducer, Cancel, Down)
+			emit(ctx, triggers, reducer, Cancel, Down)
 		case <-s.cancel.Keyup():
-			s.emit(ctx, triggers, reducer, Cancel, Up)
+			emit(ctx, triggers, reducer, Cancel, Up)
 		}
 	}
 }
 
-func (s *Source) register(ctx context.Context) error {
+func (s *keySource) register(ctx context.Context) error {
 	return registerWithRetry(ctx, func() error {
 		// Re-register from a clean slate: a previous attempt may have grabbed
 		// the main hotkey before the cancel grab failed, and Register rejects a
@@ -99,7 +125,8 @@ func (s *Source) register(ctx context.Context) error {
 	}, s.retry, s.onRetry)
 }
 
-func (s *Source) emit(ctx context.Context, triggers chan<- cycle.Trigger, r *Reducer, slot Slot, edge Edge) {
+// emit feeds one key edge to the reducer and forwards any resulting trigger.
+func emit(ctx context.Context, triggers chan<- cycle.Trigger, r *Reducer, slot Slot, edge Edge) {
 	trigger, ok := r.Feed(slot, edge)
 	if !ok {
 		return

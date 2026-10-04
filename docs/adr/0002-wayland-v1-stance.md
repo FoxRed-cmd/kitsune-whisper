@@ -14,5 +14,5 @@ The Linux client needs a global hotkey and text injection. On Wayland neither ha
 
 - Needs a stable app-id (`io.github.FoxRed-cmd.kitsune-whisper`) and an installed `.desktop` file (owned by the installer, #7); the portal shows a one-time approval dialog.
 - The client runs a local control socket for the external trigger (used on Wayland without a portal, and as the portal-denied fallback).
-- `client.hotkey.backend: auto|portal|x11` and `client.injection.wayland_tool: auto|wtype|ydotool|none`; `ydotool` is detected, never bundled.
+- `client.hotkey_backend: auto|portal|x11` and `client.wayland_tool: auto|wtype|ydotool|none` (flat keys, alongside the existing `hotkey`, `paste`, and `clipboard_restore`); `ydotool` is detected, never bundled.
 - A support matrix is documented rather than guessed: X11 full; GNOME ≥48 / KDE Plasma ≥5.27 portal hotkey; wlroots external trigger.

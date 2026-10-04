@@ -13,7 +13,7 @@ import (
 // prototype's approach (cgo-free).
 type windowsPaster struct{}
 
-func newPaster() Paster { return windowsPaster{} }
+func newPaster(string) (Paster, error) { return windowsPaster{}, nil }
 
 const (
 	inputKeyboard  = 1

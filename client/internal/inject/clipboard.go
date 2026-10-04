@@ -17,7 +17,7 @@ func newClipboard() (Clipboard, error) {
 	if err := clipboard.Init(); err != nil {
 		return nil, fmt.Errorf("init clipboard: %w", err)
 	}
-	return systemClipboard{}, nil
+	return wrapClipboard(systemClipboard{}), nil
 }
 
 func (systemClipboard) Read() (string, error) {

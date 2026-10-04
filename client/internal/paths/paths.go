@@ -23,3 +23,13 @@ func SpoolDir() string { return filepath.Join(CacheDir(), "spool") }
 
 // LogFile is the default path for the Client's log file.
 func LogFile() string { return filepath.Join(CacheDir(), "client.log") }
+
+// ControlSocket is the default path of the Client's local control socket, the
+// carrier of the External trigger. It prefers the per-session runtime
+// directory, which is private and short enough for a unix socket path.
+func ControlSocket() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "kitsune-whisper.sock")
+	}
+	return filepath.Join(CacheDir(), "control.sock")
+}

@@ -20,12 +20,14 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
@@ -48,7 +50,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	rest := fs.Args()
 	// Allow the curated global flags on either side of the subcommand, so
 	// "kitsune-client transcribe-file --config x f.wav" works like the Server.
-	if len(rest) > 0 && (rest[0] == "transcribe-file" || rest[0] == "record" || rest[0] == "run") {
+	if len(rest) > 0 && (rest[0] == "transcribe-file" || rest[0] == "record" || rest[0] == "run" || rest[0] == "toggle") {
 		command := rest[0]
 		if err := fs.Parse(rest[1:]); err != nil {
 			return 2
@@ -90,6 +92,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		return runTranscribeFile(rest[1:], cfg, *verbose, stdout, stderr)
 	case "record":
 		return runRecord(rest[1:], *seconds, cfg, *verbose, stdout, stderr)
+	case "toggle":
+		return runToggle(rest[1:], cfg, *verbose, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		fmt.Fprint(stderr, usage())
@@ -222,10 +226,13 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 		Hotkey:       cfg.Hotkey,
 		CancelHotkey: cfg.CancelHotkey,
 		Mode:         mode,
+		Backend:      cfg.HotkeyBackend,
+		AppID:        hotkey.DefaultAppID,
 		Retry:        hotkey.RetryPolicy{Initial: 250 * time.Millisecond, Max: 5 * time.Second},
 		OnRetry: func(attempt int, err error) {
 			logger.Warning("hotkey: registration attempt %d failed: %v", attempt, err)
 		},
+		OnLog: func(message string) { logger.Info("%s", message) },
 	})
 	if err != nil {
 		logger.Error("hotkey: %v", err)
@@ -243,6 +250,7 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 		Paste:            cfg.Paste,
 		PasteShortcut:    cfg.PasteShortcut,
 		ClipboardRestore: cfg.ClipboardRestore,
+		WaylandTool:      cfg.WaylandTool,
 		OnLog:            func(message string) { logger.Debug("inject: %s", message) },
 	})
 	if err != nil {
@@ -270,12 +278,64 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 		_ = core.Run(ctx, triggers)
 	}()
 
+	controlDone := startControl(ctx, logger, triggers)
+
 	fmt.Fprintf(stderr, "kitsune-client: %s trigger on %s, cancel on %s\n", cfg.Trigger, cfg.Hotkey, cfg.CancelHotkey)
 	err = source.Run(ctx, triggers)
+	stop()
+	if controlDone != nil {
+		<-controlDone
+	}
 	close(triggers)
 	<-runDone
 	if err != nil {
 		logger.Error("hotkey: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// startControl runs the External trigger's local control socket, feeding
+// commands into triggers until ctx ends. It is best-effort: a failure to bind
+// only disables the external trigger. The returned channel closes once the
+// server has stopped, so callers can close triggers without a send race.
+func startControl(ctx context.Context, logger *logging.Logger, triggers chan<- cycle.Trigger) <-chan struct{} {
+	path := paths.ControlSocket()
+	listener, err := control.Listen(path)
+	if err != nil {
+		logger.Warning("external trigger disabled: %v", err)
+		return nil
+	}
+	logger.Info("external trigger: listening on %s", path)
+
+	deliver := func(trigger cycle.Trigger) {
+		select {
+		case triggers <- trigger:
+		case <-ctx.Done():
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := control.NewServer(listener).Serve(ctx, deliver); err != nil {
+			logger.Warning("external trigger: %v", err)
+		}
+	}()
+	return done
+}
+
+// runToggle sends one toggle command to a running Client over the control
+// socket, letting a compositor keybind or script drive the Dictation cycle.
+func runToggle(args []string, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client toggle")
+		return 2
+	}
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
+	if err := control.Send(paths.ControlSocket(), string(control.Toggle)); err != nil {
+		logger.Error("toggle: %v", err)
 		return 1
 	}
 	return 0
@@ -399,6 +459,7 @@ func usage() string {
 
 Commands:
   run                          run the hotkey-driven dictation client (default)
+  toggle                       trigger the running client via its control socket
   transcribe-file <path.wav>   transcribe a WAV file and print the text
   record                       capture from the microphone and print the text
 

@@ -4,6 +4,7 @@ go 1.24
 
 require (
 	github.com/gen2brain/malgo v0.11.26
+	github.com/godbus/dbus/v5 v5.2.2
 	github.com/jezek/xgb v1.3.1
 	golang.design/x/clipboard v0.11.0
 	golang.design/x/hotkey v0.6.4

@@ -2,6 +2,7 @@ package cli_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"io"
 	"net/http"
@@ -10,10 +11,14 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
 )
 
 func wavBytes() []byte {
@@ -272,6 +277,61 @@ func TestUnknownCommandExitsTwo(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2", code)
 	}
+}
+
+func TestToggleRejectsArguments(t *testing.T) {
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "toggle", "extra"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
+	}
+}
+
+func TestToggleReportsMissingClient(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "toggle"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "toggle") {
+		t.Fatalf("stderr = %q, want a control-socket error", stderr.String())
+	}
+}
+
+func TestToggleDrivesControlSocket(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	listener, err := control.Listen(paths.ControlSocket())
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	triggers := make(chan cycle.Trigger, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = control.NewServer(listener).Serve(ctx, func(trigger cycle.Trigger) { triggers <- trigger })
+	}()
+
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "toggle"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	select {
+	case got := <-triggers:
+		if got != cycle.Toggle {
+			t.Fatalf("delivered %v, want Toggle", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no trigger delivered over the control socket")
+	}
+	cancel()
+	<-done
 }
 
 func TestRecordRejectsNonPositiveSeconds(t *testing.T) {
