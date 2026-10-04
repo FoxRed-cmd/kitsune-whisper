@@ -4,3 +4,17 @@
 ### Agent skills (installed from skills-lock.json) ###
 .agents/skills/
 .claude/skills/
+
+### Go ###
+*.exe
+*.exe~
+*.test
+*.out
+/client/kitsune-client
+
+### Python ###
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.basedpyright/
