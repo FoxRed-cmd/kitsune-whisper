@@ -11,7 +11,7 @@ recorded in [`adr/0002-wayland-v1-stance.md`](adr/0002-wayland-v1-stance.md).
 | --- | --- | --- |
 | **X11** | Full: `XGrabKey` global grab | Synthetic paste; previous clipboard restored where possible |
 | **Wayland — GNOME ≥48 / KDE Plasma ≥5.27** | `GlobalShortcuts` portal (one-time approval dialog) | `ydotool` if present, else clipboard-only with a "press Ctrl+V" hint |
-| **Wayland — wlroots (Sway, Hyprland, …) and any portal-less/denied session** | External trigger: bind `kitsune-client toggle` in the compositor config | `wtype`, else `ydotool`, else clipboard-only |
+| **Wayland — wlroots (Sway, Hyprland, …) and any portal-less/denied session** | External trigger: bind `kitsune-client toggle` (compositor keybind or GNOME custom shortcut) | `wtype`, else `ydotool`, else clipboard-only |
 
 `client.hotkey_backend` (`auto`|`portal`|`x11`) and `client.wayland_tool`
 (`auto`|`wtype`|`ydotool`|`none`) pin these choices. `auto` detects the session.
@@ -26,7 +26,7 @@ recorded in [`adr/0002-wayland-v1-stance.md`](adr/0002-wayland-v1-stance.md).
   `io.github.FoxRed-cmd.kitsune-whisper.desktop` file the installer writes — the
   basename **must** equal the app-id exactly.
 - **External trigger** (wlroots, or when the portal is unavailable): the Client
-  listens on a local unix socket (mode `0700`, under `$XDG_RUNTIME_DIR`).
+  listens on a local unix socket under `$XDG_RUNTIME_DIR` (which is mode `0700`).
   `kitsune-client toggle` sends start/stop. Bind it in your compositor, e.g.:
 
   ```ini
@@ -38,6 +38,18 @@ recorded in [`adr/0002-wayland-v1-stance.md`](adr/0002-wayland-v1-stance.md).
   # Hyprland
   bind = SUPER, D, exec, kitsune-client toggle
   ```
+
+  GNOME has no compositor config: add a **Settings → Keyboard → Custom
+  Shortcuts** entry instead.
+
+  ```text
+  Name:      kitsune-whisper toggle
+  Command:   /home/you/.local/bin/kitsune-client toggle
+  Shortcut:  Ctrl+Shift+Space
+  ```
+
+  Use the absolute path — GNOME does not expand `~` or `$HOME` in the Command
+  field.
 
 ## Injection
 
