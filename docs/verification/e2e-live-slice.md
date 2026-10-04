@@ -70,6 +70,12 @@ Both profiles also passed the silence check (`text=""`), the undecodable-upload
 `415` envelope, the real-Client round trip, the unreachable-Server error, and the
 `--capture` microphone pass on this host.
 
+Manual Windows pass (2026-10-05, same host): the Client's log shows injection
+into Notepad++ (`ctrl_v`, focused app `notepad++.exe`) and Windows Terminal
+(`ctrl_shift_v`, terminal `WindowsTerminal.exe`), with the transcription left on
+the clipboard as documented for Windows. Toggle and transcription were confirmed
+live.
+
 ## Fixes found by this verification
 
 Two live regressions surfaced that the unit-test seams could not reach:
@@ -103,11 +109,12 @@ cursor in the app, press the hotkey, speak, press it again.
 
 ### Windows
 
-- [ ] Notepad (GUI editor): text is injected; clipboard holds the transcription
-      (restore is impossible on Windows).
-- [ ] Windows Terminal: text is injected; the auto shortcut selects
-      `Ctrl+Shift+V`.
-- [ ] `Ctrl+Shift+Space` toggles; the first press does not double-fire while held.
+Verified 2026-10-05 (Client log):
+
+- [x] Notepad++ (GUI editor): injected via `Ctrl+V`; the clipboard holds the
+      transcription (restore is impossible on Windows).
+- [x] Windows Terminal: injected via the auto-selected `Ctrl+Shift+V`.
+- [x] Toggle starts and stops the cycle; speech transcribes and injects.
 - [ ] `Esc` cancels an in-progress utterance with no injection.
 - [ ] Hold-to-talk (`trigger: hold`) works when configured.
 - [ ] No injection on an empty/silent utterance; the clipboard is untouched.
