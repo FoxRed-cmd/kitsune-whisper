@@ -2,7 +2,6 @@ package mic
 
 import (
 	"fmt"
-	"runtime"
 	"unsafe"
 
 	"github.com/gen2brain/malgo"
@@ -14,6 +13,13 @@ import (
 type malgoBackend struct {
 	ctx         *malgo.AllocatedContext
 	deviceInfos []malgo.DeviceInfo
+	// deviceIDs holds one C-allocated copy of a device ID per device, keyed by
+	// the ID's hex string. DeviceID.Pointer() allocates in C because cgo forbids
+	// handing C a Go pointer to a Go value that itself contains a Go pointer (the
+	// config struct embeds the device ID pointer). Caching keeps the allocation
+	// bounded, and miniaudio copies the ID during device init, so reuse across
+	// Opens is safe.
+	deviceIDs map[string]unsafe.Pointer
 }
 
 func newMalgoBackend(onLog func(string)) (*malgoBackend, error) {
@@ -25,7 +31,7 @@ func newMalgoBackend(onLog func(string)) (*malgoBackend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("init audio context: %w", err)
 	}
-	return &malgoBackend{ctx: ctx}, nil
+	return &malgoBackend{ctx: ctx, deviceIDs: map[string]unsafe.Pointer{}}, nil
 }
 
 func (b *malgoBackend) Devices() ([]Device, error) {
@@ -53,7 +59,6 @@ func (b *malgoBackend) Open(index int, onData func(pcm []byte)) (Stream, error) 
 	cfg.Alsa.NoMMap = 1
 
 	name := "system default"
-	var id malgo.DeviceID
 	if index >= 0 {
 		if len(b.deviceInfos) == 0 {
 			if _, err := b.Devices(); err != nil {
@@ -65,14 +70,18 @@ func (b *malgoBackend) Open(index int, onData func(pcm []byte)) (Stream, error) 
 		}
 		info := b.deviceInfos[index]
 		name = info.Name()
-		id = info.ID
-		cfg.Capture.DeviceID = unsafe.Pointer(&id)
+		key := info.ID.String()
+		ptr, ok := b.deviceIDs[key]
+		if !ok {
+			ptr = info.ID.Pointer()
+			b.deviceIDs[key] = ptr
+		}
+		cfg.Capture.DeviceID = ptr
 	}
 
 	dev, err := malgo.InitDevice(b.ctx.Context, cfg, malgo.DeviceCallbacks{
 		Data: func(_, in []byte, _ uint32) { onData(in) },
 	})
-	runtime.KeepAlive(id)
 	if err != nil {
 		return nil, fmt.Errorf("open capture device %q: %w", name, err)
 	}

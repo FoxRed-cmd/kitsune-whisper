@@ -78,4 +78,12 @@ docker compose --profile gpu build
   `uv run ruff format --check .`, `uv run basedpyright`.
 - **Go (client)** — from `client/`: `go build ./...`, `go test ./...`.
 
+### End-to-end verification
+
+`scripts/e2e-live.ps1` (Windows) and `scripts/e2e-live.sh` (Linux) bring up a real
+Server and run the live slice — speech round trip, latency, silence, and error
+paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). See
+`docs/verification/e2e-live-slice.md` for the automated checks and the manual
+hotkey/capture/injection checklist.
+
 See `docs/adr/` for architecture decisions and `GLOSSARY.md` for domain terms.

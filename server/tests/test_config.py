@@ -26,6 +26,7 @@ def test_defaults_when_no_file(tmp_path: Path) -> None:
     assert config.model == "small"
     assert config.device == "auto"
     assert config.decode.beam_size == 5
+    assert config.decode.vad_filter is True
 
 
 def test_reads_only_server_section(tmp_path: Path) -> None:

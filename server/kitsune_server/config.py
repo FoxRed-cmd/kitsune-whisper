@@ -47,7 +47,7 @@ class DecodeConfig(_StrictModel):
     language: str = "auto"
     beam_size: int = Field(default=5, ge=1)
     temperature: float = Field(default=0.0, ge=0.0)
-    vad_filter: bool = False
+    vad_filter: bool = True
     initial_prompt: str = ""
 
 

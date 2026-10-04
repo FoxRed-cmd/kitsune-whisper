@@ -161,7 +161,7 @@ def test_transcribe_maps_segments_and_info() -> None:
     assert model.transcribe_kwargs["language"] == "ru"
     assert model.transcribe_kwargs["initial_prompt"] == "vocab"
     assert model.transcribe_kwargs["beam_size"] == 5
-    assert model.transcribe_kwargs["vad_filter"] is False
+    assert model.transcribe_kwargs["vad_filter"] is True
     assert model.transcribe_kwargs["task"] == "transcribe"
 
 

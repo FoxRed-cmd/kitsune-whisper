@@ -28,7 +28,9 @@ server:
     language: auto
     beam_size: 5
     temperature: 0.0
-    vad_filter: false
+    # Server-side VAD is the authoritative silence gate; keep it on so silent
+    # clips return empty text instead of hallucinated words (see #10).
+    vad_filter: true
     initial_prompt: ""
 
 client:
