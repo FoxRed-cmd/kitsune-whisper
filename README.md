@@ -1,13 +1,39 @@
 # kitsune-whisper
 
-Private, LAN-local speech-to-text dictation for Windows and Linux. A Go **Client**
-runs in your user session, captures the microphone on a global hotkey, and injects
-the transcription at your cursor. A Python **Server** transcribes with faster-whisper
-and never sends audio off your network.
+Private, LAN-local speech-to-text dictation for Windows and Linux. Press a global
+hotkey, speak, press it again, and the transcription appears at your cursor —
+audio never leaves your network.
 
-## Client
+- A Go **Client** runs in your logged-in user session, captures the microphone,
+  resamples to 16 kHz mono, and injects the transcription via clipboard +
+  synthetic paste.
+- A Python **Server** transcribes with faster-whisper, auto-detects CUDA vs CPU,
+  and exposes `POST /transcribe` and `GET /health`. It ships as a Docker image.
+- Both read one `kitsune.yaml` (each process reads only its own section).
 
-Install the per-user Client from a GitHub Release:
+## Quickstart
+
+### 1. Server (Docker)
+
+```sh
+cp kitsune.example.yaml kitsune.yaml
+docker compose --profile cpu up -d    # or: --profile gpu
+```
+
+The `gpu` profile needs an NVIDIA driver and `nvidia-container-toolkit` (Linux)
+or GPU support in WSL2 (Windows) — see [GPU prerequisites](#gpu-prerequisites).
+The first run downloads the model into the `kitsune-models` volume;
+`kitsune.yaml` is bind-mounted at `/config/kitsune.yaml`, so edits apply on
+restart. The Server listens on `http://localhost:8000`.
+
+Check it (and confirm whether the GPU is in use):
+
+```sh
+curl http://localhost:8000/health
+curl -F audio=@sample.wav http://localhost:8000/transcribe
+```
+
+### 2. Client
 
 ```sh
 # Linux
@@ -24,11 +50,28 @@ The installer verifies the archive checksum, installs the binary and a
 session: a systemd user unit bound to `graphical-session.target` on Linux, a
 per-user Task Scheduler task at logon on Windows (HKCU `Run` fallback). Re-run to
 upgrade; `--uninstall` / `-Uninstall` removes it (`--purge` / `-Purge` also drops
-config, spool, and logs).
+config, spool, and logs). See [`docs/install.md`](docs/install.md).
 
-See [`docs/install.md`](docs/install.md) for paths, autostart details, and
-upgrade/uninstall. See `docs/adr/` for architecture decisions and `GLOSSARY.md`
-for domain terms.
+### 3. Dictate
+
+With the Client running, press **Ctrl+Shift+Space** to start recording, speak,
+and press it again to stop. The transcription is pasted into the focused field.
+Press **Esc** to cancel without injecting. The hotkey, the cancel key, and the
+trigger mode are all configurable; `client.trigger: hold` switches to
+push-to-talk.
+
+If the Server isn't reachable the Client reports it and saves the audio to the
+Spool instead of losing your speech. An empty transcription injects nothing.
+
+## The hotkey
+
+- **Toggle** (default): press to start, press again to stop.
+- **Hold**: hold to talk, release to stop — set `client.trigger: hold`.
+- **Cancel**: `client.cancel_hotkey` (default `Esc`) aborts the utterance.
+
+The defaults are `client.hotkey: Ctrl+Shift+Space` and
+`client.cancel_hotkey: Esc`. On Wayland, hotkeys are best-effort; see
+[Wayland support and known limitations](docs/wayland.md).
 
 ## Server (Docker)
 
@@ -38,25 +81,6 @@ The Server ships as a Docker image with two profiles:
 | --- | --- | --- |
 | `cpu` | `python:3.11-slim` | Any host; slower, no GPU needed |
 | `gpu` | `nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04` | NVIDIA GPU; near-instant |
-
-### Quick start
-
-```sh
-cp kitsune.example.yaml kitsune.yaml
-docker compose --profile cpu up -d    # or: --profile gpu
-```
-
-The config file is bind-mounted at `/config/kitsune.yaml`, so edits are picked up
-on restart. The model cache lives on the named volume `kitsune-models` (mounted at
-`/models`), so downloaded models persist across `docker compose down`/`up`. The
-Server listens on `http://localhost:8000`.
-
-Check it:
-
-```sh
-curl http://localhost:8000/health
-curl -F audio=@sample.wav http://localhost:8000/transcribe
-```
 
 ### GPU prerequisites
 
@@ -76,11 +100,11 @@ The `gpu` profile needs the host to expose an NVIDIA GPU to Docker:
 
 ### Recommended hardware
 
-GPU is recommended: on the measured host (RTX 4060, model `small`) a 3–4 s
-utterance transcribes in well under a second, versus ≈0.6–0.7× realtime on CPU.
-CPU-only hosts are supported; set `server.model` to `base` or `tiny` in
-`kitsune.yaml` to trade accuracy for lower latency. The Server logs a warning when
-it resolves to CPU.
+An **NVIDIA/CUDA GPU is recommended** for near-instant transcription; CPU-only
+hosts are supported but slower. See
+[`docs/install.md#recommended-hardware`](docs/install.md#recommended-hardware) for
+the CPU escape hatch (`base`/`tiny`), the low-VRAM `int8_float16` note, and the
+measured latency figures.
 
 ### Images
 
@@ -96,6 +120,13 @@ publish `cpu` / `gpu`. To build locally instead:
 docker compose --profile cpu build
 docker compose --profile gpu build
 ```
+
+## Documentation
+
+- [`docs/install.md`](docs/install.md) — install, paths, autostart, upgrade/uninstall, hardware.
+- [`docs/configuration.md`](docs/configuration.md) — the full `kitsune.yaml` reference.
+- [`docs/wayland.md`](docs/wayland.md) — Wayland support matrix and known limitations.
+- [`docs/adr/`](docs/adr/) — architecture decisions; [`GLOSSARY.md`](GLOSSARY.md) — domain terms.
 
 ## Development
 
@@ -116,6 +147,4 @@ hotkey/capture/injection checklist.
 
 Tagging `v*` runs `.github/workflows/release-client.yml`: it builds the Client on
 native Linux and Windows runners and attaches checksummed archives to the GitHub
-Release. `publish-server-image.yml` publishes the Server images to GHCR. See
-`docs/adr/` for architecture decisions and `GLOSSARY.md` for domain terms.
-
+Release. `publish-server-image.yml` publishes the Server images to GHCR.

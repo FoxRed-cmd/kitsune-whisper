@@ -56,6 +56,29 @@ kitsune-client --check-config
 kitsune-client --version
 ```
 
+### First dictation
+
+Once a Server is reachable at `client.server_url`, start the Client:
+
+```sh
+kitsune-client run          # run is also the default command
+```
+
+Press **Ctrl+Shift+Space** to start and stop recording; **Esc** cancels without
+injecting. See [The hotkey](../README.md#the-hotkey) for push-to-talk and
+changing the keys.
+
+Handy subcommands:
+
+```sh
+kitsune-client record --seconds 5   # capture once and print the text
+kitsune-client transcribe-file f.wav  # transcribe an existing WAV
+kitsune-client toggle               # external trigger (Wayland compositor bind)
+```
+
+See [Configuration](configuration.md) for the full `kitsune.yaml` reference and
+[Wayland support and known limitations](wayland.md) for the Linux session matrix.
+
 ### Autostart
 
 The client runs in the logged-in **user session**, never as a system/SCM
@@ -128,4 +151,23 @@ Uninstall (drops the downloaded models volume):
 docker compose down -v
 ```
 
-See the README for GPU prerequisites and the hardware guidance.
+### Recommended hardware
+
+An **NVIDIA/CUDA GPU is recommended**. On the measured host (Ryzen 7 8700F,
+RTX 4060) the default `small` model transcribes at ≈0.02–0.2× realtime — near
+instant. CPU-only hosts are **supported but slower**, at ≈0.6–0.7× realtime.
+
+- **GPU** — any recent NVIDIA driver; the container ships the CUDA 12.3 /
+  cuDNN 9 runtime. `compute_type: auto` resolves to `float16`. On a low-VRAM GPU
+  set `server.compute_type: int8_float16` to fit the model.
+- **CPU** — `compute_type: auto` resolves to `int8`. For lower latency set
+  `server.model` to `base` (the best accuracy↔speed trade for dictation, roughly
+  2–3× faster than `small`) or `tiny` on the weakest hosts.
+
+The `base`/`tiny` figures are **derived estimates, not measured** — validate them
+on your own host. The Server logs a `WARN` when it resolves to CPU, and
+`GET /health` reports the resolved `device`/`compute_type` so you can confirm the
+GPU is actually in use.
+
+For GPU prerequisites, see [GPU prerequisites](../README.md#gpu-prerequisites).
+For the full config surface, see [Configuration](configuration.md).
