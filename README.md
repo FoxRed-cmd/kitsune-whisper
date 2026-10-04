@@ -5,6 +5,31 @@ runs in your user session, captures the microphone on a global hotkey, and injec
 the transcription at your cursor. A Python **Server** transcribes with faster-whisper
 and never sends audio off your network.
 
+## Client
+
+Install the per-user Client from a GitHub Release:
+
+```sh
+# Linux
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell 7+)
+irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
+```
+
+The installer verifies the archive checksum, installs the binary and a
+`kitsune.yaml` template (only if absent), and registers autostart in the user
+session: a systemd user unit bound to `graphical-session.target` on Linux, a
+per-user Task Scheduler task at logon on Windows (HKCU `Run` fallback). Re-run to
+upgrade; `--uninstall` / `-Uninstall` removes it (`--purge` / `-Purge` also drops
+config, spool, and logs).
+
+See [`docs/install.md`](docs/install.md) for paths, autostart details, and
+upgrade/uninstall. See `docs/adr/` for architecture decisions and `GLOSSARY.md`
+for domain terms.
+
 ## Server (Docker)
 
 The Server ships as a Docker image with two profiles:
@@ -76,7 +101,8 @@ docker compose --profile gpu build
 
 - **Python (server)** — from `server/`: `uv run pytest`, `uv run ruff check .`,
   `uv run ruff format --check .`, `uv run basedpyright`.
-- **Go (client)** — from `client/`: `go build ./...`, `go test ./...`.
+- **Go (client)** — from `client/`: `go build ./...`, `go test ./...` (set
+  `CGO_ENABLED=1` with a C compiler; `malgo` uses cgo).
 
 ### End-to-end verification
 
@@ -86,4 +112,10 @@ paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). See
 `docs/verification/e2e-live-slice.md` for the automated checks and the manual
 hotkey/capture/injection checklist.
 
-See `docs/adr/` for architecture decisions and `GLOSSARY.md` for domain terms.
+### Releases
+
+Tagging `v*` runs `.github/workflows/release-client.yml`: it builds the Client on
+native Linux and Windows runners and attaches checksummed archives to the GitHub
+Release. `publish-server-image.yml` publishes the Server images to GHCR. See
+`docs/adr/` for architecture decisions and `GLOSSARY.md` for domain terms.
+

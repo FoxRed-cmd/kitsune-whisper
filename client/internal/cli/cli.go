@@ -14,11 +14,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
@@ -32,6 +34,21 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
 
+// Version is the Client build version. Release builds override it with
+// -ldflags "-X .../internal/cli.Version=vX.Y.Z"; the default marks a local
+// build.
+var Version = "dev"
+
+// commands that take the curated global flags on either side of the name.
+var subcommands = map[string]bool{
+	"run":                 true,
+	"toggle":              true,
+	"transcribe-file":     true,
+	"record":              true,
+	"install-autostart":   true,
+	"uninstall-autostart": true,
+}
+
 // Run parses args and executes, returning a process exit code.
 func Run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("kitsune-client", flag.ContinueOnError)
@@ -41,6 +58,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	device := fs.String("device", "", "audio input device override")
 	verbose := fs.Bool("verbose", false, "shorthand for log_level=debug, also echoed to stderr")
 	seconds := fs.Float64("seconds", 5, "record: capture length in seconds")
+	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, usage())
 	}
@@ -50,12 +68,26 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	rest := fs.Args()
 	// Allow the curated global flags on either side of the subcommand, so
 	// "kitsune-client transcribe-file --config x f.wav" works like the Server.
-	if len(rest) > 0 && (rest[0] == "transcribe-file" || rest[0] == "record" || rest[0] == "run" || rest[0] == "toggle") {
+	if len(rest) > 0 && subcommands[rest[0]] {
 		command := rest[0]
 		if err := fs.Parse(rest[1:]); err != nil {
 			return 2
 		}
 		rest = append([]string{command}, fs.Args()...)
+	}
+
+	if *showVersion {
+		fmt.Fprintf(stdout, "kitsune-client %s\n", Version)
+		return 0
+	}
+	// Autostart registration does not need the rest of the config; pinning an
+	// explicit --config only affects the command line written into the unit or
+	// task.
+	if len(rest) > 0 && rest[0] == "install-autostart" {
+		return runAutostart(rest[1:], *configPath, true, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "uninstall-autostart" {
+		return runAutostart(rest[1:], *configPath, false, stdout, stderr)
 	}
 
 	overrides := map[string]any{}
@@ -341,6 +373,50 @@ func runToggle(args []string, cfg config.ClientConfig, verbose bool, stderr io.W
 	return 0
 }
 
+// runAutostart registers or removes the Client's login autostart entry. It is
+// what the install scripts call: the binary knows its own absolute path and the
+// platform's registration mechanism, so the scripts stay thin.
+func runAutostart(args []string, configPath string, install bool, stdout, stderr io.Writer) int {
+	action := "uninstall"
+	if install {
+		action = "install"
+	}
+	if len(args) != 0 {
+		fmt.Fprintf(stderr, "usage: kitsune-client %s-autostart [--config PATH]\n", action)
+		return 2
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(stderr, "autostart: locate executable: %v\n", err)
+		return 1
+	}
+	pinned := ""
+	if configPath != "" {
+		pinned, err = filepath.Abs(configPath)
+		if err != nil {
+			fmt.Fprintf(stderr, "autostart: resolve config path: %v\n", err)
+			return 1
+		}
+	}
+
+	env := autostart.Default(func(format string, a ...any) {
+		fmt.Fprintf(stderr, format+"\n", a...)
+	})
+	opts := autostart.Options{Binary: exe, Config: pinned}
+	if install {
+		err = autostart.Install(env, opts)
+	} else {
+		err = autostart.Uninstall(env)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "autostart: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "autostart %sed\n", action)
+	return 0
+}
+
 // stdoutInjector is the record command's Injector: print the Transcription.
 type stdoutInjector struct {
 	out io.Writer
@@ -462,6 +538,8 @@ Commands:
   toggle                       trigger the running client via its control socket
   transcribe-file <path.wav>   transcribe a WAV file and print the text
   record                       capture from the microphone and print the text
+  install-autostart            register the client to launch at login
+  uninstall-autostart          remove the login registration
 
 Flags:
   --config PATH     path to kitsune.yaml
@@ -469,5 +547,6 @@ Flags:
   --device NAME     audio input device override
   --seconds N       record: capture length in seconds (default 5)
   --verbose         shorthand for log_level=debug, also echoed to stderr
+  --version         print the version and exit
 `
 }

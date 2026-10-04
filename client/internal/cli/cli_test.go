@@ -351,3 +351,25 @@ func TestRecordRejectsPositionalArguments(t *testing.T) {
 		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
 	}
 }
+
+func TestVersionFlagPrintsAndExitsWithoutConfig(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--version"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "kitsune-client "+cli.Version {
+		t.Fatalf("stdout = %q, want the version line", got)
+	}
+}
+
+func TestInstallAutostartRejectsPositionalArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"install-autostart", "extra"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "install-autostart") {
+		t.Fatalf("stderr = %q, want usage", stderr.String())
+	}
+}

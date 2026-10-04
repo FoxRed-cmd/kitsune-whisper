@@ -1,0 +1,108 @@
+name: Release client
+
+# Builds the Client on native runners (malgo needs cgo, so no cross-compilation)
+# and attaches a checksummed archive per OS/arch to the GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            ext: ""
+            asset: kitsune-client_linux_amd64.tar.gz
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+            asset: kitsune-client_windows_amd64.zip
+    env:
+      CGO_ENABLED: "1"
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      EXT: ${{ matrix.ext }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Ensure a C compiler (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            choco install mingw --no-progress -y
+          }
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME:-$(git describe --tags --always)}"
+          ldflags="-X github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli.Version=${version}"
+          if [[ "$GOOS" == "windows" ]]; then
+            ldflags="$ldflags -H=windowsgui"
+          fi
+          mkdir -p dist
+          go build -C client -trimpath -ldflags "$ldflags" \
+            -o "../dist/kitsune-client${EXT}" ./cmd/kitsune-client
+
+      - name: Package (Linux)
+        if: matrix.goos == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp kitsune.example.yaml dist/
+          tar -C dist -czf "${{ matrix.asset }}" kitsune-client kitsune.example.yaml
+
+      - name: Package (Windows)
+        if: matrix.goos == 'windows'
+        shell: pwsh
+        run: |
+          Copy-Item kitsune.example.yaml dist/
+          Compress-Archive -Path dist/kitsune-client.exe, dist/kitsune.example.yaml `
+            -DestinationPath "${{ matrix.asset }}" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum kitsune-client_* > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/kitsune-client_linux_amd64.tar.gz
+            dist/kitsune-client_windows_amd64.zip
+            dist/checksums.txt
