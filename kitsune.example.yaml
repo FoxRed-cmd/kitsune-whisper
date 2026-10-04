@@ -50,10 +50,14 @@ client:
   audio:
     # "" = system default input.
     device: ""
+  # Synthesize the paste after writing the clipboard; false is clipboard-only.
   paste: true
-  # auto | ctrl_v | ctrl_shift_v (Linux terminals need ctrl_shift_v).
+  # auto | ctrl_v | ctrl_shift_v (auto picks ctrl_shift_v in terminals).
   paste_shortcut: auto
-  # auto | always | never (auto restores where the desktop allows).
+  # auto | always | never. auto restores the previous clipboard on Linux/X11 and
+  # keeps the transcription on Windows, where the OS never reports when a
+  # synthetic paste is consumed and safe restore is impossible. always is a
+  # best-effort restore even there; never always keeps the transcription.
   clipboard_restore: auto
   feedback:
     earcons: false

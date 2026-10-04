@@ -3,8 +3,8 @@
 // It resolves and validates configuration, supports --check-config, and
 // dispatches the commands: run (the interactive hotkey-driven client),
 // transcribe-file (POST a WAV), and record (capture once through the Dictation
-// cycle). The run command drives the cycle from global hotkeys; real injection
-// is wired by a later ticket.
+// cycle). The run command drives the cycle from global hotkeys and injects the
+// Transcription into the focused field; record prints it.
 package cli
 
 import (
@@ -22,6 +22,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
@@ -77,11 +78,11 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(rest) == 0 {
-		return runClient(cfg, stdout, stderr)
+		return runClient(cfg, stderr)
 	}
 	switch rest[0] {
 	case "run":
-		return runClient(cfg, stdout, stderr)
+		return runClient(cfg, stderr)
 	case "transcribe-file":
 		return runTranscribeFile(rest[1:], cfg, stdout, stderr)
 	case "record":
@@ -193,9 +194,9 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, stdout, 
 }
 
 // runClient is the interactive Client: it grabs the global hotkeys and drives
-// the Dictation cycle. Real injection lands in #19; until then a Transcription
-// is printed to stdout, matching the record command.
-func runClient(cfg config.ClientConfig, stdout, stderr io.Writer) int {
+// the Dictation cycle, injecting each Transcription into the focused field via
+// the clipboard plus a synthetic paste.
+func runClient(cfg config.ClientConfig, stderr io.Writer) int {
 	mode, err := hotkey.ParseMode(cfg.Trigger)
 	if err != nil {
 		fmt.Fprintf(stderr, "hotkey: %v\n", err)
@@ -222,10 +223,21 @@ func runClient(cfg config.ClientConfig, stdout, stderr io.Writer) int {
 	}
 	defer func() { _ = recorder.Close() }()
 
+	injector, err := inject.New(inject.Options{
+		Paste:            cfg.Paste,
+		PasteShortcut:    cfg.PasteShortcut,
+		ClipboardRestore: cfg.ClipboardRestore,
+		OnLog:            func(message string) { fmt.Fprintf(stderr, "inject: %s\n", message) },
+	})
+	if err != nil {
+		fmt.Fprintf(stderr, "injection init failed: %v\n", err)
+		return 1
+	}
+
 	core := cycle.New(cycle.Options{
 		Recorder:    recorder,
 		Transcriber: newTranscriber(cfg),
-		Injector:    &stdoutInjector{out: stdout},
+		Injector:    injector,
 		OnError:     func(err error) { fmt.Fprintf(stderr, "dictation failed: %v\n", err) },
 		Limits:      cycleLimits(cfg),
 	})
