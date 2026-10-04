@@ -18,7 +18,8 @@ from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .audio import AudioDecodeError, decode_audio
-from .config import ServerConfig
+from .config import ServerConfig, format_errors
+from .languages import normalize_language
 from .transcriber import Transcriber
 
 logger = logging.getLogger("kitsune.server")
@@ -41,6 +42,19 @@ class ApiError(Exception):
         self.headers = dict(headers or {})
 
 
+def _error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    headers: Mapping[str, str] | None = None,
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": {"code": code, "message": message}},
+        headers=headers,
+    )
+
+
 def _resolve_workers(config: ServerConfig, transcriber: Transcriber) -> int:
     """One knob for HTTP concurrency and CT2 workers (0 = auto)."""
     if config.workers > 0:
@@ -54,21 +68,16 @@ def _effective_language(request_language: str | None, config: ServerConfig) -> s
         value = config.decode.language
     if value is None or value.strip().lower() in ("", "auto"):
         return None
-    return value
+    try:
+        return normalize_language(value)
+    except ValueError as exc:
+        raise ApiError(400, "bad_request", str(exc)) from exc
 
 
 def _effective_prompt(request_prompt: str | None, config: ServerConfig) -> str | None:
     if request_prompt:
         return request_prompt
     return config.decode.initial_prompt or None
-
-
-def _validation_message(exc: RequestValidationError) -> str:
-    parts = []
-    for error in exc.errors():
-        loc = ".".join(str(item) for item in error["loc"][1:]) or "body"
-        parts.append(f"{loc}: {error['msg']}")
-    return "; ".join(parts)
 
 
 def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
@@ -81,35 +90,25 @@ def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
 
     @app.exception_handler(ApiError)
     async def _handle_api_error(_request: Any, exc: ApiError) -> JSONResponse:
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"error": {"code": exc.code, "message": exc.message}},
-            headers=exc.headers,
-        )
+        return _error_response(exc.status_code, exc.code, exc.message, exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def _handle_validation_error(_request: Any, exc: RequestValidationError) -> JSONResponse:
-        return JSONResponse(
-            status_code=400,
-            content={"error": {"code": "bad_request", "message": _validation_message(exc)}},
-        )
+        return _error_response(400, "bad_request", format_errors(exc.errors(), drop=1))
 
     @app.exception_handler(StarletteHTTPException)
     async def _handle_http_exception(_request: Any, exc: StarletteHTTPException) -> JSONResponse:
-        code = {404: "not_found", 405: "method_not_allowed"}.get(exc.status_code, "error")
-        return JSONResponse(
-            status_code=exc.status_code,
-            content={"error": {"code": code, "message": str(exc.detail)}},
-            headers=getattr(exc, "headers", None),
+        return _error_response(
+            exc.status_code,
+            "error",
+            str(exc.detail),
+            getattr(exc, "headers", None),
         )
 
     @app.exception_handler(Exception)
     async def _handle_unexpected(_request: Any, exc: Exception) -> JSONResponse:
         logger.exception("unhandled error: %s", exc)
-        return JSONResponse(
-            status_code=500,
-            content={"error": {"code": "internal_error", "message": "internal server error"}},
-        )
+        return _error_response(500, "internal_error", "internal server error")
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -131,8 +130,15 @@ def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
         try:
-            data = await audio.read()
             max_bytes = int(config.max_upload_mb * 1024 * 1024)
+            declared_size = getattr(audio, "size", None)
+            if declared_size is not None and declared_size > max_bytes:
+                raise ApiError(
+                    413,
+                    "payload_too_large",
+                    f"upload exceeds {config.max_upload_mb:g} MB",
+                )
+            data = await audio.read()
             if len(data) > max_bytes:
                 raise ApiError(
                     413,

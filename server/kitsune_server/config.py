@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
-from collections.abc import Mapping, MutableMapping
+from collections.abc import Mapping, MutableMapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
@@ -155,11 +155,17 @@ def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[st
     return merged
 
 
-def _format_validation_error(exc: ValidationError) -> str:
+def format_errors(
+    errors: Sequence[Mapping[str, Any]],
+    *,
+    prefix: str = "",
+    drop: int = 0,
+) -> str:
+    """Render pydantic-style errors as ``path: message`` joined by ``; ``."""
     parts = []
-    for error in exc.errors():
-        path = "server." + ".".join(str(item) for item in error["loc"])
-        parts.append(f"{path}: {error['msg']}")
+    for error in errors:
+        path = ".".join(str(item) for item in error["loc"][drop:]) or "body"
+        parts.append(f"{prefix}{path}: {error['msg']}")
     return "; ".join(parts)
 
 
@@ -187,7 +193,7 @@ def load_config(
     try:
         return ServerConfig.model_validate(effective)
     except ValidationError as exc:
-        raise ConfigError(_format_validation_error(exc)) from exc
+        raise ConfigError(format_errors(exc.errors(), prefix="server.")) from exc
 
 
 def dump_config(config: ServerConfig) -> str:

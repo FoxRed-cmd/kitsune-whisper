@@ -12,12 +12,12 @@ import uvicorn
 
 from .app import create_app
 from .config import ServerConfig
-from .transcriber import EngineInfo, FakeTranscriber
+from .transcriber import EngineInfo, FakeTranscriber, Transcriber
 
 logger = logging.getLogger("kitsune.server")
 
 
-def build_transcriber(config: ServerConfig) -> FakeTranscriber:
+def build_transcriber(config: ServerConfig) -> Transcriber:
     return FakeTranscriber(
         info=EngineInfo(
             model=config.model,

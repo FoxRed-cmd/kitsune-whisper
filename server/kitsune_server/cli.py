@@ -5,9 +5,9 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, get_args
 
-from .config import ConfigError, dump_config, load_config
+from .config import ConfigError, Device, dump_config, load_config
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,25 +17,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", metavar="PATH", help="path to kitsune.yaml")
     parser.add_argument(
-        "--check-config", action="store_true", help="print effective config and exit"
+        "--check-config",
+        action="store_true",
+        help="print effective config and exit",
     )
-    parser.add_argument("--host", help="bind address")
-    parser.add_argument("--port", type=int, help="bind port")
-    parser.add_argument("--model", help="Whisper model size or local CT2 path")
-    parser.add_argument("--device", choices=["auto", "cpu", "cuda"], help="compute device")
-    parser.add_argument("--compute-type", dest="compute_type", help="CTranslate2 compute type")
-    parser.add_argument("--workers", type=int, help="HTTP concurrency cap")
-    parser.add_argument("--log-level", dest="log_level", help="debug|info|warning|error")
-    parser.add_argument("--verbose", action="store_true", help="shorthand for --log-level debug")
+    parser.add_argument(
+        "--device",
+        choices=get_args(Device),
+        help="compute device override",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="shorthand for log_level=debug",
+    )
     return parser
 
 
 def _cli_overrides(args: argparse.Namespace) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
-    for key in ("host", "port", "model", "device", "compute_type", "workers", "log_level"):
-        value = getattr(args, key)
-        if value is not None:
-            overrides[key] = value
+    if args.device is not None:
+        overrides["device"] = args.device
     if args.verbose:
         overrides["log_level"] = "debug"
     return overrides

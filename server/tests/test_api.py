@@ -97,6 +97,22 @@ async def test_request_auto_language_detects() -> None:
     assert fake.calls[0]["language"] is None
 
 
+async def test_language_code_is_case_insensitive() -> None:
+    fake = FakeTranscriber()
+    app, _ = build(transcriber=fake)
+    async with make_client(app) as client:
+        await client.post("/transcribe", files=audio_part(), data={"language": "RU"})
+    assert fake.calls[0]["language"] == "ru"
+
+
+async def test_400_on_unknown_language() -> None:
+    app, _ = build()
+    async with make_client(app) as client:
+        response = await client.post("/transcribe", files=audio_part(), data={"language": "xx"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "bad_request"
+
+
 async def test_413_when_upload_too_large() -> None:
     app, _ = build(config=ServerConfig(workers=1, max_upload_mb=0.001))
     async with make_client(app) as client:
