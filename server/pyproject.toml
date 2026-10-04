@@ -46,6 +46,6 @@ pythonpath = ["."]
 [tool.basedpyright]
 venvPath = "."
 venv = ".venv"
-extraPaths = ["."]
+extraPaths = [".", "tests"]
 typeCheckingMode = "standard"
 reportImplicitRelativeImport = "none"

@@ -1,0 +1,9 @@
+{
+  "include": ["server"],
+  "exclude": ["server/.venv", "**/__pycache__", "prototype"],
+  "venvPath": "server",
+  "venv": ".venv",
+  "extraPaths": ["server", "server/tests"],
+  "typeCheckingMode": "standard",
+  "reportImplicitRelativeImport": "none"
+}
