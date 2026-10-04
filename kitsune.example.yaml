@@ -30,3 +30,35 @@ server:
     temperature: 0.0
     vad_filter: false
     initial_prompt: ""
+
+client:
+  # The Client addresses the Server here; the top-level server: section above
+  # is the Server process's own config and is not read by the Client.
+  server_url: http://localhost:8000
+  hotkey: Ctrl+Shift+Space
+  cancel_hotkey: Esc
+  # toggle (press to start, press again to stop) or hold (push-to-talk).
+  trigger: toggle
+  max_recording_seconds: 300
+  # Recordings shorter than this are discarded as accidental taps.
+  min_recording_seconds: 0.3
+  # 0 selects max(30s, 2 x audio length).
+  timeout_seconds: 0
+  # Sent per request only when set to something other than "auto".
+  language: auto
+  initial_prompt: ""
+  audio:
+    # "" = system default input.
+    device: ""
+  paste: true
+  # auto | ctrl_v | ctrl_shift_v (Linux terminals need ctrl_shift_v).
+  paste_shortcut: auto
+  # auto | always | never (auto restores where the desktop allows).
+  clipboard_restore: auto
+  feedback:
+    earcons: false
+  # "" = default cache path (~/.cache/kitsune-whisper/spool).
+  spool_dir: ""
+  log_level: info
+  # "" = default log path (~/.cache/kitsune-whisper/client.log).
+  log_file: ""
