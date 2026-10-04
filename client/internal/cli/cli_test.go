@@ -190,3 +190,21 @@ func TestUnknownCommandExitsTwo(t *testing.T) {
 		t.Fatalf("exit = %d, want 2", code)
 	}
 }
+
+func TestRecordRejectsNonPositiveSeconds(t *testing.T) {
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "record", "--seconds", "0"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
+	}
+}
+
+func TestRecordRejectsPositionalArguments(t *testing.T) {
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "record", "extra"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
+	}
+}
