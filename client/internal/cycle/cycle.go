@@ -87,12 +87,20 @@ func (c *Core) Run(ctx context.Context, triggers <-chan Trigger) error {
 					c.finish(ctx)
 					recording = false
 					maxC = nil
-				} else if err := c.recorder.Start(); err != nil {
-					c.fail(err)
-				} else {
+				} else if c.start() {
 					recording = true
 					maxC = c.clock.After(c.limits.MaxRecording)
-					c.cue(CueStart)
+				}
+			case Start:
+				if !recording && c.start() {
+					recording = true
+					maxC = c.clock.After(c.limits.MaxRecording)
+				}
+			case Stop:
+				if recording {
+					c.finish(ctx)
+					recording = false
+					maxC = nil
 				}
 			case Cancel:
 				if recording {
@@ -110,6 +118,17 @@ func (c *Core) Run(ctx context.Context, triggers <-chan Trigger) error {
 			maxC = nil
 		}
 	}
+}
+
+// start begins capture, reporting any failure through fail. It reports whether
+// capture is now running.
+func (c *Core) start() bool {
+	if err := c.recorder.Start(); err != nil {
+		c.fail(err)
+		return false
+	}
+	c.cue(CueStart)
+	return true
 }
 
 // finish stops capture and runs the transcribe -> inject pipeline.

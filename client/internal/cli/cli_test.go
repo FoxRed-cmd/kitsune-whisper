@@ -182,6 +182,26 @@ func TestTranscribeFileRequiresArgument(t *testing.T) {
 	}
 }
 
+func TestRunRejectsInvalidHotkey(t *testing.T) {
+	configPath := writeConfigFile(t, map[string]any{"hotkey": "Ctrl+Banana"})
+	var stdout, stderr bytes.Buffer
+
+	// Both the explicit subcommand and the default (no command) start the run
+	// mode, so both must reject a malformed hotkey before touching audio.
+	for _, args := range [][]string{
+		{"--config", configPath, "run"},
+		{"--config", configPath},
+	} {
+		code := cli.Run(args, &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("args %v: exit = %d, want 1 (stderr %s)", args, code, stderr.String())
+		}
+		if !strings.Contains(stderr.String(), "hotkey") {
+			t.Fatalf("args %v: stderr = %q", args, stderr.String())
+		}
+	}
+}
+
 func TestUnknownCommandExitsTwo(t *testing.T) {
 	configPath := writeConfigFile(t, map[string]any{})
 	var stdout, stderr bytes.Buffer

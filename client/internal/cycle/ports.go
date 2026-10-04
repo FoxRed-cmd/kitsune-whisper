@@ -1,6 +1,6 @@
-// Package cycle is the Dictation-cycle core: a state machine driven by toggle
-// and cancel triggers, wired to four ports (microphone source, transcriber,
-// injector, feedback) plus a spool for failed utterances.
+// Package cycle is the Dictation-cycle core: a state machine driven by toggle,
+// start/stop, and cancel triggers, wired to four ports (microphone source,
+// transcriber, injector, feedback) plus a spool for failed utterances.
 //
 // Desktop adapters (malgo, hotkeys, SendInput, wtype/ydotool) are thin and
 // live outside this package; tests drive the core with fake ports.
@@ -61,6 +61,11 @@ const (
 	Toggle Trigger = iota
 	// Cancel discards the in-progress recording without sending it.
 	Cancel
+	// Start begins recording and is a no-op when already recording. Hold-to-talk
+	// pairs it with Stop so an auto-stopped cycle does not restart.
+	Start
+	// Stop ends recording and processes it, and is a no-op when idle.
+	Stop
 )
 
 // Clock supplies the max-recording timer. Injected so tests run without real

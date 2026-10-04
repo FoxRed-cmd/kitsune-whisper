@@ -68,6 +68,12 @@ func (r *fakeRecorder) Cancel() error {
 	return nil
 }
 
+func (r *fakeRecorder) startCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.starts
+}
+
 type fakeTranscriber struct {
 	mu       sync.Mutex
 	result   transcribe.Transcription
@@ -308,6 +314,58 @@ func TestRecordingsShorterThanMinimumAreDiscarded(t *testing.T) {
 	case cue := <-h.feedback.ch:
 		t.Fatalf("too-short recording should be silent, got cue %v", cue)
 	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestStartStopTriggersDriveHoldToTalk(t *testing.T) {
+	h := newHarness(t,
+		cycle.Utterance{Audio: []byte("wav"), Duration: 2 * time.Second},
+		transcribe.Transcription{Text: "held to talk"},
+		nil,
+	)
+	h.triggers <- cycle.Start
+	wait(t, h.recorder.started, "recording to start")
+	waitCue(t, h.feedback.ch, cycle.CueStart)
+
+	// A repeated Start while already recording must not open a second capture.
+	h.triggers <- cycle.Start
+	h.triggers <- cycle.Stop
+	wait(t, h.injector.signal, "injection")
+	waitCue(t, h.feedback.ch, cycle.CueStop)
+
+	if got := h.recorder.startCount(); got != 1 {
+		t.Fatalf("recorder started %d times, want 1", got)
+	}
+	if texts := h.injector.snapshot(); len(texts) != 1 || texts[0] != "held to talk" {
+		t.Fatalf("injected %v", texts)
+	}
+}
+
+func TestStopAfterAutoStopDoesNotRestart(t *testing.T) {
+	h := newHarness(t,
+		cycle.Utterance{Audio: []byte("wav"), Duration: 6 * time.Second},
+		transcribe.Transcription{Text: "long clip"},
+		nil,
+	)
+	h.triggers <- cycle.Start
+	wait(t, h.recorder.started, "recording to start")
+	waitCue(t, h.feedback.ch, cycle.CueStart)
+
+	// The max-recording bound ends the cycle on its own; the later keyup that
+	// hold-to-talk produces must be a no-op, not the start of a new capture.
+	h.clock.fire()
+	wait(t, h.recorder.stopped, "recording to auto-stop")
+	wait(t, h.injector.signal, "injection")
+	waitCue(t, h.feedback.ch, cycle.CueStop)
+
+	h.triggers <- cycle.Stop
+	select {
+	case <-h.recorder.started:
+		t.Fatal("Stop after auto-stop restarted recording")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if got := h.recorder.startCount(); got != 1 {
+		t.Fatalf("recorder started %d times, want 1", got)
 	}
 }
 
