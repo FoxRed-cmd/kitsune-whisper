@@ -157,7 +157,9 @@ func (c *Core) finish(ctx context.Context) {
 		return
 	}
 	if err := c.injector.Inject(transcription.Text); err != nil {
-		c.fail(err)
+		// The speech transcribed but never reached the cursor; keep the audio
+		// so the Transcription can be recovered.
+		c.fail(errors.Join(err, c.spool(utterance)))
 		return
 	}
 	c.cue(CueStop)

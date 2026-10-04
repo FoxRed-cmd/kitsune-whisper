@@ -461,6 +461,30 @@ func TestTranscriberFailureSpoolsAndDoesNotInject(t *testing.T) {
 	}
 }
 
+func TestInjectorFailureSpoolsAndSignalsError(t *testing.T) {
+	injectErr := errors.New("clipboard unavailable")
+	h := newHarness(t,
+		cycle.Utterance{Audio: []byte("wav"), Duration: 2 * time.Second},
+		transcribe.Transcription{Text: "hello"},
+		nil,
+	)
+	h.injector.err = injectErr
+	h.triggers <- cycle.Toggle
+	wait(t, h.recorder.started, "recording to start")
+	waitCue(t, h.feedback.ch, cycle.CueStart)
+	h.triggers <- cycle.Toggle
+	wait(t, h.spool.signal, "spool")
+	waitCue(t, h.feedback.ch, cycle.CueError)
+
+	spooled := h.spool.snapshot()
+	if len(spooled) != 1 || string(spooled[0].Audio) != "wav" {
+		t.Fatalf("spooled = %+v, want the utterance", spooled)
+	}
+	if len(h.errors) != 1 || !errors.Is(h.errors[0], injectErr) {
+		t.Fatalf("OnError hook got %v, want the injection error", h.errors)
+	}
+}
+
 func TestSpoolFailureSignalsSingleError(t *testing.T) {
 	transcribeErr := errors.New("server unreachable")
 	spoolErr := errors.New("disk full")

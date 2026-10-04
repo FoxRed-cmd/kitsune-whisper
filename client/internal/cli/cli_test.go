@@ -16,11 +16,12 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli"
 )
 
-func wavBytes(frames int) []byte {
+func wavBytes() []byte {
 	const (
 		sampleRate = 16000
 		channels   = 1
 		bits       = 16
+		frames     = sampleRate
 	)
 	var b bytes.Buffer
 	dataSize := frames * channels * (bits / 8)
@@ -46,6 +47,14 @@ func wavBytes(frames int) []byte {
 func writeConfigFile(t *testing.T, client map[string]any) string {
 	t.Helper()
 	dir := t.TempDir()
+	// Keep the log file and Spool inside the test's temp dir so tests never
+	// touch the real per-user cache.
+	if _, ok := client["log_file"]; !ok {
+		client["log_file"] = filepath.Join(dir, "client.log")
+	}
+	if _, ok := client["spool_dir"]; !ok {
+		client["spool_dir"] = filepath.Join(dir, "spool")
+	}
 	path := filepath.Join(dir, "kitsune.yaml")
 	raw, err := yaml.Marshal(map[string]any{"client": client})
 	if err != nil {
@@ -116,7 +125,7 @@ func TestTranscribeFilePostsAndPrintsText(t *testing.T) {
 
 	dir := t.TempDir()
 	wavPath := filepath.Join(dir, "clip.wav")
-	sample := wavBytes(16000)
+	sample := wavBytes()
 	if err := os.WriteFile(wavPath, sample, 0o600); err != nil {
 		t.Fatalf("write wav: %v", err)
 	}
@@ -135,6 +144,60 @@ func TestTranscribeFilePostsAndPrintsText(t *testing.T) {
 	}
 }
 
+func TestTranscribeFileReportsUnreachableServer(t *testing.T) {
+	// Bind then release a port so the address is known to refuse connections.
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := server.URL
+	server.Close()
+
+	dir := t.TempDir()
+	wavPath := filepath.Join(dir, "clip.wav")
+	if err := os.WriteFile(wavPath, wavBytes(), 0o600); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	path := writeConfigFile(t, map[string]any{"server_url": url})
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", path, "transcribe-file", wavPath}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "transcribe failed") || !strings.Contains(stderr.String(), url) {
+		t.Fatalf("stderr = %q, want a clear unreachable-server error", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout = %q, want nothing injected", stdout.String())
+	}
+}
+
+func TestTranscribeFileReportsServerErrorEnvelope(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"code":"unavailable","message":"server is busy"}}`)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	wavPath := filepath.Join(dir, "clip.wav")
+	if err := os.WriteFile(wavPath, wavBytes(), 0o600); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	path := writeConfigFile(t, map[string]any{"server_url": server.URL})
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", path, "transcribe-file", wavPath}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "503") || !strings.Contains(stderr.String(), "server is busy") {
+		t.Fatalf("stderr = %q, want the server error envelope", stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "" {
+		t.Fatalf("stdout = %q, want nothing injected", stdout.String())
+	}
+}
+
 func TestGlobalFlagsAfterSubcommand(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -144,7 +207,7 @@ func TestGlobalFlagsAfterSubcommand(t *testing.T) {
 
 	dir := t.TempDir()
 	wavPath := filepath.Join(dir, "clip.wav")
-	if err := os.WriteFile(wavPath, wavBytes(16000), 0o600); err != nil {
+	if err := os.WriteFile(wavPath, wavBytes(), 0o600); err != nil {
 		t.Fatalf("write wav: %v", err)
 	}
 	path := writeConfigFile(t, map[string]any{"server_url": server.URL})

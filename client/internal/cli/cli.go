@@ -21,9 +21,12 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
 
@@ -34,7 +37,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	configPath := fs.String("config", "", "path to kitsune.yaml")
 	checkConfig := fs.Bool("check-config", false, "print effective config and exit")
 	device := fs.String("device", "", "audio input device override")
-	verbose := fs.Bool("verbose", false, "shorthand for log_level=debug")
+	verbose := fs.Bool("verbose", false, "shorthand for log_level=debug, also echoed to stderr")
 	seconds := fs.Float64("seconds", 5, "record: capture length in seconds")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, usage())
@@ -78,15 +81,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if len(rest) == 0 {
-		return runClient(cfg, stderr)
+		return runClient(cfg, *verbose, stderr)
 	}
 	switch rest[0] {
 	case "run":
-		return runClient(cfg, stderr)
+		return runClient(cfg, *verbose, stderr)
 	case "transcribe-file":
-		return runTranscribeFile(rest[1:], cfg, stdout, stderr)
+		return runTranscribeFile(rest[1:], cfg, *verbose, stdout, stderr)
 	case "record":
-		return runRecord(rest[1:], *seconds, cfg, stdout, stderr)
+		return runRecord(rest[1:], *seconds, cfg, *verbose, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		fmt.Fprint(stderr, usage())
@@ -94,19 +97,22 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runTranscribeFile(args []string, cfg config.ClientConfig, stdout, stderr io.Writer) int {
+func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		fmt.Fprintln(stderr, "usage: kitsune-client transcribe-file <path.wav>")
 		return 2
 	}
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
 	data, err := os.ReadFile(args[0])
 	if err != nil {
-		fmt.Fprintf(stderr, "cannot read %s: %v\n", args[0], err)
+		logger.Error("cannot read %s: %v", args[0], err)
 		return 1
 	}
 	utteranceDuration, err := audio.WAVDuration(data)
 	if err != nil {
-		fmt.Fprintf(stderr, "%s: %v\n", args[0], err)
+		logger.Error("%s: %v", args[0], err)
 		return 1
 	}
 
@@ -120,9 +126,10 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, stdout, stderr io
 	client := transcribe.NewHTTP(cfg.ServerURL, cfg.Language, cfg.InitialPrompt)
 	transcription, err := client.Transcribe(ctx, data)
 	if err != nil {
-		fmt.Fprintf(stderr, "transcribe failed: %v\n", err)
+		logger.Error("transcribe failed: %v", err)
 		return 1
 	}
+	logger.Debug("transcription: language=%s duration=%.2fs", transcription.Language, transcription.Duration)
 	fmt.Fprintln(stdout, transcription.Text)
 	return 0
 }
@@ -130,14 +137,17 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, stdout, stderr io
 // runRecord captures one Utterance from the configured microphone through the
 // Dictation cycle and prints the Transcription. It is the manual counterpart to
 // transcribe-file: a way to exercise real capture without the hotkeys.
-func runRecord(args []string, seconds float64, cfg config.ClientConfig, stdout, stderr io.Writer) int {
+func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose bool, stdout, stderr io.Writer) int {
 	if len(args) != 0 || seconds <= 0 {
 		fmt.Fprintln(stderr, "usage: kitsune-client record [--seconds N]")
 		return 2
 	}
-	recorder, err := newRecorder(cfg, stderr)
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
+	recorder, err := newRecorder(cfg, logger)
 	if err != nil {
-		fmt.Fprintf(stderr, "capture init failed: %v\n", err)
+		logger.Error("capture init failed: %v", err)
 		return 1
 	}
 	defer func() { _ = recorder.Close() }()
@@ -149,9 +159,13 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, stdout, 
 		Recorder:    recorder,
 		Transcriber: newTranscriber(cfg),
 		Injector:    out,
-		Feedback:    feedback,
-		OnError:     func(err error) { runErr = err },
-		Limits:      cycleLimits(cfg),
+		Feedback:    newFeedback(cfg, logger, feedback),
+		Spool:       newSpool(cfg, logger),
+		OnError: func(err error) {
+			runErr = err
+			logger.Error("dictation failed: %v", err)
+		},
+		Limits: cycleLimits(cfg),
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -187,7 +201,6 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, stdout, 
 	close(triggers)
 	<-runDone
 	if runErr != nil {
-		fmt.Fprintf(stderr, "dictation failed: %v\n", runErr)
 		return 1
 	}
 	return 0
@@ -196,10 +209,13 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, stdout, 
 // runClient is the interactive Client: it grabs the global hotkeys and drives
 // the Dictation cycle, injecting each Transcription into the focused field via
 // the clipboard plus a synthetic paste.
-func runClient(cfg config.ClientConfig, stderr io.Writer) int {
+func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
 	mode, err := hotkey.ParseMode(cfg.Trigger)
 	if err != nil {
-		fmt.Fprintf(stderr, "hotkey: %v\n", err)
+		logger.Error("hotkey: %v", err)
 		return 1
 	}
 	source, err := hotkey.New(hotkey.Options{
@@ -208,17 +224,17 @@ func runClient(cfg config.ClientConfig, stderr io.Writer) int {
 		Mode:         mode,
 		Retry:        hotkey.RetryPolicy{Initial: 250 * time.Millisecond, Max: 5 * time.Second},
 		OnRetry: func(attempt int, err error) {
-			fmt.Fprintf(stderr, "hotkey: registration attempt %d failed: %v\n", attempt, err)
+			logger.Warning("hotkey: registration attempt %d failed: %v", attempt, err)
 		},
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "hotkey: %v\n", err)
+		logger.Error("hotkey: %v", err)
 		return 1
 	}
 
-	recorder, err := newRecorder(cfg, stderr)
+	recorder, err := newRecorder(cfg, logger)
 	if err != nil {
-		fmt.Fprintf(stderr, "capture init failed: %v\n", err)
+		logger.Error("capture init failed: %v", err)
 		return 1
 	}
 	defer func() { _ = recorder.Close() }()
@@ -227,10 +243,10 @@ func runClient(cfg config.ClientConfig, stderr io.Writer) int {
 		Paste:            cfg.Paste,
 		PasteShortcut:    cfg.PasteShortcut,
 		ClipboardRestore: cfg.ClipboardRestore,
-		OnLog:            func(message string) { fmt.Fprintf(stderr, "inject: %s\n", message) },
+		OnLog:            func(message string) { logger.Debug("inject: %s", message) },
 	})
 	if err != nil {
-		fmt.Fprintf(stderr, "injection init failed: %v\n", err)
+		logger.Error("injection init failed: %v", err)
 		return 1
 	}
 
@@ -238,7 +254,9 @@ func runClient(cfg config.ClientConfig, stderr io.Writer) int {
 		Recorder:    recorder,
 		Transcriber: newTranscriber(cfg),
 		Injector:    injector,
-		OnError:     func(err error) { fmt.Fprintf(stderr, "dictation failed: %v\n", err) },
+		Feedback:    newFeedback(cfg, logger),
+		Spool:       newSpool(cfg, logger),
+		OnError:     func(err error) { logger.Error("dictation failed: %v", err) },
 		Limits:      cycleLimits(cfg),
 	})
 
@@ -257,7 +275,7 @@ func runClient(cfg config.ClientConfig, stderr io.Writer) int {
 	close(triggers)
 	<-runDone
 	if err != nil {
-		fmt.Fprintf(stderr, "hotkey: %v\n", err)
+		logger.Error("hotkey: %v", err)
 		return 1
 	}
 	return 0
@@ -286,11 +304,75 @@ func (f *cycleFeedback) Cue(cue cycle.Cue) {
 	}
 }
 
-// newRecorder opens the configured microphone, routing device logs to stderr.
-func newRecorder(cfg config.ClientConfig, stderr io.Writer) (*mic.Recorder, error) {
+// newLogger builds the Client logger from the configured log_level/log_file,
+// echoing to stderr on --verbose. The level is validated during config load, so
+// an unknown value is defensive only.
+func newLogger(cfg config.ClientConfig, verbose bool, stderr io.Writer) *logging.Logger {
+	level, err := logging.ParseLevel(cfg.LogLevel)
+	if err != nil {
+		level = logging.Info
+	}
+	return logging.New(logging.Options{
+		Level:   level,
+		File:    cfg.LogFile,
+		Stderr:  stderr,
+		Verbose: verbose,
+	})
+}
+
+// newSpool builds the Spool that catches failed utterances. An unset spool_dir
+// resolves to the default cache path inside the Spool.
+func newSpool(cfg config.ClientConfig, logger *logging.Logger) *spool.Spool {
+	return spool.New(spool.Options{
+		Dir:   cfg.SpoolDir,
+		OnLog: func(path string) { logger.Info("spool: saved failed utterance to %s", path) },
+	})
+}
+
+// newFeedback composes the Client's feedback: cue logging, optional earcons,
+// and any extra feedback (the record command's completion signal).
+func newFeedback(cfg config.ClientConfig, logger *logging.Logger, extra ...cycle.Feedback) cycle.Feedback {
+	feedbacks := []cycle.Feedback{logFeedback{log: logger}}
+	if cfg.Feedback.Earcons {
+		feedbacks = append(feedbacks, earcon.New(earcon.Options{
+			Enabled: true,
+			OnLog:   func(message string) { logger.Warning("%s", message) },
+		}))
+	}
+	return feedbackGroup(append(feedbacks, extra...))
+}
+
+// feedbackGroup fans a cue out to several Feedback ports.
+type feedbackGroup []cycle.Feedback
+
+func (g feedbackGroup) Cue(cue cycle.Cue) {
+	for _, feedback := range g {
+		feedback.Cue(cue)
+	}
+}
+
+// logFeedback records cycle state at debug level.
+type logFeedback struct {
+	log *logging.Logger
+}
+
+func (f logFeedback) Cue(cue cycle.Cue) {
+	switch cue {
+	case cycle.CueStart:
+		f.log.Debug("dictation cycle: started")
+	case cycle.CueStop:
+		f.log.Debug("dictation cycle: finished")
+	case cycle.CueError:
+		f.log.Debug("dictation cycle: failed")
+	}
+}
+
+// newRecorder opens the configured microphone, routing device logs to the
+// logger.
+func newRecorder(cfg config.ClientConfig, logger *logging.Logger) (*mic.Recorder, error) {
 	return mic.New(mic.Options{
 		Device: cfg.Audio.Device,
-		OnLog:  func(message string) { fmt.Fprintf(stderr, "audio: %s\n", message) },
+		OnLog:  func(message string) { logger.Debug("audio: %s", message) },
 	})
 }
 
@@ -325,6 +407,6 @@ Flags:
   --check-config    print the effective config and exit
   --device NAME     audio input device override
   --seconds N       record: capture length in seconds (default 5)
-  --verbose         shorthand for log_level=debug
+  --verbose         shorthand for log_level=debug, also echoed to stderr
 `
 }
