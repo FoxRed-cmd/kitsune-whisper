@@ -1,0 +1,5 @@
+### VS Code ###
+.vscode/
+
+### Agent skills (installed from skills-lock.json) ###
+.agents/skills/
