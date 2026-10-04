@@ -117,7 +117,8 @@ Verified 2026-10-05 (Client log):
 - [x] Toggle starts and stops the cycle; speech transcribes and injects.
 - [ ] `Esc` cancels an in-progress utterance with no injection.
 - [ ] Hold-to-talk (`trigger: hold`) works when configured.
-- [ ] No injection on an empty/silent utterance; the clipboard is untouched.
+- [x] No injection on an empty/silent utterance (verified live); injection never
+      runs, so the clipboard is untouched.
 
 ### Linux X11
 
