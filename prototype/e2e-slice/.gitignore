@@ -1,0 +1,6 @@
+*.exe
+*.exe~
+last-clip.wav
+clips/
+__pycache__/
+*.pyc
