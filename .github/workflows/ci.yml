@@ -45,6 +45,11 @@ jobs:
           go-version-file: client/go.mod
           cache-dependency-path: client/go.sum
 
+      - name: Ensure build deps (X11 headers for golang.design/x/hotkey)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev
+
       - name: gofmt
         run: |
           out="$(gofmt -l .)"

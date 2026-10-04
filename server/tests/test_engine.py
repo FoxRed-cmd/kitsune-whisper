@@ -233,11 +233,13 @@ def test_ensure_cuda_libraries_prepends_path_on_windows(
     monkeypatch.setattr(engine, "_cuda_library_dirs", lambda: [tmp_path])
     monkeypatch.setattr(engine.sys, "platform", "win32")
     monkeypatch.setattr(engine.os, "add_dll_directory", lambda path: None, raising=False)
+    # Emulate the Windows path separator so the assertion is host-independent.
+    monkeypatch.setattr(engine.os, "pathsep", ";")
     monkeypatch.setenv("PATH", "C:/original")
 
     engine.ensure_cuda_libraries("cuda")
 
-    parts = os.environ["PATH"].split(os.pathsep)
+    parts = os.environ["PATH"].split(";")
     assert parts[0] == str(tmp_path)
     assert "C:/original" in parts
 

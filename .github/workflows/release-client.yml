@@ -48,6 +48,10 @@ jobs:
             choco install mingw --no-progress -y
           }
 
+      - name: Ensure X11 headers (Linux)
+        if: matrix.goos == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+
       - name: Build
         shell: bash
         run: |
