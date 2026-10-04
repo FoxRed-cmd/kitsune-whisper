@@ -102,6 +102,38 @@ kitsune-client uninstall-autostart
   registration is denied, it falls back to the
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `kitsune-whisper`.
 
+### Managing the running client
+
+`kitsune-client run` is a long-lived foreground process: started from a terminal
+it holds the terminal until you stop it, so prefer the installed autostart. On
+Linux that is a systemd **user** unit:
+
+```sh
+systemctl --user status kitsune-client.service          # running? last log lines
+systemctl --user restart kitsune-client.service         # after editing kitsune.yaml
+systemctl --user stop kitsune-client.service            # stop now, keep autostart
+systemctl --user disable --now kitsune-client.service   # stop and don't start at login
+systemctl --user enable --now kitsune-client.service    # re-enable and start
+journalctl --user -u kitsune-client.service -e          # the service log
+```
+
+On Windows it is the Task Scheduler task `kitsune-client`:
+
+```powershell
+Get-ScheduledTask -TaskName kitsune-client        # state
+Start-ScheduledTask   -TaskName kitsune-client
+Stop-ScheduledTask    -TaskName kitsune-client
+Disable-ScheduledTask -TaskName kitsune-client    # don't start at logon
+Enable-ScheduledTask  -TaskName kitsune-client
+```
+
+`kitsune-client uninstall-autostart` removes the registration on either platform.
+Configuration is read at startup, so restart the service after editing
+`kitsune.yaml`. To trigger the running client by hand (the external trigger), run
+`kitsune-client toggle`; the client's own log — selected backend, Wayland
+fallbacks, injections — is at `~/.cache/kitsune-whisper/client.log`
+(`%LOCALAPPDATA%\kitsune-whisper\client.log` on Windows).
+
 ### Upgrade
 
 Re-run the installer. It replaces the binary and refreshes the unit/task and the
