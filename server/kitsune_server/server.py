@@ -1,8 +1,4 @@
-"""Runtime wiring: build the app around the fake transcriber and serve it.
-
-Ticket #13 runs the Server with a fake transcriber so the API is exercisable
-without a model; ticket #14 swaps in the real faster-whisper adapter here.
-"""
+"""Runtime wiring: build the real faster-whisper transcriber and serve it."""
 
 from __future__ import annotations
 
@@ -12,19 +8,19 @@ import uvicorn
 
 from .app import create_app
 from .config import ServerConfig
-from .transcriber import EngineInfo, FakeTranscriber, Transcriber
+from .engine import WhisperTranscriber
+from .transcriber import Transcriber
 
 logger = logging.getLogger("kitsune.server")
 
+CPU_ESCAPE_HATCH = (
+    "running on CPU (the slow path): use a CUDA GPU for near-instant transcription, "
+    "or set server.model to base/tiny for a smaller, faster CPU model"
+)
+
 
 def build_transcriber(config: ServerConfig) -> Transcriber:
-    return FakeTranscriber(
-        info=EngineInfo(
-            model=config.model,
-            device=config.device,
-            compute_type=config.compute_type,
-        )
-    )
+    return WhisperTranscriber.load(config)
 
 
 def run_server(config: ServerConfig) -> None:
@@ -32,12 +28,19 @@ def run_server(config: ServerConfig) -> None:
         level=config.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    logger.info(
-        "starting server model=%s device=%s compute_type=%s workers=%s",
-        config.model,
-        config.device,
-        config.compute_type,
-        config.workers or "auto",
+    transcriber = build_transcriber(config)
+    info = transcriber.info
+    resolved_note = (
+        " (resolved from auto)" if "auto" in (config.device, config.compute_type) else ""
     )
-    app = create_app(config, build_transcriber(config))
+    logger.info(
+        "model=%s device=%s compute_type=%s%s",
+        info.model,
+        info.device,
+        info.compute_type,
+        resolved_note,
+    )
+    if info.device == "cpu":
+        logger.warning(CPU_ESCAPE_HATCH)
+    app = create_app(config, transcriber)
     uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level)

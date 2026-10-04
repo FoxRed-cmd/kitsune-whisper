@@ -56,9 +56,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(dump_config(config), end="")
         return 0
 
+    from .engine import EngineLoadError
     from .server import run_server
 
-    run_server(config)
+    try:
+        run_server(config)
+    except EngineLoadError as exc:
+        print(f"engine error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

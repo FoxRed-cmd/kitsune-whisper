@@ -20,7 +20,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .audio import AudioDecodeError, decode_audio
 from .config import ServerConfig, format_errors
 from .languages import normalize_language
-from .transcriber import Transcriber
+from .transcriber import Transcriber, resolve_workers
 
 logger = logging.getLogger("kitsune.server")
 
@@ -55,13 +55,6 @@ def _error_response(
     )
 
 
-def _resolve_workers(config: ServerConfig, transcriber: Transcriber) -> int:
-    """One knob for HTTP concurrency and CT2 workers (0 = auto)."""
-    if config.workers > 0:
-        return config.workers
-    return 1 if transcriber.info.device == "cuda" else 2
-
-
 def _effective_language(request_language: str | None, config: ServerConfig) -> str | None:
     value = request_language
     if value is None or value.strip().lower() in ("", "auto"):
@@ -86,7 +79,9 @@ def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
     app.state.config = config
     app.state.transcriber = transcriber
     app.state.ready = True
-    app.state.semaphore = threading.Semaphore(_resolve_workers(config, transcriber))
+    app.state.semaphore = threading.Semaphore(
+        resolve_workers(config.workers, transcriber.info.device)
+    )
 
     @app.exception_handler(ApiError)
     async def _handle_api_error(_request: Any, exc: ApiError) -> JSONResponse:

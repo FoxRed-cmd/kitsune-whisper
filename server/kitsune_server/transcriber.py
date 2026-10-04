@@ -40,6 +40,13 @@ class Transcription:
     duration: float
 
 
+def resolve_workers(configured: int, device: str) -> int:
+    """One knob for HTTP concurrency and engine workers (0 = auto)."""
+    if configured > 0:
+        return configured
+    return 1 if device == "cuda" else 2
+
+
 class Transcriber(Protocol):
     """Port: transcribe one normalized ``AudioClip`` to a ``Transcription``."""
 
