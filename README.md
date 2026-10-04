@@ -239,3 +239,7 @@ hotkey/capture/injection checklist.
 Tagging `v*` runs `.github/workflows/release-client.yml`: it builds the Client on
 native Linux and Windows runners and attaches checksummed archives to the GitHub
 Release. `publish-server-image.yml` publishes the Server images to GHCR.
+
+## License
+
+Released under the [MIT License](LICENSE).
