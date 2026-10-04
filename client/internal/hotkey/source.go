@@ -44,6 +44,15 @@ func New(opts Options) (Source, error) {
 	if opts.Backend == "" {
 		opts.Backend = "auto"
 	}
+	// Validate the configured specs up front so a typo fails fast at startup on
+	// every platform -- including the External-trigger backend, which grabs no
+	// keys and would otherwise leave the hotkey unchecked.
+	if _, _, err := ParseSpec(opts.Hotkey); err != nil {
+		return nil, err
+	}
+	if _, _, err := ParseSpec(opts.CancelHotkey); err != nil {
+		return nil, err
+	}
 	return newPlatformSource(opts)
 }
 
