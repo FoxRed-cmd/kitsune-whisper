@@ -11,6 +11,97 @@ audio never leaves your network.
   and exposes `POST /transcribe` and `GET /health`. It ships as a Docker image.
 - Both read one `kitsune.yaml` (each process reads only its own section).
 
+## Architecture
+
+Two cooperating processes talk HTTP over your LAN. Only the **Client** touches
+the desktop (hotkeys, microphone, clipboard); only the **Server** touches the
+model. Audio never leaves the network.
+
+- **Client** (Go, user session) — binds the global hotkey, captures the
+  microphone, resamples to 16 kHz mono, POSTs the utterance, then injects the
+  returned text at the cursor. On failure it saves the audio to the Spool instead
+  of losing it.
+- **Server** (Python + faster-whisper) — behind `POST /transcribe` it decodes the
+  request, runs the VAD silence gate, transcribes on the auto-resolved device,
+  and returns JSON. `GET /health` reports the resolved device, compute type, and
+  model.
+- **Transport** — plain HTTP/1.1, one utterance per request (batch, no streaming
+  in v1). `kitsune.yaml` is shared; each process reads only its own section.
+
+### Components
+
+```mermaid
+flowchart LR
+    subgraph client["Client — Go binary in the user session"]
+        hotkey["Global hotkey<br/>Ctrl+Shift+Space · Esc"]
+        ctl["Control socket<br/>kitsune-client toggle"]
+        cycle["Dictation cycle<br/>capture → resample 16 kHz mono → request → inject"]
+        inject["Injection<br/>clipboard + synthetic paste"]
+        spool["Spool<br/>failed utterances"]
+        earcon["Earcons (optional)"]
+    end
+
+    mic["Microphone"]
+    app["Focused application"]
+
+    subgraph server["Server — Docker container (Python)"]
+        api["FastAPI<br/>POST /transcribe · GET /health"]
+        vad["VAD silence gate"]
+        engine["faster-whisper (CTranslate2)<br/>device: auto → CUDA or CPU"]
+        models[("Model cache<br/>/models volume")]
+    end
+
+    mic --> cycle
+    hotkey --> cycle
+    ctl --> cycle
+    cycle -->|"HTTP multipart audio (LAN only)"| api
+    api --> vad --> engine
+    engine <--> models
+    api -->|"JSON: text, language, duration"| inject
+    inject --> app
+    cycle -.->|on failure| spool
+    cycle -.-> earcon
+```
+
+### A Dictation cycle
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant T as Hotkey / trigger
+    participant C as Client
+    participant S as Server
+    participant App as Focused app
+
+    User->>T: press Ctrl+Shift+Space
+    T->>C: start
+    C->>C: capture + resample to 16 kHz mono
+    User->>T: press again (toggle), release (hold), or Esc
+    T->>C: stop / cancel
+
+    alt cancelled or too short
+        C-->>User: inject nothing
+    else utterance ready
+        C->>S: POST /transcribe (audio, language?, initial_prompt?)
+        S->>S: decode → VAD → faster-whisper
+        alt server error or timeout
+            S-->>C: 4xx / 5xx / timeout
+            C->>C: save utterance to Spool
+        else success
+            S-->>C: 200 {text, language, duration}
+            alt text empty
+                C-->>User: inject nothing
+            else text non-empty
+                C->>C: write clipboard
+                C->>App: synthetic paste (Ctrl+V / Ctrl+Shift+V)
+                opt clipboard_restore
+                    C->>C: restore previous clipboard (X11 / Wayland)
+                end
+            end
+        end
+    end
+```
+
 ## Quickstart
 
 ### 1. Server (Docker)
