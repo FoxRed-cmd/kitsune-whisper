@@ -155,6 +155,21 @@ func TestWaylandEnumsRejected(t *testing.T) {
 	}
 }
 
+func TestPasteShortcutEnums(t *testing.T) {
+	accepted := []string{"auto", "ctrl_v", "ctrl_shift_v", "shift_insert"}
+	for _, value := range accepted {
+		t.Run(value, func(t *testing.T) {
+			path := writeConfig(t, map[string]any{"paste_shortcut": value})
+			if _, err := load(t, config.LoadOptions{CLIConfig: path}); err != nil {
+				t.Fatalf("load: %v", err)
+			}
+		})
+	}
+	path := writeConfig(t, map[string]any{"paste_shortcut": "bogus"})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.paste_shortcut")
+}
+
 func TestNegativeTimeoutRejected(t *testing.T) {
 	path := writeConfig(t, map[string]any{"timeout_seconds": -1})
 	_, err := load(t, config.LoadOptions{CLIConfig: path})

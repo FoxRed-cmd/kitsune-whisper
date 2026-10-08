@@ -169,6 +169,7 @@ func TestExplicitShortcutOverridesDetection(t *testing.T) {
 	}{
 		{name: "ctrl_v in terminal", shortcut: "ctrl_v", app: "xterm", want: inject.CtrlV},
 		{name: "ctrl_shift_v in gui", shortcut: "ctrl_shift_v", app: "firefox", want: inject.CtrlShiftV},
+		{name: "shift_insert in gui", shortcut: "shift_insert", app: "firefox", want: inject.ShiftInsert},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

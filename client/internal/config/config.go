@@ -443,7 +443,7 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	if cfg.PasteShortcut, err = stringField(m, "paste_shortcut", "client.paste_shortcut"); err != nil {
 		return cfg, err
 	}
-	if err = oneOf(cfg.PasteShortcut, "client.paste_shortcut", "auto", "ctrl_v", "ctrl_shift_v"); err != nil {
+	if err = oneOf(cfg.PasteShortcut, "client.paste_shortcut", "auto", "ctrl_v", "ctrl_shift_v", "shift_insert"); err != nil {
 		return cfg, err
 	}
 	if cfg.ClipboardRestore, err = stringField(m, "clipboard_restore", "client.clipboard_restore"); err != nil {

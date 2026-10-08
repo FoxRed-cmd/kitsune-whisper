@@ -96,7 +96,7 @@ are server-owned.
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
 | `audio.device` | string | `""` | Input device name or index; `""` = system default. `--device` overrides. |
 | `paste` | bool | `true` | Synthesize a paste after writing the clipboard; `false` is clipboard-only. |
-| `paste_shortcut` | `auto`\|`ctrl_v`\|`ctrl_shift_v` | `auto` | `auto` picks `ctrl_shift_v` in terminals. |
+| `paste_shortcut` | `auto`\|`ctrl_v`\|`ctrl_shift_v`\|`shift_insert` | `auto` | `auto` picks `ctrl_shift_v` in terminals and `ctrl_v` elsewhere; `shift_insert` is the classic console paste chord. |
 | `clipboard_restore` | `auto`\|`always`\|`never` | `auto` | `auto` restores the previous clipboard where the OS reports when a synthetic paste is consumed (X11 and Wayland); Windows keeps the transcription. |
 | `wayland_tool` | `auto`\|`wtype`\|`ydotool`\|`none` | `auto` | Wayland injection chain. Ignored on X11/Windows. See [Wayland](wayland.md). |
 | `feedback.earcons` | bool | `false` | Optional start/stop/error tones. |

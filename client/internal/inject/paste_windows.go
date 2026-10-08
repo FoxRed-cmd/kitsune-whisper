@@ -21,6 +21,7 @@ const (
 	vkControl      = 0x11
 	vkShift        = 0x10
 	vkV            = 0x56
+	vkInsert       = 0x2D
 )
 
 type keybdInput struct {
@@ -46,7 +47,7 @@ var (
 )
 
 func (windowsPaster) Paste(shortcut Shortcut) error {
-	virtualKeys := map[key]uint16{keyCtrl: vkControl, keyShift: vkShift, keyV: vkV}
+	virtualKeys := map[key]uint16{keyCtrl: vkControl, keyShift: vkShift, keyV: vkV, keyInsert: vkInsert}
 	events := chordEvents(shortcut)
 	inputs := make([]input, 0, len(events))
 	for _, event := range events {
