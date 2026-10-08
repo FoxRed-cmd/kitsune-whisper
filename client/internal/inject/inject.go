@@ -22,6 +22,8 @@ const (
 	CtrlV Shortcut = iota
 	// CtrlShiftV is the paste chord for terminals.
 	CtrlShiftV
+	// ShiftInsert is the classic terminal/console paste chord.
+	ShiftInsert
 )
 
 // Paster synthesizes a paste keystroke.
@@ -35,6 +37,7 @@ const (
 	pasteAuto pasteMode = iota
 	pasteCtrlV
 	pasteCtrlShiftV
+	pasteShiftInsert
 )
 
 func parsePasteShortcut(value string) (pasteMode, error) {
@@ -45,6 +48,8 @@ func parsePasteShortcut(value string) (pasteMode, error) {
 		return pasteCtrlV, nil
 	case "ctrl_shift_v":
 		return pasteCtrlShiftV, nil
+	case "shift_insert":
+		return pasteShiftInsert, nil
 	default:
 		return 0, fmt.Errorf("paste_shortcut: unknown value %q", value)
 	}
@@ -97,8 +102,8 @@ type Options struct {
 	// Paste synthesizes a paste after writing the clipboard; false is
 	// clipboard-only.
 	Paste bool
-	// PasteShortcut is "auto", "ctrl_v", or "ctrl_shift_v"; "auto" selects
-	// ctrl_shift_v in terminals and ctrl_v elsewhere.
+	// PasteShortcut is "auto", "ctrl_v", "ctrl_shift_v", or "shift_insert";
+	// "auto" selects ctrl_shift_v in terminals and ctrl_v elsewhere.
 	PasteShortcut string
 	// ClipboardRestore is "auto", "always", or "never".
 	ClipboardRestore string
@@ -263,6 +268,8 @@ func (i *Injector) shortcut() Shortcut {
 		return CtrlV
 	case pasteCtrlShiftV:
 		return CtrlShiftV
+	case pasteShiftInsert:
+		return ShiftInsert
 	default:
 		app := i.focus.ForegroundApp()
 		if isTerminal(app) {

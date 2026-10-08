@@ -105,6 +105,10 @@ func TestWaylandArgs(t *testing.T) {
 			wantArgs: []string{"-M", "ctrl", "-M", "shift", "-k", "v", "-m", "shift", "-m", "ctrl"},
 		},
 		{
+			name: "wtype shift_insert", tool: toolWtype, shortcut: ShiftInsert,
+			wantName: "wtype", wantArgs: []string{"-M", "shift", "-k", "Insert", "-m", "shift"},
+		},
+		{
 			name: "ydotool ctrl_v", tool: toolYdotool, shortcut: CtrlV,
 			wantName: "ydotool", wantArgs: []string{"key", "29:1", "47:1", "47:0", "29:0"},
 		},
@@ -112,6 +116,10 @@ func TestWaylandArgs(t *testing.T) {
 			name: "ydotool ctrl_shift_v", tool: toolYdotool, shortcut: CtrlShiftV,
 			wantName: "ydotool",
 			wantArgs: []string{"key", "29:1", "42:1", "47:1", "47:0", "42:0", "29:0"},
+		},
+		{
+			name: "ydotool shift_insert", tool: toolYdotool, shortcut: ShiftInsert,
+			wantName: "ydotool", wantArgs: []string{"key", "42:1", "110:1", "110:0", "42:0"},
 		},
 	}
 	for _, tc := range cases {

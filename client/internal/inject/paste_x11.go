@@ -15,6 +15,7 @@ const (
 	keysymControlL = 0xffe3
 	keysymShiftL   = 0xffe1
 	keysymV        = 0x0076
+	keysymInsert   = 0xff63
 )
 
 // x11Paster synthesizes the paste keystroke through the XTEST extension. Under
@@ -35,9 +36,10 @@ func (x11Paster) Paste(shortcut Shortcut) error {
 
 	keycodes := map[key]xproto.Keycode{}
 	for component, keysym := range map[key]xproto.Keysym{
-		keyCtrl:  keysymControlL,
-		keyShift: keysymShiftL,
-		keyV:     keysymV,
+		keyCtrl:   keysymControlL,
+		keyShift:  keysymShiftL,
+		keyV:      keysymV,
+		keyInsert: keysymInsert,
 	} {
 		code, err := keysymToKeycode(conn, keysym)
 		if err != nil {

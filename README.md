@@ -93,7 +93,7 @@ sequenceDiagram
                 C-->>User: inject nothing
             else text non-empty
                 C->>C: write clipboard
-                C->>App: synthetic paste (Ctrl+V / Ctrl+Shift+V)
+                C->>App: synthetic paste (Ctrl+V / Ctrl+Shift+V / Shift+Insert)
                 opt clipboard_restore
                     C->>C: restore previous clipboard (X11 / Wayland)
                 end

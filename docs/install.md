@@ -38,6 +38,69 @@ cd client && go build -o kitsune-client ./cmd/kitsune-client
 ./kitsune-client install-autostart   # optional
 ```
 
+### Wayland: synthetic paste needs a helper
+
+On **Windows and X11** the Client synthesizes the paste itself — you need
+nothing extra. On **Wayland** it cannot: the compositor gives no unprivileged
+way to inject a keystroke, so the Client shells out to a helper. With
+`client.wayland_tool: auto` it tries **`wtype`** first (simple, but wlroots-only —
+it does not work on GNOME/Mutter) and then **`ydotool`** (works everywhere, but
+needs setup). If neither is usable the transcription is left on the clipboard
+and the Client logs a "press Ctrl+V" hint instead of pasting.
+
+`ydotool` is not bundled, and it only works while its background daemon
+**`ydotoold`** is running with access to `/dev/uinput`. Install and start both:
+
+1. **Install `ydotool`.** Check your distro first — many ship it as the package
+   `ydotool` (e.g. `sudo pacman -S ydotool`, `sudo dnf install ydotool`,
+   `sudo apt install ydotool`). If it is not packaged, build it from source:
+
+   ```sh
+   git clone https://github.com/ReimuNotMoe/ydotool.git
+   cd ydotool
+   mkdir build && cd build
+   cmake ..
+   make -j"$(nproc)"
+   sudo make install
+   ```
+
+   See the upstream repository for details and the latest instructions:
+   <https://github.com/ReimuNotMoe/ydotool>.
+
+2. **Grant `/dev/uinput` access.** `ydotoold` needs to write to `/dev/uinput`.
+   The usual approach is a udev rule plus membership in the `input` group:
+
+   ```sh
+   sudo modprobe uinput
+   echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
+     | sudo tee /etc/udev/rules.d/80-uinput.rules
+   sudo udevadm control --reload-rules && sudo udevadm trigger
+   sudo usermod -aG input "$USER"   # log out and back in for the group to apply
+   ```
+
+3. **Run `ydotoold`.** Start the daemon in your user session so its socket lands
+   in your `$XDG_RUNTIME_DIR` (the path `ydotool` looks in by default):
+
+   ```sh
+   ydotoold &          # or wire it into a systemd --user unit
+   ```
+
+   If you run the daemon elsewhere, point the Client's environment at the socket
+   with `YDOTOOL_SOCKET=/path/to/.ydotool_socket`.
+
+4. **Verify.** With a text field focused:
+
+   ```sh
+   ydotool type "hello"            # types text
+   ydotool key 29:1 47:1 47:0 29:0 # Ctrl+V
+   ```
+
+If `ydotoold` is not running, `ydotool` fails instantly; the Client detects this
+and degrades to clipboard-only (the error is in
+`~/.cache/kitsune-whisper/client.log`). Force a specific helper with
+`client.wayland_tool` (`wtype`|`ydotool`|`none`). See
+[Wayland support and known limitations](wayland.md) for the full session matrix.
+
 ### Where things go
 
 | | Linux | Windows |

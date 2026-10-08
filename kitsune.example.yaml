@@ -59,7 +59,8 @@ client:
     device: ""
   # Synthesize the paste after writing the clipboard; false is clipboard-only.
   paste: true
-  # auto | ctrl_v | ctrl_shift_v (auto picks ctrl_shift_v in terminals).
+  # auto | ctrl_v | ctrl_shift_v | shift_insert (auto picks ctrl_shift_v in
+  # terminals and ctrl_v elsewhere; shift_insert is the classic console chord).
   paste_shortcut: auto
   # auto | always | never. auto restores the previous clipboard on Linux/X11 and
   # keeps the transcription on Windows, where the OS never reports when a

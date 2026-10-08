@@ -29,6 +29,15 @@ func TestChordEvents(t *testing.T) {
 				{keyShift, false}, {keyCtrl, false},
 			},
 		},
+		{
+			name:     "shift_insert",
+			shortcut: ShiftInsert,
+			want: []keyEvent{
+				{keyShift, true},
+				{keyInsert, true}, {keyInsert, false},
+				{keyShift, false},
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
