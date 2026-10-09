@@ -92,10 +92,17 @@ once (lazily) and returns the **Delivered text** in `text`, the untouched
 so the summary is built from the refined text. Refine and Summarize share one
 model instance and the same determinism, language, timeout, and token-cap rules.
 
+Processing never breaks transcription: a step that is disabled, cannot load its
+model, raises, exceeds `stage_timeout_seconds`, or produces empty text is
+skipped, and the Server returns the previous stage's text with the reason in
+`warnings` — transcription itself never becomes a `5xx` because of processing.
+The Client logs those warnings.
+
 Post-processing needs the optional extra (`pip install 'kitsune-server[processing]'`)
 and the GGUF model is cached under `download_root` and honored by `offline`,
 exactly like Whisper models. `GET /health` advertises it as a `processing:
-{enabled, refine, summarize}` block.
+{enabled, refine, summarize}` block. The published Docker images do **not** bundle
+this extra; see [Optional post-processing](install.md#optional-post-processing).
 
 ## `client:` section
 

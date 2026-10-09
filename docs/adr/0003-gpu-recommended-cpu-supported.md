@@ -17,4 +17,4 @@ Dictation latency is the client's whole feel. On the measured host (Ryzen 7 8700
 - `GET /health` (refines #5) reports the **resolved** `device` and `compute_type` alongside `model`/`ready`; startup logs one line `model=… device=… compute_type=… (resolved from auto)`.
 - When the resolved device is `cpu`, the server logs a `WARN` naming the slow path and the escape hatch (GPU, or `base`/`tiny`).
 - The spec/install docs carry a "recommended hardware" section: NVIDIA/CUDA GPU recommended; CPU minimum with the caveat. `base` (≈2–3× faster than `small`, derived — validate locally) is the headline CPU recommendation; `tiny` is mentioned for the weakest hosts.
-- The `/transcribe` response stays `{text, language, language_probability, duration}` (#5) — the client never depends on server hardware.
+- The `/transcribe` response keeps its hardware-independent core `{text, language, language_probability, duration}` (#5); optional post-processing later adds `raw_text`, `applied`, and `warnings` (see [ADR 0004](0004-local-llm-runtime-llama-cpp.md)) — the client never depends on server hardware.

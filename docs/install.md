@@ -246,6 +246,46 @@ Uninstall (drops the downloaded models volume):
 docker compose down -v
 ```
 
+### Optional post-processing
+
+The Server can optionally post-process each **Transcription** with a small local
+instruct LLM loaded **in-process**, so the text never leaves the machine:
+
+- **Refine** removes filler words, stutters, and spoken self-corrections, and
+  adds punctuation and casing, without paraphrasing or dropping content.
+- **Summarize** compresses the text to its key points in plain prose.
+
+A request asks for them per utterance (`refine` / `summarize`); the Client sends
+those flags from `client.refine` / `client.summarize`. When both are set,
+**Refine runs first, then Summarize**. It is a Server master switch — everything
+is **off by default** (`server.processing.enabled: false`).
+
+Processing can never break transcription. If the feature is disabled, the model
+cannot load, a step raises, exceeds `server.processing.stage_timeout_seconds`,
+or returns empty text, the affected step is skipped: the response keeps the
+previous stage's text (ultimately the raw **Transcription**), reports
+`applied: {refine, summarize}` for what actually ran, and lists the reason in
+`warnings` (which the Client logs). `GET /health` advertises the capability as a
+`processing: {enabled, refine, summarize}` block.
+
+It requires the optional extra (which installs `llama-cpp-python`):
+
+```sh
+pip install 'kitsune-server[processing]'
+```
+
+The GGUF model (`server.processing.model_repo` / `model_file`, default
+`Qwen/Qwen3-0.6B-GGUF`) downloads into `download_root` and honors `offline`,
+exactly like the Whisper models. Set `server.processing.gpu_layers` to offload
+layers to the GPU, and tune `max_output_tokens` and `stage_timeout_seconds` for
+your host.
+
+> The **published Docker images are transcribe-only**: they do not bundle the
+> `processing` extra, so enabling `server.processing` there degrades with a
+> warning. Use a source install for processing today, or build a custom image
+> that adds `--extra processing` (the CPU image needs a C toolchain and CMake to
+> build `llama-cpp-python` from source).
+
 ### Recommended hardware
 
 An **NVIDIA/CUDA GPU is recommended**. On the measured host (Ryzen 7 8700F,
