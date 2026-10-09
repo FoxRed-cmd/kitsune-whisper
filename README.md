@@ -23,17 +23,24 @@ model. Audio never leaves the network.
   of losing it.
 - **Server** (Python + faster-whisper) — behind `POST /transcribe` it decodes the
   request, runs the VAD silence gate, transcribes on the auto-resolved device,
-  and returns JSON. It can optionally post-process the text with a small local
-  LLM (see **Processing** below). `GET /health` reports the resolved device,
-  compute type, model, and whether processing is enabled.
+  and returns JSON. It can optionally post-process the text through an
+  OpenAI-compatible LLM endpoint (see **Processing** below). `GET /health`
+  reports the resolved device, compute type, model, and whether processing is
+  enabled.
 - **Processing** (optional) — a request may ask the Server to **Refine** (remove
   disfluencies, add punctuation) and/or **Summarize** (compress to the key
   points). Refine runs before Summarize. It is off by default and never makes
-  transcription fail: a disabled, unavailable, timed-out, or empty step is
+  transcription fail: a disabled, unreachable, timed-out, or empty step is
   skipped, the text falls back to the previous stage, and the response says why
-  in `warnings`. The Server side is configured under `server.processing` in
-  `kitsune.yaml`; the Client asks for it with `client.refine` / `client.summarize`
-  (see [Configuration](docs/configuration.md)).
+  in `warnings`. The Server talks to any **OpenAI-compatible** chat-completions
+  endpoint: the bundled llama.cpp sidecar (opt-in `llm` compose profile), an
+  existing Ollama / LM Studio service, or a cloud API. It is configured under
+  `server.processing` in `kitsune.yaml`; the Client asks for it with
+  `client.refine` / `client.summarize`
+  (see [Configuration](docs/configuration.md)). The built-in `base_url` is
+  loopback, so processing stays local; the bundled `llm` profile points it at
+  the sidecar instead, and an **external `base_url` sends the transcribed text
+  off the host** (the audio still stays on your network).
 - **Transport** — plain HTTP/1.1, one utterance per request (batch, no streaming
   in v1). `kitsune.yaml` is shared; each process reads only its own section.
 
@@ -57,7 +64,7 @@ flowchart LR
         api["FastAPI<br/>POST /transcribe · GET /health"]
         vad["VAD silence gate"]
         engine["faster-whisper (CTranslate2)<br/>device: auto → CUDA or CPU"]
-        proc["Local LLM (optional)<br/>Refine → Summarize"]
+        proc["LLM endpoint (optional)<br/>OpenAI-compatible · Refine → Summarize"]
         models[("Model cache<br/>/models volume")]
     end
 
@@ -96,7 +103,7 @@ sequenceDiagram
         C->>S: POST /transcribe (audio, language?, initial_prompt?, refine?, summarize?)
         S->>S: decode → VAD → faster-whisper
         opt refine / summarize
-            S->>S: local LLM (Refine before Summarize)
+            S->>S: LLM endpoint (Refine before Summarize)
         end
         alt server error or timeout
             S-->>C: 4xx / 5xx / timeout
@@ -130,6 +137,17 @@ or GPU support in WSL2 (Windows) — see [GPU prerequisites](#gpu-prerequisites)
 The first run downloads the model into the `kitsune-models` volume;
 `kitsune.yaml` is bind-mounted at `/config/kitsune.yaml`, so edits apply on
 restart. The Server listens on `http://localhost:8000`.
+
+To also run Refine/Summarize locally, start the bundled llama.cpp sidecar beside
+the Server and set `server.processing.enabled: true`:
+
+```sh
+docker compose up -d server-cpu llama-cpu    # or: server-gpu llama-gpu
+```
+
+See [Optional post-processing](docs/install.md#optional-post-processing) for the
+sidecar knobs and for pointing `server.processing.base_url` at an external
+provider.
 
 Check it (and confirm whether the GPU is in use):
 
@@ -186,6 +204,12 @@ The Server ships as a Docker image with two profiles:
 | --- | --- | --- |
 | `cpu` | `python:3.11-slim` | Any host; slower, no GPU needed |
 | `gpu` | `nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04` | NVIDIA GPU; near-instant |
+
+An opt-in `llm` profile starts a bundled llama.cpp sidecar
+(`ghcr.io/ggml-org/llama.cpp:server` / `:server-cuda`) for local
+Refine/Summarize; start it with the matching Server
+(`docker compose up -d server-cpu llama-cpu`). See
+[Optional post-processing](docs/install.md#optional-post-processing).
 
 ### GPU prerequisites
 

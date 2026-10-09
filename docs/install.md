@@ -248,8 +248,8 @@ docker compose down -v
 
 ### Optional post-processing
 
-The Server can optionally post-process each **Transcription** with a small local
-instruct LLM loaded **in-process**, so the text never leaves the machine:
+The Server can optionally post-process each **Transcription** with an instruct
+LLM, so speech is delivered cleaner or shorter:
 
 - **Refine** removes filler words, stutters, and spoken self-corrections, and
   adds punctuation and casing, without paraphrasing or dropping content.
@@ -260,31 +260,97 @@ those flags from `client.refine` / `client.summarize`. When both are set,
 **Refine runs first, then Summarize**. It is a Server master switch — everything
 is **off by default** (`server.processing.enabled: false`).
 
-Processing can never break transcription. If the feature is disabled, the model
-cannot load, a step raises, exceeds `server.processing.stage_timeout_seconds`,
-or returns empty text, the affected step is skipped: the response keeps the
-previous stage's text (ultimately the raw **Transcription**), reports
-`applied: {refine, summarize}` for what actually ran, and lists the reason in
-`warnings` (which the Client logs). `GET /health` advertises the capability as a
-`processing: {enabled, refine, summarize}` block.
+Processing is a thin HTTP client of any **OpenAI-compatible** chat-completions
+endpoint: it POSTs to `{base_url}/v1/chat/completions`. One code path backs the
+bundled local sidecar, an LLM service you already run (Ollama, LM Studio, another
+host), and a cloud API.
 
-It requires the optional extra (which installs `llama-cpp-python`):
+Processing can never break transcription. If the feature is disabled, the
+endpoint is unreachable, a step raises, exceeds
+`server.processing.stage_timeout_seconds`, or returns empty text, the affected
+step is skipped: the response keeps the previous stage's text (ultimately the raw
+**Transcription**), reports `applied: {refine, summarize}` for what actually ran,
+and lists the reason in `warnings` (which the Client logs). `GET /health`
+advertises the capability as a `processing: {enabled, refine, summarize}` block.
+
+#### Run the bundled local LLM
+
+The repo ships an opt-in `llm` profile with a pure llama.cpp sidecar on the
+official `ghcr.io/ggml-org/llama.cpp` images — no build step, nothing to compile.
+Set `server.processing.enabled: true` in `kitsune.yaml`, then start the Server
+together with the matching sidecar:
 
 ```sh
-pip install 'kitsune-server[processing]'
+# CPU
+docker compose up -d server-cpu llama-cpu
+# GPU (needs the NVIDIA driver + nvidia-container-toolkit)
+docker compose up -d server-gpu llama-gpu
 ```
 
-The GGUF model (`server.processing.model_repo` / `model_file`, default
-`Qwen/Qwen3-0.6B-GGUF`) downloads into `download_root` and honors `offline`,
-exactly like the Whisper models. Set `server.processing.gpu_layers` to offload
-layers to the GPU, and tune `max_output_tokens` and `stage_timeout_seconds` for
-your host.
+Targeting the Server and sidecar together starts exactly those two (and
+auto-enables their profiles). The sidecar answers under the stable alias `llama`,
+which the Server services already point at via
+`KITSUNE_SERVER_PROCESSING__BASE_URL=http://llama:8080`; its model download is
+cached in the shared `kitsune-models` volume, so restarts reuse it.
 
-> The **published Docker images are transcribe-only**: they do not bundle the
-> `processing` extra, so enabling `server.processing` there degrades with a
-> warning. Use a source install for processing today, or build a custom image
-> that adds `--extra processing` (the CPU image needs a C toolchain and CMake to
-> build `llama-cpp-python` from source).
+Tune the sidecar without editing compose, via a `.env` file next to
+`compose.yaml`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LLM_MODEL_REPO` | `Qwen/Qwen3-0.6B-GGUF` | GGUF repository. |
+| `LLM_MODEL_FILE` | `Qwen3-0.6B-Q8_0.gguf` | GGUF file within it. |
+| `LLM_GPU_LAYERS` | `-1` | `-ngl` offload; `-1` = all, `0` = none (ignored by the CPU image). |
+| `LLM_OFFLINE` | unset | Non-empty adds `--offline` (air-gapped, from a warm cache). |
+
+The sidecar disables Qwen3's thinking mode itself (`--reasoning off`), so the
+Server sends the same portable request to any provider.
+
+#### Use an external endpoint
+
+To reuse an LLM you already run — Ollama, LM Studio, another host, or a cloud
+API — point `base_url` at it and set `enabled: true`. For example, Ollama on the
+same host:
+
+```yaml
+server:
+  processing:
+    enabled: true
+    base_url: http://127.0.0.1:11434
+    model: qwen2.5:1.5b
+```
+
+A cloud provider also needs its `api_key` (sent as `Authorization: Bearer`) and
+the right `model` name; `extra_body` merges arbitrary provider fields into each
+request. The Server reads these from its environment, so you can keep secrets
+and per-host addresses out of `kitsune.yaml` — for Docker, add them to the
+Server service's `environment:` (a `compose.override.yaml` is picked up
+automatically):
+
+```yaml
+# compose.override.yaml
+services:
+  server-cpu:
+    environment:
+      KITSUNE_SERVER_PROCESSING__BASE_URL: https://api.example.com
+      KITSUNE_SERVER_PROCESSING__API_KEY: sk-...
+      KITSUNE_SERVER_PROCESSING__MODEL: gpt-4o-mini
+```
+
+The full field list — `enabled`, `base_url`, `api_key`, `model`, `extra_body`,
+`max_output_tokens`, `stage_timeout_seconds` — is in the
+[configuration reference](configuration.md#server-section).
+
+> **Privacy:** the built-in default `base_url` is loopback
+> (`http://127.0.0.1:8080`), so a Server run on its own keeps processing on the
+> machine. An **external `base_url`** (a different host or a cloud API) sends
+> the transcribed **text off the host**; audio still never leaves your network.
+> The bundled sidecar runs beside the Server in the same compose project, so
+> keep the privacy call in mind when deciding where that project runs.
+
+The removed in-process keys `model_repo`, `model_file`, and `gpu_layers` are now
+a **startup error** (`--check-config` names them). They moved to the sidecar's
+`.env` / compose flags above.
 
 ### Recommended hardware
 
