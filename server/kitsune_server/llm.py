@@ -19,7 +19,7 @@ from .processor import ProcessingError, ProcessorInfo
 
 logger = logging.getLogger("kitsune.server")
 
-REFINE_SYSTEM_PROMPT = (
+REFINE_SYSTEM_PROMPT_EN = (
     "You are a dictation cleanup tool. Rewrite the user's text so it reads "
     "cleanly: remove filler words, stutters, and explicit self-corrections, and "
     "add correct punctuation and capitalization. Preserve the original meaning, "
@@ -28,32 +28,66 @@ REFINE_SYSTEM_PROMPT = (
     "text and nothing else."
 )
 
-SUMMARIZE_SYSTEM_PROMPT = (
-    "You are a dictation summarization tool. Compress the user's text to its key "
-    "points, dropping detail. Write natural prose in complete sentences: do not "
-    "use bullet lists, headings, or labels. Preserve the language of the input "
-    "exactly: do not translate. Reply with only the summary and nothing else."
+REFINE_SYSTEM_PROMPT_RU = (
+    "Ты — инструмент для очистки надиктованного текста. Перепиши текст "
+    "пользователя так, чтобы он читался чисто: убери слова-заполнители, заикания "
+    "и явные самопоправки, добавь правильную пунктуацию и заглавные буквы. "
+    "Полностью сохрани исходный смысл, формулировки и язык: не перефразируй, не "
+    "добавляй своих мыслей, не выбрасывай существенные слова и не переводи. "
+    "Ответь только очищенным текстом и больше ничем."
+)
+
+SUMMARIZE_SYSTEM_PROMPT_EN = (
+    "You are a tool for shortening dictated text. Produce a shorter version of "
+    "the user's text while fully preserving its main meaning: the same claims, "
+    "the same intent, the same stance, the same who, what, where, when, and why. "
+    "Remove only filler and repetition; do not add your own thoughts, opinions, "
+    "advice, or conclusions, and do not change the meaning of the claims — do not "
+    "reverse them, do not weaken or strengthen them. Preserve the input language "
+    "and do not translate; keep names, numbers, and terms. When in doubt, stay "
+    "closer to the original wording. Write coherent prose in complete sentences: "
+    "no bullet lists, headings, or labels. Reply with only the shortened text and "
+    "nothing else."
+)
+
+SUMMARIZE_SYSTEM_PROMPT_RU = (
+    "Ты — инструмент для сокращения надиктованного текста. Сделай более короткую "
+    "версию текста пользователя, полностью сохранив его главный смысл: те же "
+    "утверждения, то же намерение, ту же позицию, те же кто, что, где, когда и "
+    "почему. Убирай только воду и повторы; не добавляй своих мыслей, мнений, "
+    "советов и выводов и не меняй смысл утверждений — не обращай их в "
+    "противоположные, не ослабляй и не усиливай. Сохрани язык ввода и не "
+    "переводи, сохраняй имена, числа и термины. Если сомневаешься — держись "
+    "ближе к исходной формулировке. Пиши связным текстом полными предложениями: "
+    "без маркированных списков, заголовков и подписей. Ответь только сокращённым "
+    "текстом и больше ничем."
 )
 
 
-def _build_messages(system: str, text: str, language: str | None) -> list[dict[str, str]]:
-    user = text
-    if language:
-        user = f"{text}\n\n(Keep the answer in {language}.)"
+def _system_prompt(english: str, russian: str, language: str | None) -> str:
+    """Pick the Russian prompt when the text was detected as Russian, else English."""
+    if language is not None and language.split("-", 1)[0].lower() == "ru":
+        return russian
+    return english
+
+
+def _build_messages(system: str, text: str) -> list[dict[str, str]]:
     return [
         {"role": "system", "content": system},
-        {"role": "user", "content": user},
+        {"role": "user", "content": text},
     ]
 
 
 def build_refine_messages(text: str, language: str | None) -> list[dict[str, str]]:
     """Chat messages for the Refine stage."""
-    return _build_messages(REFINE_SYSTEM_PROMPT, text, language)
+    system = _system_prompt(REFINE_SYSTEM_PROMPT_EN, REFINE_SYSTEM_PROMPT_RU, language)
+    return _build_messages(system, text)
 
 
 def build_summarize_messages(text: str, language: str | None) -> list[dict[str, str]]:
     """Chat messages for the Summarize stage."""
-    return _build_messages(SUMMARIZE_SYSTEM_PROMPT, text, language)
+    system = _system_prompt(SUMMARIZE_SYSTEM_PROMPT_EN, SUMMARIZE_SYSTEM_PROMPT_RU, language)
+    return _build_messages(system, text)
 
 
 class OpenAITextProcessor:

@@ -7,6 +7,8 @@ select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
 
 [lint.per-file-ignores]
 "**/tests/**" = ["B011"]
+# The summarization prompt is Russian on purpose; Cyrillic homoglyphs are expected.
+"**/kitsune_server/llm.py" = ["RUF001"]
 
 [format]
 quote-style = "double"

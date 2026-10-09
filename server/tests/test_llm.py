@@ -7,8 +7,10 @@ import httpx
 import pytest
 from kitsune_server.config import ProcessingConfig
 from kitsune_server.llm import (
-    REFINE_SYSTEM_PROMPT,
-    SUMMARIZE_SYSTEM_PROMPT,
+    REFINE_SYSTEM_PROMPT_EN,
+    REFINE_SYSTEM_PROMPT_RU,
+    SUMMARIZE_SYSTEM_PROMPT_EN,
+    SUMMARIZE_SYSTEM_PROMPT_RU,
     OpenAITextProcessor,
     build_refine_messages,
     build_summarize_messages,
@@ -16,34 +18,43 @@ from kitsune_server.llm import (
 from kitsune_server.processor import ProcessingError
 
 
-def test_build_refine_messages_preserves_text() -> None:
-    messages = build_refine_messages("um, so, hi there", language=None)
-    assert messages[0] == {"role": "system", "content": REFINE_SYSTEM_PROMPT}
+@pytest.mark.parametrize("language", [None, "en", "de"])
+def test_build_refine_messages_defaults_to_english_prompt(language: str | None) -> None:
+    messages = build_refine_messages("um, so, hi there", language=language)
+    assert messages[0] == {"role": "system", "content": REFINE_SYSTEM_PROMPT_EN}
     assert messages[1] == {"role": "user", "content": "um, so, hi there"}
 
 
-def test_build_refine_messages_adds_language_hint() -> None:
-    messages = build_refine_messages("privet", language="ru")
-    assert messages[1]["content"].startswith("privet")
-    assert "ru" in messages[1]["content"]
+def test_build_refine_messages_uses_russian_prompt_for_russian() -> None:
+    messages = build_refine_messages("э-э, привет", language="ru")
+    assert messages[0] == {"role": "system", "content": REFINE_SYSTEM_PROMPT_RU}
+    assert messages[1] == {"role": "user", "content": "э-э, привет"}
 
 
-def test_build_summarize_messages_preserves_text() -> None:
-    messages = build_summarize_messages("a long rambling story", language=None)
-    assert messages[0] == {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT}
+@pytest.mark.parametrize("language", [None, "en", "de"])
+def test_build_summarize_messages_defaults_to_english_prompt(language: str | None) -> None:
+    messages = build_summarize_messages("a long rambling story", language=language)
+    assert messages[0] == {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT_EN}
     assert messages[1] == {"role": "user", "content": "a long rambling story"}
 
 
-def test_build_summarize_messages_adds_language_hint() -> None:
-    messages = build_summarize_messages("dlinnaya istoriya", language="ru")
-    assert messages[1]["content"].startswith("dlinnaya istoriya")
-    assert "ru" in messages[1]["content"]
+def test_build_summarize_messages_uses_russian_prompt_for_russian() -> None:
+    messages = build_summarize_messages("длинная история", language="ru")
+    assert messages[0] == {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT_RU}
+    assert messages[1] == {"role": "user", "content": "длинная история"}
 
 
 def test_build_summarize_prompt_forbids_bullet_lists() -> None:
-    lowered = SUMMARIZE_SYSTEM_PROMPT.lower()
-    assert "prose" in lowered
-    assert "bullet" in lowered
+    lowered = SUMMARIZE_SYSTEM_PROMPT_RU.lower()
+    assert "связн" in lowered
+    assert "списк" in lowered
+
+
+def test_build_summarize_prompt_preserves_meaning_and_language() -> None:
+    lowered = SUMMARIZE_SYSTEM_PROMPT_RU.lower()
+    assert "сокращ" in lowered
+    assert "смысл" in lowered
+    assert "не переводи" in lowered
 
 
 def make_processor(
