@@ -90,6 +90,9 @@ def test_refine_posts_openai_chat_completion_request() -> None:
     assert body["seed"] == 0
     assert body["max_tokens"] == 128
     assert body["top_p"] == 0.9
+    # Exactly the portable OpenAI fields plus the operator's extra_body: no
+    # llama.cpp-specific knobs (top_k, n_gpu_layers, ...) leak into the request.
+    assert set(body) == {"model", "messages", "temperature", "seed", "max_tokens", "top_p"}
 
 
 def test_summarize_posts_summarize_prompt() -> None:
