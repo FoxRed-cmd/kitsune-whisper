@@ -9,13 +9,18 @@ audio never leaves your network.
   synthetic paste.
 - A Python **Server** transcribes with faster-whisper, auto-detects CUDA vs CPU,
   and exposes `POST /transcribe` and `GET /health`. It ships as a Docker image.
-- Both read one `kitsune.yaml` (each process reads only its own section).
+- An optional **LLM sidecar** (the official llama.cpp server, behind the opt-in
+  `llm` compose profile) runs on your GPU for local Refine/Summarize. The Server
+  talks to it — or to any OpenAI-compatible endpoint (Ollama, LM Studio, a cloud
+  API) — over HTTP.
+- All read one `kitsune.yaml` (each process reads only its own section).
 
 ## Architecture
 
-Two cooperating processes talk HTTP over your LAN. Only the **Client** touches
-the desktop (hotkeys, microphone, clipboard); only the **Server** touches the
-model. Audio never leaves the network.
+The **Client** and **Server** talk HTTP over your LAN; the optional **LLM
+sidecar** is a third container the Server calls the same way. Only the Client
+touches the desktop (hotkeys, microphone, clipboard); the Server and sidecar
+touch the models. Audio never leaves the network.
 
 - **Client** (Go, user session) — binds the global hotkey, captures the
   microphone, resamples to 16 kHz mono, POSTs the utterance, then injects the
@@ -68,13 +73,19 @@ flowchart LR
         models[("Model cache<br/>/models volume")]
     end
 
+    subgraph sidecar["LLM sidecar — Docker (opt-in llm profile)"]
+        llama["llama.cpp server :8080<br/>Qwen3 GGUF · GPU offload"]
+    end
+
     mic --> cycle
     hotkey --> cycle
     ctl --> cycle
     cycle -->|"HTTP multipart audio (LAN only)"| api
     api --> vad --> engine
     engine <--> models
-    engine -.->|"refine? / summarize?"| proc
+    api -.->|"refine? / summarize?"| proc
+    proc <-->|"POST /v1/chat/completions"| llama
+    llama <--> models
     api -->|"JSON: text, raw_text, language, duration, applied, warnings"| inject
     inject --> app
     cycle -.->|on failure| spool
@@ -89,6 +100,7 @@ sequenceDiagram
     participant T as Hotkey / trigger
     participant C as Client
     participant S as Server
+    participant L as LLM endpoint (sidecar / Ollama / cloud)
     participant App as Focused app
 
     User->>T: press Ctrl+Shift+Space
@@ -103,7 +115,8 @@ sequenceDiagram
         C->>S: POST /transcribe (audio, language?, initial_prompt?, refine?, summarize?)
         S->>S: decode → VAD → faster-whisper
         opt refine / summarize
-            S->>S: LLM endpoint (Refine before Summarize)
+            S->>L: POST /v1/chat/completions (Refine, then Summarize)
+            L-->>S: text, or error / timeout → keep previous stage
         end
         alt server error or timeout
             S-->>C: 4xx / 5xx / timeout
@@ -123,37 +136,65 @@ sequenceDiagram
     end
 ```
 
-## Quickstart
+## Quickstart (NVIDIA GPU)
 
-### 1. Server (Docker)
+The fast path on an NVIDIA host: Docker runs the **Server** (CUDA) plus a bundled
+llama.cpp **sidecar** for local Refine/Summarize, and the Go **Client** runs on
+your desktop. Nothing is compiled and nothing leaves the machine.
+
+Prerequisite: a recent NVIDIA driver and **`nvidia-container-toolkit`** (Linux) or
+Docker Desktop with WSL2 GPU passthrough (Windows) — see
+[GPU prerequisites](#gpu-prerequisites). CPU-only and external-endpoint setups
+are in [`docs/install.md`](docs/install.md).
+
+### 1. Server + local LLM (Docker)
 
 ```sh
 cp kitsune.example.yaml kitsune.yaml
-docker compose --profile cpu up -d    # or: --profile gpu
 ```
 
-The `gpu` profile needs an NVIDIA driver and `nvidia-container-toolkit` (Linux)
-or GPU support in WSL2 (Windows) — see [GPU prerequisites](#gpu-prerequisites).
-The first run downloads the model into the `kitsune-models` volume;
-`kitsune.yaml` is bind-mounted at `/config/kitsune.yaml`, so edits apply on
-restart. The Server listens on `http://localhost:8000`.
+Turn the feature on in `kitsune.yaml` — the Server master switch and the Client's
+per-utterance flags (`server.processing.enabled` is `false` by default):
 
-To also run Refine/Summarize locally, start the bundled llama.cpp sidecar beside
-the Server and set `server.processing.enabled: true`:
+```yaml
+server:
+  processing:
+    enabled: true      # was false
+client:
+  refine: true         # was false
+  summarize: true      # was false
+```
+
+Then start the Server and the matching sidecar (targeting both starts exactly
+those two and auto-enables their profiles):
 
 ```sh
-docker compose up -d server-cpu llama-cpu    # or: server-gpu llama-gpu
+docker compose up -d server-gpu llama-gpu
 ```
 
-See [Optional post-processing](docs/install.md#optional-post-processing) for the
-sidecar knobs and for pointing `server.processing.base_url` at an external
-provider.
+The Server reads `/config/kitsune.yaml` (bind-mounted from the file above), so
+restart it after later edits (`docker compose restart server-gpu`). The Client
+reads the `client:` section from its own config (see [step 2](#2-client)); you can
+point it at this same file instead with `--config ./kitsune.yaml` or
+`KITSUNE_CONFIG=$PWD/kitsune.yaml`.
 
-Check it (and confirm whether the GPU is in use):
+The first run downloads the Whisper `small` model and the Qwen3 GGUF into the
+shared `kitsune-models` volume; later runs reuse them. The Server listens on
+`http://localhost:8000`, and the sidecar is reachable on the compose network as
+`llama` — which the Server services are already pointed at.
+
+Confirm the GPU and processing are live (give the sidecar a moment to warm up;
+the Server degrades gracefully until it answers):
 
 ```sh
 curl http://localhost:8000/health
-curl -F audio=@sample.wav http://localhost:8000/transcribe
+```
+
+`device` should be `cuda`, `compute_type` `float16`, and `processing.enabled`
+`true`. To smoke-test the pipeline without the Client:
+
+```sh
+curl -F audio=@sample.wav -F refine=true http://localhost:8000/transcribe
 ```
 
 ### 2. Client
@@ -168,12 +209,22 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-The installer verifies the archive checksum, installs the binary and a
+The installer verifies the archive checksum, installs the binary, drops a
 `kitsune.yaml` template (only if absent), and registers autostart in the user
-session: a systemd user unit bound to `graphical-session.target` on Linux, a
-per-user Task Scheduler task at logon on Windows (HKCU `Run` fallback). Re-run to
-upgrade; `--uninstall` / `-Uninstall` removes it (`--purge` / `-Purge` also drops
-config, spool, and logs). See [`docs/install.md`](docs/install.md).
+session. Point it at the Server and enable the flags above in the Client's config
+(path in [`docs/install.md`](docs/install.md#where-things-go)):
+
+```yaml
+client:
+  server_url: http://localhost:8000
+  refine: true
+  summarize: true
+```
+
+Restart the Client service after editing (`systemctl --user restart
+kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask
+-TaskName kitsune-client` on Windows). Re-run the installer to upgrade;
+`--uninstall` / `-Uninstall` removes it. See [`docs/install.md`](docs/install.md).
 
 ### 3. Dictate
 
@@ -184,7 +235,9 @@ trigger mode are all configurable; `client.trigger: hold` switches to
 push-to-talk.
 
 If the Server isn't reachable the Client reports it and saves the audio to the
-Spool instead of losing your speech. An empty transcription injects nothing.
+Spool instead of losing your speech. An empty transcription injects nothing. If
+the LLM sidecar is slow or down, Refine/Summarize is skipped and you still get
+the raw transcription.
 
 ## The hotkey
 
@@ -208,7 +261,8 @@ The Server ships as a Docker image with two profiles:
 An opt-in `llm` profile starts a bundled llama.cpp sidecar
 (`ghcr.io/ggml-org/llama.cpp:server` / `:server-cuda`) for local
 Refine/Summarize; start it with the matching Server
-(`docker compose up -d server-cpu llama-cpu`). See
+(`docker compose up -d server-gpu llama-gpu`, or `server-cpu llama-cpu` on a
+CPU-only host). See
 [Optional post-processing](docs/install.md#optional-post-processing).
 
 ### GPU prerequisites
