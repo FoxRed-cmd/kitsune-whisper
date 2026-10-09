@@ -1,6 +1,6 @@
 # Local post-processing LLM runs in-process via llama.cpp (GGUF)
 
-**Status:** accepted
+**Status:** superseded by ADR 0005
 
 The optional Refine/Summarize steps (#27) run on a small local instruct LLM loaded **in-process by the Server** through `llama-cpp-python` over a **GGUF** model (default `Qwen/Qwen3-0.6B-GGUF`, `Q8_0`). The alternative — `transformers` + `torch` — was rejected because `torch` adds 2–3 GB to an otherwise lean image (the Server today is CTranslate2-only), consumes more VRAM competing with Whisper, and is heavier on CPU, which contradicts the "CPU supported" stance of ADR 0003. `llama.cpp` runs identically on CPU and GPU from one `.gguf` file, which slots into the existing model cache/`offline` behavior. The cost is that Qwen3's default thinking mode must be turned off with a non-thinking template/chat-handler wrapper (the Python binding cannot toggle it per request).
 

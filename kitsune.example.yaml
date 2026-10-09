@@ -32,18 +32,26 @@ server:
     # clips return empty text instead of hallucinated words (see #10).
     vad_filter: true
     initial_prompt: ""
-  # Optional local-LLM post-processing (Refine/Summarize). Off by default: when
-  # off, or when a request does not ask for it, /transcribe behaves exactly as
-  # before. A request may ask for refine and/or summarize; when both are set,
-  # Refine runs first, then Summarize. Requires the 'processing' extra
-  # (pip install 'kitsune-server[processing]'). The GGUF model resolves from
-  # download_root above and honors offline.
+  # Optional Refine/Summarize post-processing over an OpenAI-compatible
+  # endpoint. Off by default: when off, or when a request does not ask for it,
+  # /transcribe behaves exactly as before. A request may ask for refine and/or
+  # summarize; when both are set, Refine runs first, then Summarize. The Server
+  # posts standard chat completions to {base_url}/v1/chat/completions, so it
+  # works with the bundled llama.cpp sidecar (the compose `llm` profile, which
+  # sets base_url to http://llama:8080), Ollama, LM Studio, or a cloud API.
   processing:
     enabled: false
-    model_repo: Qwen/Qwen3-0.6B-GGUF
-    model_file: Qwen3-0.6B-Q8_0.gguf
-    # Layers offloaded to the GPU: 0 = CPU only, -1 = all layers, N = that many.
-    gpu_layers: 0
+    # Loopback by default, so processing stays local unless you point it at an
+    # external provider. Note: an external base_url sends text off the host.
+    base_url: http://127.0.0.1:8080
+    # Sent as `Authorization: Bearer` when set; leave unset for a local sidecar.
+    api_key: null
+    # Model name sent to the endpoint (the sidecar ignores it and serves its
+    # loaded GGUF). Set it for providers like Ollama or a cloud API.
+    model: Qwen3-0.6B-Q8_0.gguf
+    # Extra keys merged into each request, e.g. to disable a provider's thinking
+    # mode: {chat_template_kwargs: {enable_thinking: false}}.
+    extra_body: {}
     # Per-utterance cap on generated tokens.
     max_output_tokens: 1024
     # Per-stage timeout; a stage that exceeds it degrades to the previous text.

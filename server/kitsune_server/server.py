@@ -9,7 +9,7 @@ import uvicorn
 from .app import create_app
 from .config import ServerConfig
 from .engine import WhisperTranscriber
-from .llm import LlamaTextProcessor
+from .llm import OpenAITextProcessor
 from .processor import DisabledTextProcessor, TextProcessor
 from .transcriber import Transcriber
 
@@ -26,14 +26,10 @@ def build_transcriber(config: ServerConfig) -> Transcriber:
 
 
 def build_processor(config: ServerConfig) -> TextProcessor:
-    """Build the processing port; the model itself loads lazily on first use."""
+    """Build the processing port; the endpoint is called lazily per stage."""
     if not config.processing.enabled:
         return DisabledTextProcessor()
-    return LlamaTextProcessor(
-        config.processing,
-        download_root=config.download_root,
-        offline=config.offline,
-    )
+    return OpenAITextProcessor(config.processing)
 
 
 def run_server(config: ServerConfig) -> None:

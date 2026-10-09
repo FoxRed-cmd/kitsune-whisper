@@ -36,6 +36,8 @@ CLI flags  >  environment  >  file  >  built-in defaults
   - `KITSUNE_CLIENT_AUDIO__DEVICE`
   - `KITSUNE_SERVER_MODEL`
   - `KITSUNE_SERVER_DECODE__BEAM_SIZE`
+  - `KITSUNE_SERVER_PROCESSING__BASE_URL`
+  - `KITSUNE_SERVER_PROCESSING__API_KEY`
 - `--device` overrides the audio input device on the Client and the compute
   device on the Server; `--verbose` is shorthand for `log_level: debug`.
 
@@ -75,34 +77,47 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `decode.temperature` | float | `0.0` | Sampling temperature (≥0). |
 | `decode.vad_filter` | bool | `true` | Server-side VAD; the authoritative silence gate. Keep on so silent utterances return empty text rather than hallucinated words. |
 | `decode.initial_prompt` | string | `""` | Fallback custom vocabulary when a request omits one. |
-| `processing.enabled` | bool | `false` | Master switch for local-LLM post-processing (Refine/Summarize). Off = `/transcribe` output is unchanged. |
-| `processing.model_repo` | string | `Qwen/Qwen3-0.6B-GGUF` | Hugging Face repo of the local GGUF instruct model. |
-| `processing.model_file` | string | `Qwen3-0.6B-Q8_0.gguf` | GGUF file within that repo. |
-| `processing.gpu_layers` | int | `0` | Layers offloaded to the GPU: `0` = CPU only, `-1` = all, `N` = that many. |
-| `processing.max_output_tokens` | int | `1024` | Per-utterance cap on tokens the model may generate. |
+| `processing.enabled` | bool | `false` | Master switch for Refine/Summarize post-processing over an OpenAI-compatible endpoint. Off = `/transcribe` output is unchanged. |
+| `processing.base_url` | string | `http://127.0.0.1:8080` | Root URL of the OpenAI-compatible endpoint; the Server POSTs to `{base_url}/v1/chat/completions`. Loopback by default, so processing stays local unless you opt into an external provider. |
+| `processing.api_key` | string | unset | Sent as `Authorization: Bearer` when set; leave unset for the bundled local sidecar. |
+| `processing.model` | string | `Qwen3-0.6B-Q8_0.gguf` | Model name sent to the endpoint. The sidecar serves its loaded GGUF and ignores it; set it for Ollama or a cloud API. |
+| `processing.extra_body` | map | `{}` | Keys merged into each request body, e.g. `{chat_template_kwargs: {enable_thinking: false}}`. |
+| `processing.max_output_tokens` | int | `1024` | Per-utterance cap on tokens the model may generate (`max_tokens`). |
 | `processing.stage_timeout_seconds` | float | `30` | Per-stage timeout; a stage that exceeds it degrades to the previous text. |
 
 `/transcribe` accepts per-request `language`, `initial_prompt`, `refine`, and
 `summarize` form fields; when omitted, the `decode:` values above and processing
 off are used. All other decode parameters are server-owned. With processing on
-and `refine=true` and/or `summarize=true`, the Server loads the local GGUF model
-once (lazily) and returns the **Delivered text** in `text`, the untouched
-**Transcription** in `raw_text`, plus `applied: {refine, summarize}` and
-`warnings: []`. When both are requested, **Refine runs first, then Summarize**,
-so the summary is built from the refined text. Refine and Summarize share one
-model instance and the same determinism, language, timeout, and token-cap rules.
+and `refine=true` and/or `summarize=true`, the Server sends each stage to the
+configured endpoint (greedy, capped at `max_output_tokens`, bounded by
+`stage_timeout_seconds`) and returns the **Delivered text** in `text`, the
+untouched **Transcription** in `raw_text`, plus `applied: {refine, summarize}`
+and `warnings: []`. When both are requested, **Refine runs first, then
+Summarize**, so the summary is built from the refined text. Refine and Summarize
+share the same determinism, language, timeout, and token-cap rules.
 
-Processing never breaks transcription: a step that is disabled, cannot load its
-model, raises, exceeds `stage_timeout_seconds`, or produces empty text is
+Processing never breaks transcription: a step that is disabled, has no reachable
+endpoint, raises, exceeds `stage_timeout_seconds`, or produces empty text is
 skipped, and the Server returns the previous stage's text with the reason in
 `warnings` — transcription itself never becomes a `5xx` because of processing.
 The Client logs those warnings.
 
-Post-processing needs the optional extra (`pip install 'kitsune-server[processing]'`)
-and the GGUF model is cached under `download_root` and honored by `offline`,
-exactly like Whisper models. `GET /health` advertises it as a `processing:
-{enabled, refine, summarize}` block. The published Docker images do **not** bundle
-this extra; see [Optional post-processing](install.md#optional-post-processing).
+`GET /health` advertises it as a `processing: {enabled, refine, summarize}` block.
+The endpoint is any OpenAI-compatible service; see
+[Optional post-processing](install.md#optional-post-processing) for the bundled
+local sidecar and for pointing at an external provider.
+
+The removed in-process keys `model_repo`, `model_file`, and `gpu_layers` are now a
+**startup error**: they moved to the bundled sidecar's `.env` / compose flags. An
+operator migrating from the old in-process model must delete them and set
+`base_url` (plus `api_key` / `model` for an external provider), or start the
+sidecar.
+
+> **Privacy:** the default `base_url` is loopback, so processing stays local.
+> Pointing it at any other host sends the transcribed **text off the host**
+> (audio still stays on the LAN). The bundled sidecar is reached over the compose
+> network, so its appearance of "local" depends on where that network runs —
+> the privacy call is the operator's, made through `base_url`.
 
 ## `client:` section
 

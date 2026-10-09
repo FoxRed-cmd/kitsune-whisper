@@ -1,8 +1,8 @@
 """The ``TextProcessor`` port and scripted fakes.
 
-The port is the seam between the HTTP API and the local-LLM post-processing
-runtime: the real ``llama-cpp-python`` adapter (``llm.py``) and the fakes used
-by tests both satisfy it. A processing stage that cannot run raises
+The port is the seam between the HTTP API and the post-processing runtime: the
+real OpenAI-compatible HTTP adapter (``llm.py``) and the fakes used by tests
+both satisfy it. A processing stage that cannot run raises
 :class:`ProcessingError`; the API degrades to the previous stage's text rather
 than failing the request.
 """
