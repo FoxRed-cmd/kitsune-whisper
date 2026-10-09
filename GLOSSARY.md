@@ -21,7 +21,7 @@ A single recorded stretch of speech sent to the server as one request.
 _Avoid_: clip, recording, buffer, sample
 
 **Transcription**:
-The text the server returns for an utterance.
+The unprocessed text produced from an utterance's audio.
 _Avoid_: result, output, transcript
 
 **Injection**:
@@ -31,6 +31,20 @@ _Avoid_: paste, insertion, typing
 **Dictation cycle**:
 One complete trigger-to-injection cycle: start recording, stop, request, and inject a single utterance.
 _Avoid_: session, job, task
+
+## Text processing
+
+**Refine**:
+Removing disfluencies and explicit self-corrections from a transcription and adding punctuation and casing, without paraphrasing or dropping substantive content.
+_Avoid_: clean, cleanup, polish, normalize
+
+**Summarize**:
+Compressing a transcription to its key points, dropping detail.
+_Avoid_: condense, shorten, abstract
+
+**Delivered text**:
+The text injected after any requested processing, as opposed to the transcription.
+_Avoid_: result, output
 
 ## Triggering
 

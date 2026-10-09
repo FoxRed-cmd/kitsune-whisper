@@ -75,10 +75,24 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `decode.temperature` | float | `0.0` | Sampling temperature (≥0). |
 | `decode.vad_filter` | bool | `true` | Server-side VAD; the authoritative silence gate. Keep on so silent utterances return empty text rather than hallucinated words. |
 | `decode.initial_prompt` | string | `""` | Fallback custom vocabulary when a request omits one. |
+| `processing.enabled` | bool | `false` | Master switch for local-LLM post-processing. Off = `/transcribe` output is unchanged. |
+| `processing.model_repo` | string | `Qwen/Qwen3-0.6B-GGUF` | Hugging Face repo of the local GGUF instruct model. |
+| `processing.model_file` | string | `Qwen3-0.6B-Q8_0.gguf` | GGUF file within that repo. |
+| `processing.gpu_layers` | int | `0` | Layers offloaded to the GPU: `0` = CPU only, `-1` = all, `N` = that many. |
+| `processing.max_output_tokens` | int | `1024` | Per-utterance cap on tokens the model may generate. |
+| `processing.stage_timeout_seconds` | float | `30` | Per-stage timeout; a stage that exceeds it degrades to the previous text. |
 
-`/transcribe` accepts per-request `language` and `initial_prompt` form fields;
-when omitted, the `decode:` values above are used. All other decode parameters
-are server-owned.
+`/transcribe` accepts per-request `language`, `initial_prompt`, and `refine`
+form fields; when omitted, the `decode:` values above and processing off are
+used. All other decode parameters are server-owned. With processing on and
+`refine=true`, the Server loads the local GGUF model once (lazily) and returns
+the refined **Delivered text** in `text`, the untouched **Transcription** in
+`raw_text`, plus `applied: {refine, summarize}` and `warnings: []`.
+
+Post-processing needs the optional extra (`pip install 'kitsune-server[processing]'`)
+and the GGUF model is cached under `download_root` and honored by `offline`,
+exactly like Whisper models. `GET /health` advertises it as a `processing:
+{enabled, refine, summarize}` block.
 
 ## `client:` section
 

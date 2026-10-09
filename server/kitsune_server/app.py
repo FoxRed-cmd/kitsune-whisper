@@ -1,16 +1,21 @@
 """The FastAPI application: the HTTP seam shared with the Client.
 
-Built by :func:`create_app`, which takes the resolved config and a
-``Transcriber`` port so tests can register a fake and load no model.
+Built by :func:`create_app`, which takes the resolved config plus a
+``Transcriber`` and a ``TextProcessor`` port, so tests can register fakes and
+load no model.
 """
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
 import threading
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Annotated, Any
 
+import anyio.to_thread
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -20,6 +25,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from .audio import AudioDecodeError, decode_audio
 from .config import ServerConfig, format_errors
 from .languages import normalize_language
+from .processor import ProcessingError, TextProcessor
 from .transcriber import Transcriber, resolve_workers
 
 logger = logging.getLogger("kitsune.server")
@@ -73,11 +79,25 @@ def _effective_prompt(request_prompt: str | None, config: ServerConfig) -> str |
     return config.decode.initial_prompt or None
 
 
-def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
-    """Build the ASGI app around a config and a ``Transcriber``."""
+@dataclass(frozen=True)
+class _StageOutcome:
+    """The result of one processing stage: delivered text, whether it ran, and why not."""
+
+    text: str
+    applied: bool
+    warning: str | None
+
+
+def create_app(
+    config: ServerConfig,
+    transcriber: Transcriber,
+    processor: TextProcessor,
+) -> FastAPI:
+    """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``."""
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
     app.state.transcriber = transcriber
+    app.state.processor = processor
     app.state.ready = True
     app.state.semaphore = threading.Semaphore(
         resolve_workers(config.workers, transcriber.info.device)
@@ -105,15 +125,48 @@ def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
         logger.exception("unhandled error: %s", exc)
         return _error_response(500, "internal_error", "internal server error")
 
+    async def _refine(raw_text: str, language: str) -> _StageOutcome:
+        """Run Refine, degrading to ``raw_text`` on any failure."""
+        if not processor.info.enabled:
+            return _StageOutcome(raw_text, False, "refine requested but processing is disabled")
+        timeout = config.processing.stage_timeout_seconds
+        try:
+            refined = await asyncio.wait_for(
+                anyio.to_thread.run_sync(
+                    functools.partial(processor.refine, raw_text, language=language),
+                    abandon_on_cancel=True,
+                ),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            logger.warning("refine timed out after %ss", timeout)
+            return _StageOutcome(raw_text, False, f"refine timed out after {timeout:g}s")
+        except Exception as exc:
+            if isinstance(exc, ProcessingError):
+                logger.warning("refine failed: %s", exc)
+            else:
+                logger.exception("refine raised unexpectedly")
+            return _StageOutcome(raw_text, False, f"refine failed: {exc}")
+        if not refined or not refined.strip():
+            logger.warning("refine produced empty text")
+            return _StageOutcome(raw_text, False, "refine produced no usable text")
+        return _StageOutcome(refined, True, None)
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
         info = transcriber.info
+        capability = processor.info
         return {
             "status": "ok",
             "model": info.model,
             "device": info.device,
             "compute_type": info.compute_type,
             "ready": bool(app.state.ready),
+            "processing": {
+                "enabled": capability.enabled,
+                "refine": capability.refine,
+                "summarize": capability.summarize,
+            },
         }
 
     @app.post("/transcribe")
@@ -121,6 +174,7 @@ def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
         audio: Annotated[UploadFile, File()],
         language: Annotated[str | None, Form()] = None,
         initial_prompt: Annotated[str | None, Form()] = None,
+        refine: Annotated[bool, Form()] = False,
     ) -> dict[str, Any]:
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
@@ -159,11 +213,27 @@ def create_app(config: ServerConfig, transcriber: Transcriber) -> FastAPI:
         finally:
             app.state.semaphore.release()
 
+        raw_text = result.text
+        delivered = raw_text
+        applied = {"refine": False, "summarize": False}
+        warnings: list[str] = []
+
+        if refine:
+            prompt_language = result.language if config.decode.task == "transcribe" else "en"
+            outcome = await _refine(raw_text, prompt_language)
+            delivered = outcome.text
+            applied["refine"] = outcome.applied
+            if outcome.warning is not None:
+                warnings.append(outcome.warning)
+
         return {
-            "text": result.text,
+            "text": delivered,
+            "raw_text": raw_text,
             "language": result.language,
             "language_probability": result.language_probability,
             "duration": result.duration,
+            "applied": applied,
+            "warnings": warnings,
         }
 
     return app

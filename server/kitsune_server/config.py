@@ -51,6 +51,17 @@ class DecodeConfig(_StrictModel):
     initial_prompt: str = ""
 
 
+class ProcessingConfig(_StrictModel):
+    """Optional local-LLM post-processing (Refine/Summarize) settings."""
+
+    enabled: bool = False
+    model_repo: str = Field(default="Qwen/Qwen3-0.6B-GGUF", min_length=1)
+    model_file: str = Field(default="Qwen3-0.6B-Q8_0.gguf", min_length=1)
+    gpu_layers: int = Field(default=0, ge=-1)
+    max_output_tokens: int = Field(default=1024, ge=1)
+    stage_timeout_seconds: float = Field(default=30.0, gt=0)
+
+
 class ServerConfig(_StrictModel):
     host: str = Field(default="0.0.0.0", min_length=1)
     port: int = Field(default=8000, ge=1, le=65535)
@@ -63,6 +74,7 @@ class ServerConfig(_StrictModel):
     max_audio_seconds: int = Field(default=300, ge=1)
     max_upload_mb: float = Field(default=30.0, gt=0)
     decode: DecodeConfig = DecodeConfig()
+    processing: ProcessingConfig = ProcessingConfig()
     log_level: LogLevel = "info"
 
 
