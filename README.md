@@ -82,13 +82,16 @@ sequenceDiagram
     alt cancelled or too short
         C-->>User: inject nothing
     else utterance ready
-        C->>S: POST /transcribe (audio, language?, initial_prompt?)
+        C->>S: POST /transcribe (audio, language?, initial_prompt?, refine?, summarize?)
         S->>S: decode → VAD → faster-whisper
+        opt refine / summarize
+            S->>S: local LLM (Refine before Summarize)
+        end
         alt server error or timeout
             S-->>C: 4xx / 5xx / timeout
             C->>C: save utterance to Spool
         else success
-            S-->>C: 200 {text, language, duration}
+            S-->>C: 200 {text, raw_text, language, duration, applied, warnings}
             alt text empty
                 C-->>User: inject nothing
             else text non-empty

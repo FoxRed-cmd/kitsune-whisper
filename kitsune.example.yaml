@@ -70,6 +70,11 @@ client:
   # Sent per request only when set to something other than "auto".
   language: auto
   initial_prompt: ""
+  # Ask the Server to post-process each utterance (needs server.processing
+  # enabled). Sent per request only when true. When both are set, Refine runs
+  # first, then Summarize.
+  refine: false
+  summarize: false
   audio:
     # "" = system default input.
     device: ""

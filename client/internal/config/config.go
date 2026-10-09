@@ -48,6 +48,8 @@ type ClientConfig struct {
 	TimeoutSeconds      float64        `yaml:"timeout_seconds"`
 	Language            string         `yaml:"language"`
 	InitialPrompt       string         `yaml:"initial_prompt"`
+	Refine              bool           `yaml:"refine"`
+	Summarize           bool           `yaml:"summarize"`
 	Audio               AudioConfig    `yaml:"audio"`
 	Paste               bool           `yaml:"paste"`
 	PasteShortcut       string         `yaml:"paste_shortcut"`
@@ -72,6 +74,8 @@ func Default() ClientConfig {
 		TimeoutSeconds:      0,
 		Language:            "auto",
 		InitialPrompt:       "",
+		Refine:              false,
+		Summarize:           false,
 		Audio:               AudioConfig{Device: ""},
 		Paste:               true,
 		PasteShortcut:       "auto",
@@ -262,6 +266,8 @@ var schema = map[string]any{
 	"timeout_seconds":       nil,
 	"language":              nil,
 	"initial_prompt":        nil,
+	"refine":                nil,
+	"summarize":             nil,
 	"audio":                 map[string]any{"device": nil},
 	"paste":                 nil,
 	"paste_shortcut":        nil,
@@ -426,6 +432,12 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 		return cfg, err
 	}
 	if cfg.InitialPrompt, err = asString(m["initial_prompt"], "client.initial_prompt"); err != nil {
+		return cfg, err
+	}
+	if cfg.Refine, err = asBool(m["refine"], "client.refine"); err != nil {
+		return cfg, err
+	}
+	if cfg.Summarize, err = asBool(m["summarize"], "client.summarize"); err != nil {
 		return cfg, err
 	}
 

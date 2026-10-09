@@ -111,6 +111,8 @@ exactly like Whisper models. `GET /health` advertises it as a `processing:
 | `timeout_seconds` | number | `0` | Request timeout. `0` = `max(30 s, 2 × audio length)`. |
 | `language` | string | `auto` | Sent per request only when not `auto`. |
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
+| `refine` | bool | `false` | Ask the Server to remove disfluencies and add punctuation. Sent per request only when `true`; needs `server.processing.enabled`. |
+| `summarize` | bool | `false` | Ask the Server to compress the **Transcription**. Sent per request only when `true`; runs after Refine when both are set. Needs `server.processing.enabled`. |
 | `audio.device` | string | `""` | Input device name or index; `""` = system default. `--device` overrides. |
 | `paste` | bool | `true` | Synthesize a paste after writing the clipboard; `false` is clipboard-only. |
 | `paste_shortcut` | `auto`\|`ctrl_v`\|`ctrl_shift_v`\|`shift_insert` | `auto` | `auto` picks `ctrl_shift_v` in terminals and `ctrl_v` elsewhere; `shift_insert` is the classic console paste chord, so on X11/Wayland the transcription is published to the primary selection (the buffer a terminal pastes) as well as the clipboard. |

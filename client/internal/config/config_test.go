@@ -83,6 +83,37 @@ func TestFileValues(t *testing.T) {
 	}
 }
 
+func TestRefineSummarizeDefaultFalse(t *testing.T) {
+	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Refine || cfg.Summarize {
+		t.Fatalf("refine/summarize should default false, got %+v", cfg)
+	}
+}
+
+func TestRefineSummarizeAccepted(t *testing.T) {
+	path := writeConfig(t, map[string]any{"refine": true, "summarize": true})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Refine || !cfg.Summarize {
+		t.Fatalf("refine/summarize should be true, got %+v", cfg)
+	}
+}
+
+func TestRefineSummarizeWrongTypeNamesFieldPath(t *testing.T) {
+	for _, key := range []string{"refine", "summarize"} {
+		t.Run(key, func(t *testing.T) {
+			path := writeConfig(t, map[string]any{key: "not-a-bool"})
+			_, err := load(t, config.LoadOptions{CLIConfig: path})
+			assertErrorContains(t, err, "client."+key)
+		})
+	}
+}
+
 func TestUnknownKeyNamesFieldPath(t *testing.T) {
 	path := writeConfig(t, map[string]any{"bogus": 1})
 	_, err := load(t, config.LoadOptions{CLIConfig: path})

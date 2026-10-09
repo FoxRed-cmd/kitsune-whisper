@@ -159,7 +159,7 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, std
 	)
 	defer cancel()
 
-	client := transcribe.NewHTTP(cfg.ServerURL, cfg.Language, cfg.InitialPrompt)
+	client := newTranscriber(cfg, logger)
 	transcription, err := client.Transcribe(ctx, data)
 	if err != nil {
 		logger.Error("transcribe failed: %v", err)
@@ -193,7 +193,7 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose 
 	var runErr error
 	core := cycle.New(cycle.Options{
 		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg),
+		Transcriber: newTranscriber(cfg, logger),
 		Injector:    out,
 		Feedback:    newFeedback(cfg, logger, feedback),
 		Spool:       newSpool(cfg, logger),
@@ -292,7 +292,7 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 
 	core := cycle.New(cycle.Options{
 		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg),
+		Transcriber: newTranscriber(cfg, logger),
 		Injector:    injector,
 		Feedback:    newFeedback(cfg, logger),
 		Spool:       newSpool(cfg, logger),
@@ -512,9 +512,13 @@ func newRecorder(cfg config.ClientConfig, logger *logging.Logger) (*mic.Recorder
 	})
 }
 
-// newTranscriber builds the HTTP adapter for the configured Server.
-func newTranscriber(cfg config.ClientConfig) transcribe.Transcriber {
-	return transcribe.NewHTTP(cfg.ServerURL, cfg.Language, cfg.InitialPrompt)
+// newTranscriber builds the HTTP adapter for the configured Server. Warnings
+// from a successful response (a requested processing step that was skipped) are
+// routed to the Client log.
+func newTranscriber(cfg config.ClientConfig, logger *logging.Logger) transcribe.Transcriber {
+	client := transcribe.NewHTTP(cfg.ServerURL, cfg.Language, cfg.InitialPrompt, cfg.Refine, cfg.Summarize)
+	client.OnWarning = func(warning string) { logger.Warning("transcribe: %s", warning) }
+	return client
 }
 
 // cycleLimits maps the configured seconds bounds into cycle limits.
