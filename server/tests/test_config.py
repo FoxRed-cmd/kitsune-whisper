@@ -69,6 +69,13 @@ def test_processing_defaults_disabled(tmp_path: Path) -> None:
     assert config.processing.stage_timeout_seconds == 30.0
 
 
+def test_example_config_parses_as_valid_server_config() -> None:
+    example = Path(__file__).resolve().parents[2] / "kitsune.example.yaml"
+    config = load_config(cli_config=str(example), env={})
+    assert config.processing.enabled is False
+    assert config.processing.base_url == "http://127.0.0.1:8080"
+
+
 def test_processing_group_accepted(tmp_path: Path) -> None:
     write_config(
         tmp_path,

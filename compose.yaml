@@ -6,11 +6,35 @@ name: kitsune-whisper
 #   cp kitsune.example.yaml kitsune.yaml
 #   docker compose --profile cpu up -d
 #   docker compose --profile gpu up -d
+#
+# Optional bundled local LLM (Refine/Summarize), no build step: start the
+# Server together with the matching sidecar. Targeting both services starts
+# exactly those two (and auto-enables their profiles):
+#
+#   docker compose up -d server-cpu llama-cpu
+#   docker compose up -d server-gpu llama-gpu
+#
+# The sidecar serves the default Qwen3 GGUF into the shared models volume. Tune
+# it from a `.env` file next to this one: LLM_MODEL_REPO, LLM_MODEL_FILE,
+# LLM_GPU_LAYERS, LLM_OFFLINE. Server-side Refine/Summarize also needs
+# `server.processing.enabled: true` in kitsune.yaml.
+
+x-nvidia-gpu: &nvidia-gpu
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: all
+          capabilities: [gpu]
 
 x-server: &server
   restart: unless-stopped
   ports:
     - "8000:8000"
+  environment:
+    # Point Refine/Summarize at the bundled sidecar. Harmless when the `llm`
+    # profile is off: processing stays disabled until kitsune.yaml enables it.
+    KITSUNE_SERVER_PROCESSING__BASE_URL: http://llama:8080
   volumes:
     - type: bind
       source: ./kitsune.yaml
@@ -19,6 +43,38 @@ x-server: &server
       bind:
         create_host_path: false
     - kitsune-models:/models
+
+x-llama: &llama
+  restart: unless-stopped
+  profiles: ["llm"]
+  networks:
+    default:
+      aliases:
+        - llama
+  environment:
+    # Keep the GGUF beside the Whisper models in the shared volume, so restarts
+    # reuse the download.
+    LLAMA_CACHE: /models/llama
+  volumes:
+    - kitsune-models:/models
+  # Model repo/file, -ngl offload, and offline are .env-overridable flags; -1
+  # offloads all layers the device can hold and is ignored on the CPU image.
+  # `--reasoning off` disables Qwen3 thinking in the template so Refine/
+  # Summarize answer directly; the Server then sends the same portable request
+  # to any OpenAI-compatible provider.
+  command: >
+    --host 0.0.0.0 --port 8080
+    -hf ${LLM_MODEL_REPO:-Qwen/Qwen3-0.6B-GGUF}
+    -hff ${LLM_MODEL_FILE:-Qwen3-0.6B-Q8_0.gguf}
+    -ngl ${LLM_GPU_LAYERS:--1}
+    --jinja --reasoning off
+    ${LLM_OFFLINE:+--offline}
+  healthcheck:
+    test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+    interval: 30s
+    timeout: 5s
+    start_period: 300s
+    retries: 3
 
 services:
   server-cpu:
@@ -39,13 +95,16 @@ services:
       args:
         BASE_IMAGE: nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
         UV_SYNC_ARGS: "--extra cuda"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    deploy: *nvidia-gpu
+
+  llama-cpu:
+    <<: *llama
+    image: ghcr.io/ggml-org/llama.cpp:server
+
+  llama-gpu:
+    <<: *llama
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    deploy: *nvidia-gpu
 
 volumes:
   kitsune-models:
