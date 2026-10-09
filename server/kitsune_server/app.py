@@ -11,7 +11,7 @@ import asyncio
 import functools
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -125,32 +125,40 @@ def create_app(
         logger.exception("unhandled error: %s", exc)
         return _error_response(500, "internal_error", "internal server error")
 
-    async def _refine(raw_text: str, language: str) -> _StageOutcome:
-        """Run Refine, degrading to ``raw_text`` on any failure."""
+    async def _run_stage(
+        name: str,
+        stage: Callable[..., str],
+        available: bool,
+        text: str,
+        language: str,
+    ) -> _StageOutcome:
+        """Run one processing stage, degrading to ``text`` on any failure."""
         if not processor.info.enabled:
-            return _StageOutcome(raw_text, False, "refine requested but processing is disabled")
+            return _StageOutcome(text, False, f"{name} requested but processing is disabled")
+        if not available:
+            return _StageOutcome(text, False, f"{name} requested but unavailable")
         timeout = config.processing.stage_timeout_seconds
         try:
-            refined = await asyncio.wait_for(
+            output = await asyncio.wait_for(
                 anyio.to_thread.run_sync(
-                    functools.partial(processor.refine, raw_text, language=language),
+                    functools.partial(stage, text, language=language),
                     abandon_on_cancel=True,
                 ),
                 timeout=timeout,
             )
         except TimeoutError:
-            logger.warning("refine timed out after %ss", timeout)
-            return _StageOutcome(raw_text, False, f"refine timed out after {timeout:g}s")
+            logger.warning("%s timed out after %ss", name, timeout)
+            return _StageOutcome(text, False, f"{name} timed out after {timeout:g}s")
         except Exception as exc:
             if isinstance(exc, ProcessingError):
-                logger.warning("refine failed: %s", exc)
+                logger.warning("%s failed: %s", name, exc)
             else:
-                logger.exception("refine raised unexpectedly")
-            return _StageOutcome(raw_text, False, f"refine failed: {exc}")
-        if not refined or not refined.strip():
-            logger.warning("refine produced empty text")
-            return _StageOutcome(raw_text, False, "refine produced no usable text")
-        return _StageOutcome(refined, True, None)
+                logger.exception("%s raised unexpectedly", name)
+            return _StageOutcome(text, False, f"{name} failed: {exc}")
+        if not output or not output.strip():
+            logger.warning("%s produced empty text", name)
+            return _StageOutcome(text, False, f"{name} produced no usable text")
+        return _StageOutcome(output, True, None)
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
@@ -175,6 +183,7 @@ def create_app(
         language: Annotated[str | None, Form()] = None,
         initial_prompt: Annotated[str | None, Form()] = None,
         refine: Annotated[bool, Form()] = False,
+        summarize: Annotated[bool, Form()] = False,
     ) -> dict[str, Any]:
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
@@ -217,12 +226,21 @@ def create_app(
         delivered = raw_text
         applied = {"refine": False, "summarize": False}
         warnings: list[str] = []
+        prompt_language = result.language if config.decode.task == "transcribe" else "en"
 
-        if refine:
-            prompt_language = result.language if config.decode.task == "transcribe" else "en"
-            outcome = await _refine(raw_text, prompt_language)
+        # Fixed pipeline: Refine always precedes Summarize, each built on the
+        # previous stage's delivered text.
+        capability = processor.info
+        stages = (
+            ("refine", processor.refine, capability.refine, refine),
+            ("summarize", processor.summarize, capability.summarize, summarize),
+        )
+        for name, stage, available, requested in stages:
+            if not requested:
+                continue
+            outcome = await _run_stage(name, stage, available, delivered, prompt_language)
             delivered = outcome.text
-            applied["refine"] = outcome.applied
+            applied[name] = outcome.applied
             if outcome.warning is not None:
                 warnings.append(outcome.warning)
 

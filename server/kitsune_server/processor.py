@@ -35,6 +35,8 @@ class TextProcessor(Protocol):
 
     def refine(self, text: str, *, language: str | None = None) -> str: ...
 
+    def summarize(self, text: str, *, language: str | None = None) -> str: ...
+
 
 class DisabledTextProcessor:
     """A processor used when ``server.processing.enabled`` is false.
@@ -50,26 +52,46 @@ class DisabledTextProcessor:
     def refine(self, text: str, *, language: str | None = None) -> str:
         raise ProcessingError("processing is disabled")
 
+    def summarize(self, text: str, *, language: str | None = None) -> str:
+        raise ProcessingError("processing is disabled")
+
 
 @dataclass
 class FakeTextProcessor:
     """Scripted ``TextProcessor`` so tests load no model.
 
-    By default it echoes the input; pass ``refined_text`` to pin the Refine
-    result, ``refine_error`` to simulate a failure, or ``refine_delay`` to
-    exceed a stage timeout. Every call is recorded on ``calls``.
+    By default it echoes the input; pass ``refined_text``/``summarized_text`` to
+    pin a stage's result, ``refine_error``/``summarize_error`` to simulate a
+    failure, or ``refine_delay``/``summarize_delay`` to exceed a stage timeout.
+    Refine calls are recorded on ``calls``, Summarize calls on
+    ``summarize_calls``, and every stage in order on ``steps``.
     """
 
     info: ProcessorInfo = field(default_factory=lambda: ProcessorInfo(True, True, True))
     refined_text: str | None = None
+    summarized_text: str | None = None
     refine_error: Exception | None = None
+    summarize_error: Exception | None = None
     refine_delay: float = 0.0
+    summarize_delay: float = 0.0
     calls: list[dict[str, object]] = field(default_factory=list)
+    summarize_calls: list[dict[str, object]] = field(default_factory=list)
+    steps: list[str] = field(default_factory=list)
 
     def refine(self, text: str, *, language: str | None = None) -> str:
+        self.steps.append("refine")
         self.calls.append({"text": text, "language": language})
         if self.refine_delay:
             time.sleep(self.refine_delay)
         if self.refine_error is not None:
             raise self.refine_error
         return self.refined_text if self.refined_text is not None else text
+
+    def summarize(self, text: str, *, language: str | None = None) -> str:
+        self.steps.append("summarize")
+        self.summarize_calls.append({"text": text, "language": language})
+        if self.summarize_delay:
+            time.sleep(self.summarize_delay)
+        if self.summarize_error is not None:
+            raise self.summarize_error
+        return self.summarized_text if self.summarized_text is not None else text

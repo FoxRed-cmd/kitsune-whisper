@@ -9,8 +9,10 @@ import pytest
 from kitsune_server.config import ProcessingConfig
 from kitsune_server.llm import (
     REFINE_SYSTEM_PROMPT,
+    SUMMARIZE_SYSTEM_PROMPT,
     LlamaTextProcessor,
     build_refine_messages,
+    build_summarize_messages,
     no_think_chat_handler,
 )
 
@@ -25,6 +27,24 @@ def test_build_refine_messages_adds_language_hint() -> None:
     messages = build_refine_messages("privet", language="ru")
     assert messages[1]["content"].startswith("privet")
     assert "ru" in messages[1]["content"]
+
+
+def test_build_summarize_messages_preserves_text() -> None:
+    messages = build_summarize_messages("a long rambling story", language=None)
+    assert messages[0] == {"role": "system", "content": SUMMARIZE_SYSTEM_PROMPT}
+    assert messages[1] == {"role": "user", "content": "a long rambling story"}
+
+
+def test_build_summarize_messages_adds_language_hint() -> None:
+    messages = build_summarize_messages("dlinnaya istoriya", language="ru")
+    assert messages[1]["content"].startswith("dlinnaya istoriya")
+    assert "ru" in messages[1]["content"]
+
+
+def test_build_summarize_prompt_forbids_bullet_lists() -> None:
+    lowered = SUMMARIZE_SYSTEM_PROMPT.lower()
+    assert "prose" in lowered
+    assert "bullet" in lowered
 
 
 class FakeLlama:
@@ -79,6 +99,13 @@ def test_refine_maps_config_to_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert llm.calls[0]["temperature"] == 0.0
     assert llm.calls[0]["seed"] == 0
     assert llm.calls[0]["max_tokens"] == 128
+
+    # Summarize reuses the same resident model and the same decode settings.
+    assert processor.summarize("a long story", language="ru") == "Hi there."
+    assert len(FakeLlama.created) == 1
+    assert llm.calls[1]["temperature"] == 0.0
+    assert llm.calls[1]["seed"] == 0
+    assert llm.calls[1]["max_tokens"] == 128
 
 
 class FakeJinja2ChatFormatter:

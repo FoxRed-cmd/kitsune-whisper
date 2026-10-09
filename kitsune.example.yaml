@@ -32,10 +32,12 @@ server:
     # clips return empty text instead of hallucinated words (see #10).
     vad_filter: true
     initial_prompt: ""
-  # Optional local-LLM post-processing (Refine). Off by default: when off, or
-  # when a request does not ask for it, /transcribe behaves exactly as before.
-  # Requires the 'processing' extra (pip install 'kitsune-server[processing]').
-  # The GGUF model resolves from download_root above and honors offline.
+  # Optional local-LLM post-processing (Refine/Summarize). Off by default: when
+  # off, or when a request does not ask for it, /transcribe behaves exactly as
+  # before. A request may ask for refine and/or summarize; when both are set,
+  # Refine runs first, then Summarize. Requires the 'processing' extra
+  # (pip install 'kitsune-server[processing]'). The GGUF model resolves from
+  # download_root above and honors offline.
   processing:
     enabled: false
     model_repo: Qwen/Qwen3-0.6B-GGUF

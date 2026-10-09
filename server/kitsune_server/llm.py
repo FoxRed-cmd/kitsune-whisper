@@ -30,16 +30,32 @@ REFINE_SYSTEM_PROMPT = (
     "text and nothing else."
 )
 
+SUMMARIZE_SYSTEM_PROMPT = (
+    "You are a dictation summarization tool. Compress the user's text to its key "
+    "points, dropping detail. Write natural prose in complete sentences: do not "
+    "use bullet lists, headings, or labels. Preserve the language of the input "
+    "exactly: do not translate. Reply with only the summary and nothing else."
+)
 
-def build_refine_messages(text: str, language: str | None) -> list[dict[str, str]]:
-    """Chat messages for the Refine stage."""
+
+def _build_messages(system: str, text: str, language: str | None) -> list[dict[str, str]]:
     user = text
     if language:
         user = f"{text}\n\n(Keep the answer in {language}.)"
     return [
-        {"role": "system", "content": REFINE_SYSTEM_PROMPT},
+        {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
+
+
+def build_refine_messages(text: str, language: str | None) -> list[dict[str, str]]:
+    """Chat messages for the Refine stage."""
+    return _build_messages(REFINE_SYSTEM_PROMPT, text, language)
+
+
+def build_summarize_messages(text: str, language: str | None) -> list[dict[str, str]]:
+    """Chat messages for the Summarize stage."""
+    return _build_messages(SUMMARIZE_SYSTEM_PROMPT, text, language)
 
 
 def _chat_token(llm: Any, key: str) -> str:
@@ -102,8 +118,14 @@ class LlamaTextProcessor:
         return ProcessorInfo(enabled=True, refine=True, summarize=True)
 
     def refine(self, text: str, *, language: str | None = None) -> str:
+        return self._complete(build_refine_messages(text, language))
+
+    def summarize(self, text: str, *, language: str | None = None) -> str:
+        return self._complete(build_summarize_messages(text, language))
+
+    def _complete(self, messages: list[dict[str, str]]) -> str:
+        """Run one greedy completion on the shared, lazily-loaded model."""
         llm = self._ensure_loaded()
-        messages = build_refine_messages(text, language)
         with self._generation_lock:
             response = llm.create_chat_completion(
                 messages=messages,
