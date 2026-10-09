@@ -17,16 +17,26 @@ type HTTP struct {
 	Client        *http.Client
 	Language      string
 	InitialPrompt string
+	// Refine and Summarize ask the Server to post-process the utterance. They
+	// are sent only when true, so the default wire behavior is unchanged.
+	Refine    bool
+	Summarize bool
+	// OnWarning, when non-nil, receives each warning from a successful response
+	// (a requested processing step that was skipped).
+	OnWarning func(string)
 }
 
 // NewHTTP builds an HTTP transcriber. language and initialPrompt are sent only
-// when they are set to something other than the "unset" defaults.
-func NewHTTP(baseURL, language, initialPrompt string) *HTTP {
+// when they are set to something other than the "unset" defaults; refine and
+// summarize are sent only when true.
+func NewHTTP(baseURL, language, initialPrompt string, refine, summarize bool) *HTTP {
 	return &HTTP{
 		BaseURL:       baseURL,
 		Client:        &http.Client{Timeout: 0},
 		Language:      language,
 		InitialPrompt: initialPrompt,
+		Refine:        refine,
+		Summarize:     summarize,
 	}
 }
 
@@ -59,6 +69,16 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 			return Transcription{}, fmt.Errorf("write initial_prompt: %w", err)
 		}
 	}
+	if h.Refine {
+		if err := writer.WriteField("refine", "true"); err != nil {
+			return Transcription{}, fmt.Errorf("write refine: %w", err)
+		}
+	}
+	if h.Summarize {
+		if err := writer.WriteField("summarize", "true"); err != nil {
+			return Transcription{}, fmt.Errorf("write summarize: %w", err)
+		}
+	}
 	if err := writer.Close(); err != nil {
 		return Transcription{}, fmt.Errorf("close multipart: %w", err)
 	}
@@ -87,6 +107,11 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 	var transcription Transcription
 	if err := json.Unmarshal(data, &transcription); err != nil {
 		return Transcription{}, fmt.Errorf("decode response: %w", err)
+	}
+	if h.OnWarning != nil {
+		for _, warning := range transcription.Warnings {
+			h.OnWarning(warning)
+		}
 	}
 	return transcription, nil
 }

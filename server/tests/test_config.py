@@ -7,6 +7,7 @@ import yaml
 from kitsune_server.cli import main
 from kitsune_server.config import (
     ConfigError,
+    ProcessingConfig,
     ServerConfig,
     dump_config,
     load_config,
@@ -54,6 +55,51 @@ def test_file_values_and_nested_decode(tmp_path: Path) -> None:
     assert config.port == 9000
     assert config.decode.beam_size == 3
     assert config.decode.language == "ru"
+
+
+def test_processing_defaults_disabled(tmp_path: Path) -> None:
+    config = load_config(env={}, cwd=tmp_path)
+    assert config.processing == ProcessingConfig()
+    assert config.processing.enabled is False
+    assert config.processing.model_repo == "Qwen/Qwen3-0.6B-GGUF"
+    assert config.processing.model_file == "Qwen3-0.6B-Q8_0.gguf"
+    assert config.processing.gpu_layers == 0
+    assert config.processing.max_output_tokens == 1024
+    assert config.processing.stage_timeout_seconds == 30.0
+
+
+def test_processing_group_accepted(tmp_path: Path) -> None:
+    write_config(
+        tmp_path,
+        {
+            "processing": {
+                "enabled": True,
+                "model_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+                "model_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+                "gpu_layers": -1,
+                "max_output_tokens": 256,
+                "stage_timeout_seconds": 5,
+            }
+        },
+    )
+    config = load_config(env={}, cwd=tmp_path)
+    assert config.processing.enabled is True
+    assert config.processing.model_repo == "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+    assert config.processing.gpu_layers == -1
+    assert config.processing.max_output_tokens == 256
+    assert config.processing.stage_timeout_seconds == 5.0
+
+
+def test_processing_env_nesting(tmp_path: Path) -> None:
+    config = load_config(env={"KITSUNE_SERVER_PROCESSING__ENABLED": "true"}, cwd=tmp_path)
+    assert config.processing.enabled is True
+
+
+def test_unknown_processing_key_names_field_path(tmp_path: Path) -> None:
+    write_config(tmp_path, {"processing": {"bogus": 1}})
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env={}, cwd=tmp_path)
+    assert "server.processing.bogus" in str(excinfo.value)
 
 
 def test_unknown_key_names_field_path(tmp_path: Path) -> None:

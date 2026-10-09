@@ -9,6 +9,8 @@ import uvicorn
 from .app import create_app
 from .config import ServerConfig
 from .engine import WhisperTranscriber
+from .llm import LlamaTextProcessor
+from .processor import DisabledTextProcessor, TextProcessor
 from .transcriber import Transcriber
 
 logger = logging.getLogger("kitsune.server")
@@ -21,6 +23,17 @@ CPU_ESCAPE_HATCH = (
 
 def build_transcriber(config: ServerConfig) -> Transcriber:
     return WhisperTranscriber.load(config)
+
+
+def build_processor(config: ServerConfig) -> TextProcessor:
+    """Build the processing port; the model itself loads lazily on first use."""
+    if not config.processing.enabled:
+        return DisabledTextProcessor()
+    return LlamaTextProcessor(
+        config.processing,
+        download_root=config.download_root,
+        offline=config.offline,
+    )
 
 
 def run_server(config: ServerConfig) -> None:
@@ -42,5 +55,6 @@ def run_server(config: ServerConfig) -> None:
     )
     if info.device == "cpu":
         logger.warning(CPU_ESCAPE_HATCH)
-    app = create_app(config, transcriber)
+    processor = build_processor(config)
+    app = create_app(config, transcriber, processor)
     uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level)

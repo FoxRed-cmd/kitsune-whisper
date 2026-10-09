@@ -75,10 +75,34 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `decode.temperature` | float | `0.0` | Sampling temperature (≥0). |
 | `decode.vad_filter` | bool | `true` | Server-side VAD; the authoritative silence gate. Keep on so silent utterances return empty text rather than hallucinated words. |
 | `decode.initial_prompt` | string | `""` | Fallback custom vocabulary when a request omits one. |
+| `processing.enabled` | bool | `false` | Master switch for local-LLM post-processing (Refine/Summarize). Off = `/transcribe` output is unchanged. |
+| `processing.model_repo` | string | `Qwen/Qwen3-0.6B-GGUF` | Hugging Face repo of the local GGUF instruct model. |
+| `processing.model_file` | string | `Qwen3-0.6B-Q8_0.gguf` | GGUF file within that repo. |
+| `processing.gpu_layers` | int | `0` | Layers offloaded to the GPU: `0` = CPU only, `-1` = all, `N` = that many. |
+| `processing.max_output_tokens` | int | `1024` | Per-utterance cap on tokens the model may generate. |
+| `processing.stage_timeout_seconds` | float | `30` | Per-stage timeout; a stage that exceeds it degrades to the previous text. |
 
-`/transcribe` accepts per-request `language` and `initial_prompt` form fields;
-when omitted, the `decode:` values above are used. All other decode parameters
-are server-owned.
+`/transcribe` accepts per-request `language`, `initial_prompt`, `refine`, and
+`summarize` form fields; when omitted, the `decode:` values above and processing
+off are used. All other decode parameters are server-owned. With processing on
+and `refine=true` and/or `summarize=true`, the Server loads the local GGUF model
+once (lazily) and returns the **Delivered text** in `text`, the untouched
+**Transcription** in `raw_text`, plus `applied: {refine, summarize}` and
+`warnings: []`. When both are requested, **Refine runs first, then Summarize**,
+so the summary is built from the refined text. Refine and Summarize share one
+model instance and the same determinism, language, timeout, and token-cap rules.
+
+Processing never breaks transcription: a step that is disabled, cannot load its
+model, raises, exceeds `stage_timeout_seconds`, or produces empty text is
+skipped, and the Server returns the previous stage's text with the reason in
+`warnings` — transcription itself never becomes a `5xx` because of processing.
+The Client logs those warnings.
+
+Post-processing needs the optional extra (`pip install 'kitsune-server[processing]'`)
+and the GGUF model is cached under `download_root` and honored by `offline`,
+exactly like Whisper models. `GET /health` advertises it as a `processing:
+{enabled, refine, summarize}` block. The published Docker images do **not** bundle
+this extra; see [Optional post-processing](install.md#optional-post-processing).
 
 ## `client:` section
 
@@ -94,6 +118,8 @@ are server-owned.
 | `timeout_seconds` | number | `0` | Request timeout. `0` = `max(30 s, 2 × audio length)`. |
 | `language` | string | `auto` | Sent per request only when not `auto`. |
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
+| `refine` | bool | `false` | Ask the Server to remove disfluencies and add punctuation. Sent per request only when `true`; needs `server.processing.enabled`. |
+| `summarize` | bool | `false` | Ask the Server to compress the **Transcription**. Sent per request only when `true`; runs after Refine when both are set. Needs `server.processing.enabled`. |
 | `audio.device` | string | `""` | Input device name or index; `""` = system default. `--device` overrides. |
 | `paste` | bool | `true` | Synthesize a paste after writing the clipboard; `false` is clipboard-only. |
 | `paste_shortcut` | `auto`\|`ctrl_v`\|`ctrl_shift_v`\|`shift_insert` | `auto` | `auto` picks `ctrl_shift_v` in terminals and `ctrl_v` elsewhere; `shift_insert` is the classic console paste chord, so on X11/Wayland the transcription is published to the primary selection (the buffer a terminal pastes) as well as the clipboard. |

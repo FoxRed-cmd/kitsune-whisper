@@ -10,12 +10,23 @@ import (
 	"fmt"
 )
 
-// Transcription is the text the Server returns for an utterance.
+// Applied reports which processing steps actually ran on the utterance.
+type Applied struct {
+	Refine    bool `json:"refine"`
+	Summarize bool `json:"summarize"`
+}
+
+// Transcription is the text the Server returns for an utterance. Text is the
+// Delivered text (after any requested processing); RawText is the untouched
+// Transcription, and Warnings explains any step that was requested but skipped.
 type Transcription struct {
-	Text                string  `json:"text"`
-	Language            string  `json:"language"`
-	LanguageProbability float64 `json:"language_probability"`
-	Duration            float64 `json:"duration"`
+	Text                string   `json:"text"`
+	RawText             string   `json:"raw_text"`
+	Language            string   `json:"language"`
+	LanguageProbability float64  `json:"language_probability"`
+	Duration            float64  `json:"duration"`
+	Applied             Applied  `json:"applied"`
+	Warnings            []string `json:"warnings"`
 }
 
 // Transcriber transcribes one utterance's audio.

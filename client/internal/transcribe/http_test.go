@@ -52,7 +52,7 @@ func TestSuccessParsesEnvelope(t *testing.T) {
 	body := `{"text":"hello world","language":"en","language_probability":0.98,"duration":3.24}`
 	server, got := newServer(t, http.StatusOK, body)
 
-	client := transcribe.NewHTTP(server.URL, "", "")
+	client := transcribe.NewHTTP(server.URL, "", "", false, false)
 	result, err := client.Transcribe(context.Background(), []byte("RIFFabcd"))
 	if err != nil {
 		t.Fatalf("transcribe: %v", err)
@@ -89,7 +89,7 @@ func TestOptionalFieldsSentOnlyWhenSet(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			server, got := newServer(t, http.StatusOK, `{"text":"x"}`)
-			client := transcribe.NewHTTP(server.URL, tc.language, tc.initialPrompt)
+			client := transcribe.NewHTTP(server.URL, tc.language, tc.initialPrompt, false, false)
 			if _, err := client.Transcribe(context.Background(), []byte("data")); err != nil {
 				t.Fatalf("transcribe: %v", err)
 			}
@@ -103,9 +103,79 @@ func TestOptionalFieldsSentOnlyWhenSet(t *testing.T) {
 	}
 }
 
+func TestProcessingFieldsSentOnlyWhenTrue(t *testing.T) {
+	cases := []struct {
+		name          string
+		refine        bool
+		summarize     bool
+		wantRefine    string
+		wantSummarize string
+	}{
+		{name: "both off"},
+		{name: "refine only", refine: true, wantRefine: "true"},
+		{name: "summarize only", summarize: true, wantSummarize: "true"},
+		{name: "both on", refine: true, summarize: true, wantRefine: "true", wantSummarize: "true"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server, got := newServer(t, http.StatusOK, `{"text":"x"}`)
+			client := transcribe.NewHTTP(server.URL, "", "", tc.refine, tc.summarize)
+			if _, err := client.Transcribe(context.Background(), []byte("data")); err != nil {
+				t.Fatalf("transcribe: %v", err)
+			}
+			if got.fields["refine"] != tc.wantRefine {
+				t.Fatalf("refine field = %q, want %q", got.fields["refine"], tc.wantRefine)
+			}
+			if got.fields["summarize"] != tc.wantSummarize {
+				t.Fatalf("summarize field = %q, want %q", got.fields["summarize"], tc.wantSummarize)
+			}
+		})
+	}
+}
+
+func TestProcessingResponseFieldsParse(t *testing.T) {
+	body := `{"text":"clean text","raw_text":"um clean text","language":"en",` +
+		`"language_probability":0.9,"duration":2.0,` +
+		`"applied":{"refine":true,"summarize":false},"warnings":["summarize unavailable"]}`
+	server, _ := newServer(t, http.StatusOK, body)
+
+	client := transcribe.NewHTTP(server.URL, "", "", true, true)
+	result, err := client.Transcribe(context.Background(), []byte("data"))
+	if err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	if result.Text != "clean text" {
+		t.Fatalf("text = %q, want Delivered text", result.Text)
+	}
+	if result.RawText != "um clean text" {
+		t.Fatalf("raw_text = %q", result.RawText)
+	}
+	if !result.Applied.Refine || result.Applied.Summarize {
+		t.Fatalf("applied = %+v", result.Applied)
+	}
+	if len(result.Warnings) != 1 || result.Warnings[0] != "summarize unavailable" {
+		t.Fatalf("warnings = %v", result.Warnings)
+	}
+}
+
+func TestWarningsDeliveredToHook(t *testing.T) {
+	body := `{"text":"x","warnings":["refine failed: boom","summarize unavailable"]}`
+	server, _ := newServer(t, http.StatusOK, body)
+
+	var got []string
+	client := transcribe.NewHTTP(server.URL, "", "", true, true)
+	client.OnWarning = func(warning string) { got = append(got, warning) }
+	if _, err := client.Transcribe(context.Background(), []byte("data")); err != nil {
+		t.Fatalf("transcribe: %v", err)
+	}
+	if len(got) != 2 || got[0] != "refine failed: boom" || got[1] != "summarize unavailable" {
+		t.Fatalf("warnings delivered = %v", got)
+	}
+}
+
 func TestErrorEnvelopeDecoded(t *testing.T) {
 	server, _ := newServer(t, http.StatusServiceUnavailable, `{"error":{"code":"unavailable","message":"server is busy"}}`)
-	client := transcribe.NewHTTP(server.URL, "", "")
+	client := transcribe.NewHTTP(server.URL, "", "", false, false)
 	_, err := client.Transcribe(context.Background(), []byte("data"))
 
 	var serverErr *transcribe.ServerError
@@ -122,7 +192,7 @@ func TestErrorEnvelopeDecoded(t *testing.T) {
 
 func TestErrorWithoutEnvelopeFallsBackToBody(t *testing.T) {
 	server, _ := newServer(t, http.StatusInternalServerError, "boom")
-	client := transcribe.NewHTTP(server.URL, "", "")
+	client := transcribe.NewHTTP(server.URL, "", "", false, false)
 	_, err := client.Transcribe(context.Background(), []byte("data"))
 
 	var serverErr *transcribe.ServerError
@@ -136,7 +206,7 @@ func TestErrorWithoutEnvelopeFallsBackToBody(t *testing.T) {
 
 func TestTrailingSlashInBaseURL(t *testing.T) {
 	server, _ := newServer(t, http.StatusOK, `{"text":"ok"}`)
-	client := transcribe.NewHTTP(server.URL+"/", "", "")
+	client := transcribe.NewHTTP(server.URL+"/", "", "", false, false)
 	if _, err := client.Transcribe(context.Background(), []byte("data")); err != nil {
 		t.Fatalf("transcribe: %v", err)
 	}
@@ -144,7 +214,7 @@ func TestTrailingSlashInBaseURL(t *testing.T) {
 
 func TestMalformedSuccessBodyIsError(t *testing.T) {
 	server, _ := newServer(t, http.StatusOK, `not json`)
-	client := transcribe.NewHTTP(server.URL, "", "")
+	client := transcribe.NewHTTP(server.URL, "", "", false, false)
 	if _, err := client.Transcribe(context.Background(), []byte("data")); err == nil {
 		t.Fatal("expected error for malformed success body")
 	}

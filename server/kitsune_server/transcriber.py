@@ -32,7 +32,7 @@ class AudioClip:
 
 @dataclass(frozen=True)
 class Transcription:
-    """The text the Server returns for an utterance."""
+    """The raw text the engine produces for an utterance, before any processing."""
 
     text: str
     language: str

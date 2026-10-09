@@ -18,6 +18,9 @@ dependencies = [
 cuda = [
     "nvidia-cublas-cu12>=12,<13",
 ]
+processing = [
+    "llama-cpp-python>=0.3,<0.4",
+]
 
 [project.scripts]
 kitsune-server = "kitsune_server.cli:main"

@@ -23,8 +23,17 @@ model. Audio never leaves the network.
   of losing it.
 - **Server** (Python + faster-whisper) — behind `POST /transcribe` it decodes the
   request, runs the VAD silence gate, transcribes on the auto-resolved device,
-  and returns JSON. `GET /health` reports the resolved device, compute type, and
-  model.
+  and returns JSON. It can optionally post-process the text with a small local
+  LLM (see **Processing** below). `GET /health` reports the resolved device,
+  compute type, model, and whether processing is enabled.
+- **Processing** (optional) — a request may ask the Server to **Refine** (remove
+  disfluencies, add punctuation) and/or **Summarize** (compress to the key
+  points). Refine runs before Summarize. It is off by default and never makes
+  transcription fail: a disabled, unavailable, timed-out, or empty step is
+  skipped, the text falls back to the previous stage, and the response says why
+  in `warnings`. The Server side is configured under `server.processing` in
+  `kitsune.yaml`; the Client asks for it with `client.refine` / `client.summarize`
+  (see [Configuration](docs/configuration.md)).
 - **Transport** — plain HTTP/1.1, one utterance per request (batch, no streaming
   in v1). `kitsune.yaml` is shared; each process reads only its own section.
 
@@ -48,6 +57,7 @@ flowchart LR
         api["FastAPI<br/>POST /transcribe · GET /health"]
         vad["VAD silence gate"]
         engine["faster-whisper (CTranslate2)<br/>device: auto → CUDA or CPU"]
+        proc["Local LLM (optional)<br/>Refine → Summarize"]
         models[("Model cache<br/>/models volume")]
     end
 
@@ -57,7 +67,8 @@ flowchart LR
     cycle -->|"HTTP multipart audio (LAN only)"| api
     api --> vad --> engine
     engine <--> models
-    api -->|"JSON: text, language, duration"| inject
+    engine -.->|"refine? / summarize?"| proc
+    api -->|"JSON: text, raw_text, language, duration, applied, warnings"| inject
     inject --> app
     cycle -.->|on failure| spool
     cycle -.-> earcon
@@ -82,13 +93,16 @@ sequenceDiagram
     alt cancelled or too short
         C-->>User: inject nothing
     else utterance ready
-        C->>S: POST /transcribe (audio, language?, initial_prompt?)
+        C->>S: POST /transcribe (audio, language?, initial_prompt?, refine?, summarize?)
         S->>S: decode → VAD → faster-whisper
+        opt refine / summarize
+            S->>S: local LLM (Refine before Summarize)
+        end
         alt server error or timeout
             S-->>C: 4xx / 5xx / timeout
             C->>C: save utterance to Spool
         else success
-            S-->>C: 200 {text, language, duration}
+            S-->>C: 200 {text, raw_text, language, duration, applied, warnings}
             alt text empty
                 C-->>User: inject nothing
             else text non-empty
