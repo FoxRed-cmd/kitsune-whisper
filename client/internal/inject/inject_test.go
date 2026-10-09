@@ -19,6 +19,11 @@ type fakeClipboard struct {
 
 	reads  int
 	writes []string
+
+	primaryText     string
+	primaryWrites   []string
+	readPrimaryErr  error
+	writePrimaryErr error
 }
 
 func (c *fakeClipboard) Read() (string, error) {
@@ -39,6 +44,22 @@ func (c *fakeClipboard) Write(text string) error {
 }
 
 func (c *fakeClipboard) CanRestore() bool { return c.canRestore }
+
+func (c *fakeClipboard) ReadPrimary() (string, error) {
+	if c.readPrimaryErr != nil {
+		return "", c.readPrimaryErr
+	}
+	return c.primaryText, nil
+}
+
+func (c *fakeClipboard) WritePrimary(text string) error {
+	if c.writePrimaryErr != nil {
+		return c.writePrimaryErr
+	}
+	c.primaryWrites = append(c.primaryWrites, text)
+	c.primaryText = text
+	return nil
+}
 
 type fakePaster struct {
 	shortcuts []inject.Shortcut
@@ -183,6 +204,69 @@ func TestExplicitShortcutOverridesDetection(t *testing.T) {
 				t.Fatalf("pasted %v, want %v", h.paster.shortcuts, tc.want)
 			}
 		})
+	}
+}
+
+// --- primary selection ---
+
+func TestShiftInsertMirrorsTranscriptionToPrimarySelection(t *testing.T) {
+	h := newHarness(t, inject.Options{Paste: true, PasteShortcut: "shift_insert"})
+	h.clipboard.canRestore = false
+	if err := h.injector.Inject("hi"); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	wantWrites(t, h.clipboard.writes, "hi")
+	if !reflect.DeepEqual(h.clipboard.primaryWrites, []string{"hi"}) {
+		t.Fatalf("primary writes = %#v, want [hi]", h.clipboard.primaryWrites)
+	}
+}
+
+func TestNonShiftInsertLeavesPrimarySelectionUntouched(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		shortcut string
+		app      string
+	}{
+		{name: "ctrl_v", shortcut: "ctrl_v", app: "xterm"},
+		{name: "ctrl_shift_v", shortcut: "ctrl_shift_v", app: "xterm"},
+		{name: "auto in terminal", shortcut: "auto", app: "xterm"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, inject.Options{Paste: true, PasteShortcut: tc.shortcut})
+			h.clipboard.canRestore = false
+			h.focus.app = tc.app
+			if err := h.injector.Inject("hi"); err != nil {
+				t.Fatalf("inject: %v", err)
+			}
+			if len(h.clipboard.primaryWrites) != 0 {
+				t.Fatalf("primary writes = %#v, want none", h.clipboard.primaryWrites)
+			}
+		})
+	}
+}
+
+func TestShiftInsertRestoresPrimarySelection(t *testing.T) {
+	h := newHarness(t, inject.Options{Paste: true, PasteShortcut: "shift_insert"})
+	h.clipboard.text = "old-clip"
+	h.clipboard.primaryText = "old-primary"
+	h.clipboard.canRestore = true
+	if err := h.injector.Inject("hi"); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	wantWrites(t, h.clipboard.writes, "hi", "old-clip")
+	if !reflect.DeepEqual(h.clipboard.primaryWrites, []string{"hi", "old-primary"}) {
+		t.Fatalf("primary writes = %#v, want [hi old-primary]", h.clipboard.primaryWrites)
+	}
+}
+
+func TestPasteDisabledShiftInsertPublishesPrimary(t *testing.T) {
+	h := newHarness(t, inject.Options{Paste: false, PasteShortcut: "shift_insert"})
+	if err := h.injector.Inject("hi"); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	wantWrites(t, h.clipboard.writes, "hi")
+	if !reflect.DeepEqual(h.clipboard.primaryWrites, []string{"hi"}) {
+		t.Fatalf("primary writes = %#v, want [hi]", h.clipboard.primaryWrites)
 	}
 }
 

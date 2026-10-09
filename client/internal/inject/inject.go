@@ -88,6 +88,20 @@ type Clipboard interface {
 	CanRestore() bool
 }
 
+// PrimaryClipboard is an optional Clipboard extension for desktops with a
+// second, mouse-driven selection (X11 and Wayland). A terminal pastes that
+// selection on Shift+Insert, while a browser or a GTK text field pastes the
+// ordinary clipboard, so the Injector mirrors a Shift+Insert transcription to
+// both buffers. The port is absent on Windows and macOS, where Shift+Insert
+// pastes the ordinary clipboard the Clipboard port already holds.
+type PrimaryClipboard interface {
+	// ReadPrimary returns the current primary-selection text, or an error when
+	// it holds no readable text.
+	ReadPrimary() (string, error)
+	// WritePrimary replaces the primary selection with text.
+	WritePrimary(text string) error
+}
+
 // Focus reports the focused application, for the terminal-aware default.
 type Focus interface {
 	// ForegroundApp returns a class or process name for the focused window, or
@@ -136,6 +150,7 @@ type Injector struct {
 	restore       restorePolicy
 
 	clipboard Clipboard
+	primary   PrimaryClipboard
 	paster    Paster
 	focus     Focus
 
@@ -187,11 +202,13 @@ func New(opts Options) (*Injector, error) {
 	if opts.Paste && paste == nil {
 		log("no synthetic-paste backend available: using clipboard-only")
 	}
+	primary, _ := clip.(PrimaryClipboard)
 	return &Injector{
 		paste:         opts.Paste && paste != nil,
 		pasteShortcut: mode,
 		restore:       restore,
 		clipboard:     clip,
+		primary:       primary,
 		paster:        paste,
 		focus:         focus,
 		log:           log,
@@ -205,6 +222,10 @@ func New(opts Options) (*Injector, error) {
 // manually; otherwise the clipboard is written, the paste is synthesized, and
 // the previous clipboard is restored where the policy and desktop allow. A
 // failed paste leaves the transcript on the clipboard so it is not lost.
+//
+// When the synthetic chord is Shift+Insert the transcription is also published
+// to the primary selection, because terminals paste that buffer on that chord
+// while browsers paste the ordinary clipboard.
 func (i *Injector) Inject(text string) error {
 	if strings.TrimSpace(text) == "" {
 		i.log("empty transcription: clipboard untouched")
@@ -215,13 +236,22 @@ func (i *Injector) Inject(text string) error {
 		if err := i.clipboard.Write(text); err != nil {
 			return fmt.Errorf("write clipboard: %w", err)
 		}
-		i.log("paste disabled: transcription is on the clipboard")
+		dest := "the clipboard"
+		if i.pasteShortcut == pasteShiftInsert && i.primary != nil {
+			if err := i.primary.WritePrimary(text); err != nil {
+				i.log(fmt.Sprintf("primary selection write failed: %v", err))
+			} else {
+				dest = "the clipboard and primary selection"
+			}
+		}
+		i.log("paste disabled: transcription is on " + dest)
 		return nil
 	}
 
 	shortcut := i.shortcut()
+	usePrimary := shortcut == ShiftInsert && i.primary != nil
 	restorePrevious := i.shouldRestore()
-	var previous string
+	var previous, previousPrimary string
 	if restorePrevious {
 		prev, err := i.clipboard.Read()
 		switch {
@@ -233,10 +263,25 @@ func (i *Injector) Inject(text string) error {
 		default:
 			previous = prev
 		}
+		if usePrimary {
+			prevPrimary, err := i.primary.ReadPrimary()
+			switch {
+			case err != nil:
+				i.log(fmt.Sprintf("primary selection restore skipped: %v", err))
+			case prevPrimary == "":
+			default:
+				previousPrimary = prevPrimary
+			}
+		}
 	}
 
 	if err := i.clipboard.Write(text); err != nil {
 		return fmt.Errorf("write clipboard: %w", err)
+	}
+	if usePrimary {
+		if err := i.primary.WritePrimary(text); err != nil {
+			i.log(fmt.Sprintf("primary selection write failed: %v", err))
+		}
 	}
 	i.sleep(defaultDelay)
 	if err := i.paster.Paste(shortcut); err != nil {
@@ -249,6 +294,11 @@ func (i *Injector) Inject(text string) error {
 			i.log(fmt.Sprintf("clipboard restore failed: %v", err))
 		} else {
 			i.log("pasted; previous clipboard restored")
+		}
+		if previousPrimary != "" {
+			if err := i.primary.WritePrimary(previousPrimary); err != nil {
+				i.log(fmt.Sprintf("primary selection restore failed: %v", err))
+			}
 		}
 		return nil
 	}
