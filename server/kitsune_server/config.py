@@ -52,12 +52,19 @@ class DecodeConfig(_StrictModel):
 
 
 class ProcessingConfig(_StrictModel):
-    """Optional local-LLM post-processing (Refine/Summarize) settings."""
+    """Optional Refine/Summarize post-processing over an OpenAI-compatible endpoint.
+
+    The Server is a thin HTTP client: it posts chat completions to
+    ``{base_url}/v1/chat/completions``. ``base_url`` defaults to a loopback
+    address so processing stays local unless an operator opts into an external
+    provider; ``api_key`` is sent as ``Authorization: Bearer``.
+    """
 
     enabled: bool = False
-    model_repo: str = Field(default="Qwen/Qwen3-0.6B-GGUF", min_length=1)
-    model_file: str = Field(default="Qwen3-0.6B-Q8_0.gguf", min_length=1)
-    gpu_layers: int = Field(default=0, ge=-1)
+    base_url: str = Field(default="http://127.0.0.1:8080", min_length=1)
+    api_key: str | None = None
+    model: str = Field(default="Qwen3-0.6B-Q8_0.gguf", min_length=1)
+    extra_body: dict[str, Any] = Field(default_factory=dict)
     max_output_tokens: int = Field(default=1024, ge=1)
     stage_timeout_seconds: float = Field(default=30.0, gt=0)
 

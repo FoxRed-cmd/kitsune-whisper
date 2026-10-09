@@ -61,9 +61,10 @@ def test_processing_defaults_disabled(tmp_path: Path) -> None:
     config = load_config(env={}, cwd=tmp_path)
     assert config.processing == ProcessingConfig()
     assert config.processing.enabled is False
-    assert config.processing.model_repo == "Qwen/Qwen3-0.6B-GGUF"
-    assert config.processing.model_file == "Qwen3-0.6B-Q8_0.gguf"
-    assert config.processing.gpu_layers == 0
+    assert config.processing.base_url == "http://127.0.0.1:8080"
+    assert config.processing.api_key is None
+    assert config.processing.model == "Qwen3-0.6B-Q8_0.gguf"
+    assert config.processing.extra_body == {}
     assert config.processing.max_output_tokens == 1024
     assert config.processing.stage_timeout_seconds == 30.0
 
@@ -74,9 +75,10 @@ def test_processing_group_accepted(tmp_path: Path) -> None:
         {
             "processing": {
                 "enabled": True,
-                "model_repo": "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
-                "model_file": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
-                "gpu_layers": -1,
+                "base_url": "http://ollama:11434",
+                "api_key": "secret",
+                "model": "qwen2.5:1.5b",
+                "extra_body": {"top_p": 0.9, "chat_template_kwargs": {"enable_thinking": False}},
                 "max_output_tokens": 256,
                 "stage_timeout_seconds": 5,
             }
@@ -84,15 +86,40 @@ def test_processing_group_accepted(tmp_path: Path) -> None:
     )
     config = load_config(env={}, cwd=tmp_path)
     assert config.processing.enabled is True
-    assert config.processing.model_repo == "Qwen/Qwen2.5-1.5B-Instruct-GGUF"
-    assert config.processing.gpu_layers == -1
+    assert config.processing.base_url == "http://ollama:11434"
+    assert config.processing.api_key == "secret"
+    assert config.processing.model == "qwen2.5:1.5b"
+    assert config.processing.extra_body == {
+        "top_p": 0.9,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
     assert config.processing.max_output_tokens == 256
     assert config.processing.stage_timeout_seconds == 5.0
+
+
+@pytest.mark.parametrize("removed", ["model_repo", "model_file", "gpu_layers"])
+def test_processing_removed_keys_fail_validation(tmp_path: Path, removed: str) -> None:
+    write_config(tmp_path, {"processing": {removed: "whatever"}})
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env={}, cwd=tmp_path)
+    assert f"server.processing.{removed}" in str(excinfo.value)
 
 
 def test_processing_env_nesting(tmp_path: Path) -> None:
     config = load_config(env={"KITSUNE_SERVER_PROCESSING__ENABLED": "true"}, cwd=tmp_path)
     assert config.processing.enabled is True
+
+
+def test_processing_env_overrides_base_url_and_api_key(tmp_path: Path) -> None:
+    config = load_config(
+        env={
+            "KITSUNE_SERVER_PROCESSING__BASE_URL": "http://gpu-box:8080",
+            "KITSUNE_SERVER_PROCESSING__API_KEY": "from-env",
+        },
+        cwd=tmp_path,
+    )
+    assert config.processing.base_url == "http://gpu-box:8080"
+    assert config.processing.api_key == "from-env"
 
 
 def test_unknown_processing_key_names_field_path(tmp_path: Path) -> None:

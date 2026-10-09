@@ -1,20 +1,19 @@
 from __future__ import annotations
 
-import sys
-import types
-from pathlib import Path
-from typing import ClassVar
+import json
+from collections.abc import Callable
 
+import httpx
 import pytest
 from kitsune_server.config import ProcessingConfig
 from kitsune_server.llm import (
     REFINE_SYSTEM_PROMPT,
     SUMMARIZE_SYSTEM_PROMPT,
-    LlamaTextProcessor,
+    OpenAITextProcessor,
     build_refine_messages,
     build_summarize_messages,
-    no_think_chat_handler,
 )
+from kitsune_server.processor import ProcessingError
 
 
 def test_build_refine_messages_preserves_text() -> None:
@@ -47,103 +46,145 @@ def test_build_summarize_prompt_forbids_bullet_lists() -> None:
     assert "bullet" in lowered
 
 
-class FakeLlama:
-    created: ClassVar[list[FakeLlama]] = []
-
-    def __init__(self, **kwargs: object) -> None:
-        self.init_kwargs = kwargs
-        self.metadata: dict[str, object] = {}
-        self.calls: list[dict[str, object]] = []
-        FakeLlama.created.append(self)
-
-    def create_chat_completion(self, **kwargs: object) -> dict[str, object]:
-        self.calls.append(kwargs)
-        return {"choices": [{"message": {"content": "  Hi there.  "}}]}
+def make_processor(
+    handler: Callable[[httpx.Request], httpx.Response],
+    **config: object,
+) -> OpenAITextProcessor:
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    settings = ProcessingConfig(enabled=True, **config)  # type: ignore[arg-type]
+    return OpenAITextProcessor(settings, client=client)
 
 
-def test_refine_maps_config_to_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    download: dict[str, object] = {}
+def _ok(content: object) -> httpx.Response:
+    return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
-    def fake_download(**kwargs: object) -> str:
-        download.update(kwargs)
-        return str(tmp_path / "model.gguf")
 
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
-    FakeLlama.created.clear()
-    fake_module = types.ModuleType("llama_cpp")
-    fake_module.Llama = FakeLlama  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "llama_cpp", fake_module)
+def test_refine_posts_openai_chat_completion_request() -> None:
+    captured: list[httpx.Request] = []
 
-    config = ProcessingConfig(
-        enabled=True,
-        model_repo="Qwen/Qwen3-0.6B-GGUF",
-        model_file="Qwen3-0.6B-Q8_0.gguf",
-        gpu_layers=4,
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _ok("  Hi there.  ")
+
+    processor = make_processor(
+        handler,
+        base_url="http://llm.test:9000/",
+        api_key="secret",
+        model="qwen3",
         max_output_tokens=128,
+        extra_body={"top_p": 0.9},
     )
-    processor = LlamaTextProcessor(config, download_root=str(tmp_path), offline=True)
 
     assert processor.info.enabled is True
     assert processor.refine("um hi", language="en") == "Hi there."
-    # The model is loaded once and reused, even across repeated calls.
-    assert processor.refine("um hi again", language="en") == "Hi there."
-    assert len(FakeLlama.created) == 1
 
-    assert download["repo_id"] == "Qwen/Qwen3-0.6B-GGUF"
-    assert download["filename"] == "Qwen3-0.6B-Q8_0.gguf"
-    assert download["cache_dir"] == str(tmp_path)
-    assert download["local_files_only"] is True
-
-    llm = FakeLlama.created[0]
-    assert llm.init_kwargs["n_gpu_layers"] == 4
-    assert llm.calls[0]["temperature"] == 0.0
-    assert llm.calls[0]["seed"] == 0
-    assert llm.calls[0]["max_tokens"] == 128
-
-    # Summarize reuses the same resident model and the same decode settings.
-    assert processor.summarize("a long story", language="ru") == "Hi there."
-    assert len(FakeLlama.created) == 1
-    assert llm.calls[1]["temperature"] == 0.0
-    assert llm.calls[1]["seed"] == 0
-    assert llm.calls[1]["max_tokens"] == 128
+    request = captured[0]
+    assert request.method == "POST"
+    assert str(request.url) == "http://llm.test:9000/v1/chat/completions"
+    assert request.headers["Authorization"] == "Bearer secret"
+    assert request.headers["content-type"] == "application/json"
+    body = json.loads(request.content)
+    assert body["model"] == "qwen3"
+    assert body["messages"] == build_refine_messages("um hi", "en")
+    assert body["temperature"] == 0
+    assert body["seed"] == 0
+    assert body["max_tokens"] == 128
+    assert body["top_p"] == 0.9
 
 
-class FakeJinja2ChatFormatter:
-    def __init__(self, *, template: str, eos_token: str, bos_token: str) -> None:
-        self.template = template
-        self.eos_token = eos_token
-        self.bos_token = bos_token
+def test_summarize_posts_summarize_prompt() -> None:
+    captured: list[httpx.Request] = []
 
-    def __call__(self, **kwargs: object) -> dict[str, object]:
-        return dict(kwargs)
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _ok("A story.")
 
-    def to_chat_handler(self) -> FakeJinja2ChatFormatter:
-        return self
+    processor = make_processor(handler)
 
-
-def install_fake_llama_chat_format(monkeypatch: pytest.MonkeyPatch) -> None:
-    package = types.ModuleType("llama_cpp")
-    chat_format = types.ModuleType("llama_cpp.llama_chat_format")
-    chat_format.Jinja2ChatFormatter = FakeJinja2ChatFormatter  # type: ignore[attr-defined]
-    package.llama_chat_format = chat_format  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "llama_cpp", package)
-    monkeypatch.setitem(sys.modules, "llama_cpp.llama_chat_format", chat_format)
+    assert processor.summarize("a long rambling story", language="ru") == "A story."
+    body = json.loads(captured[0].content)
+    assert body["messages"] == build_summarize_messages("a long rambling story", "ru")
 
 
-def test_no_think_handler_disables_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
-    install_fake_llama_chat_format(monkeypatch)
-    llm = types.SimpleNamespace(
-        metadata={"tokenizer.chat_template": "{{ messages }}"},
-        detokenize=lambda ids: b"<|im_end|>",
-    )
+def test_no_api_key_omits_authorization_header() -> None:
+    captured: list[httpx.Request] = []
 
-    handler = no_think_chat_handler(llm)
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _ok("ok")
 
-    assert handler is not None
-    assert handler()["enable_thinking"] is False
-    assert handler(enable_thinking=True)["enable_thinking"] is True
+    make_processor(handler).refine("hi")
+
+    assert "authorization" not in captured[0].headers
 
 
-def test_no_think_handler_is_none_without_template() -> None:
-    llm = types.SimpleNamespace(metadata={})
-    assert no_think_chat_handler(llm) is None
+def test_extra_body_overrides_default_request_fields() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return _ok("ok")
+
+    make_processor(handler, extra_body={"temperature": 0.7}).refine("hi")
+
+    assert json.loads(captured[0].content)["temperature"] == 0.7
+
+
+@pytest.mark.parametrize("status", [400, 404, 500, 503])
+def test_non_2xx_response_raises_processing_error(status: int) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text="nope")
+
+    with pytest.raises(ProcessingError):
+        make_processor(handler).refine("hi")
+
+
+@pytest.mark.parametrize("content", [None, "", "   "])
+def test_missing_or_empty_content_raises_processing_error(content: object) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _ok(content)
+
+    with pytest.raises(ProcessingError):
+        make_processor(handler).refine("hi")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"choices": []},
+        {"choices": [{}]},
+        {"choices": [{"message": {}}]},
+        {},
+        [1, 2, 3],
+    ],
+)
+def test_malformed_body_raises_processing_error(payload: object) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    with pytest.raises(ProcessingError):
+        make_processor(handler).refine("hi")
+
+
+def test_invalid_json_raises_processing_error() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>not json</html>")
+
+    with pytest.raises(ProcessingError):
+        make_processor(handler).refine("hi")
+
+
+def test_unreachable_endpoint_raises_processing_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    with pytest.raises(ProcessingError):
+        make_processor(handler).refine("hi")
+
+
+def test_malformed_base_url_raises_processing_error() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _ok("ok")
+
+    with pytest.raises(ProcessingError):
+        make_processor(handler, base_url="http://[::1").refine("hi")
