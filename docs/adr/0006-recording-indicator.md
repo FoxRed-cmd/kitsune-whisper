@@ -15,8 +15,8 @@ toolkit exposes.
 The indicator is therefore built **in-process** as a `cycle.Feedback` adapter:
 
 - One **shared renderer** (pure Go) composes each frame into an `image.RGBA`:
-  the pill, the level bars, the pulsing dot, and the stop button. Animation and
-  level smoothing live here and are unit-tested without a display.
+  the pill, the level bars, and the stop button. Animation and level smoothing
+  live here and are unit-tested without a display.
 - Three thin **presenters** own only window creation and blitting: Win32
   (`CreateWindowExW` + `UpdateLayeredWindow`), X11 (`xgb`, depth-32 visual,
   override-redirect, `XShape` input region), and Wayland (`zwlr_layer_shell_v1`

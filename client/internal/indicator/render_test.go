@@ -20,7 +20,7 @@ func TestRenderCornersTransparentAndPillOpaque(t *testing.T) {
 	if got := img.RGBAAt(1, 1).A; got != 0 {
 		t.Fatalf("corner alpha = %d, want 0", got)
 	}
-	if got := img.RGBAAt(110, 44).A; got < 200 {
+	if got := img.RGBAAt(72, 44).A; got < 200 {
 		t.Fatalf("pill centre alpha = %d, want opaque", got)
 	}
 }
@@ -35,8 +35,8 @@ func TestRenderScalesFrame(t *testing.T) {
 func TestHigherLevelProducesTallerBars(t *testing.T) {
 	quiet := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Level: 0.05, Alpha: 1, Scale: 1})
 	loud := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Level: 0.95, Alpha: 1, Scale: 1})
-	quietPixels := countAccent(quiet, 60, 20, 160, 52)
-	loudPixels := countAccent(loud, 60, 20, 160, 52)
+	quietPixels := countAccent(quiet, 10, 20, 90, 52)
+	loudPixels := countAccent(loud, 10, 20, 90, 52)
 	if quietPixels >= loudPixels {
 		t.Fatalf("higher level did not produce taller bars: quiet=%d loud=%d", quietPixels, loudPixels)
 	}
@@ -44,9 +44,9 @@ func TestHigherLevelProducesTallerBars(t *testing.T) {
 
 func TestErrorPhaseIsRed(t *testing.T) {
 	img := indicator.Render(indicator.Frame{Phase: indicator.PhaseError, Alpha: 1, Scale: 1})
-	pixel := img.RGBAAt(28, 44)
+	pixel := img.RGBAAt(49, 44)
 	if !(pixel.R > pixel.G && pixel.R > pixel.B) {
-		t.Fatalf("error dot = %+v, want red", pixel)
+		t.Fatalf("error bars = %+v, want red", pixel)
 	}
 }
 

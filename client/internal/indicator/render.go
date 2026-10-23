@@ -17,7 +17,7 @@ import (
 // whole frame by Frame.Scale.
 const (
 	// LogicalWidth is the width of the frame; the pill fills it.
-	LogicalWidth = 220
+	LogicalWidth = 144
 	// LogicalHeight is the height of the frame: a 16 px top margin plus the
 	// pill.
 	LogicalHeight = 72
@@ -99,31 +99,19 @@ func Render(f Frame) *image.RGBA {
 		accent = rgba{0.62, 0.63, 0.67}
 	}
 
-	// Pulsing dot.
-	dotRadius := 7.0
-	dotAlpha := 0.9
-	if f.Phase == PhaseRecording {
-		phase := float64(f.Time%1200*time.Millisecond) / float64(1200*time.Millisecond)
-		pulse := 0.5 + 0.5*math.Sin(phase*2*math.Pi)
-		dotRadius = 6 + 1.5*pulse
-		dotAlpha = 0.55 + 0.45*pulse
-	} else if f.Phase == PhaseProcessing {
-		phase := float64(f.Time%900*time.Millisecond) / float64(900*time.Millisecond)
-		dotAlpha = 0.45 + 0.35*math.Sin(phase*2*math.Pi)
-	}
-	fillCircle(img, pillX+28*float64(scale), pillY+pillH/2, dotRadius*float64(scale), accent, dotAlpha*alpha)
-
 	// Seven level bars.
 	const barCount = 7
 	pattern := [barCount]float64{0.55, 0.75, 0.9, 1, 0.9, 0.75, 0.55}
 	barWidth := 4.0 * float64(scale)
 	gap := 6.0 * float64(scale)
 	total := barCount*barWidth + (barCount-1)*gap
-	startX := pillX + (pillW-total)/2
+	// Centre the bars in the space left of the stop button so the pill stays
+	// balanced without the former indicator dot.
+	startX := (float64(StopRegion(scale).Min.X) - total) / 2
 	centerY := pillY + pillH/2
 	level := clamp01(f.Level)
 	for i := 0; i < barCount; i++ {
-		height := 4.0 + level*20.0*pattern[i]
+		height := 4.0 + level*30.0*pattern[i]
 		barAlpha := 0.75
 		switch f.Phase {
 		case PhaseProcessing:
@@ -186,26 +174,6 @@ func fillRoundRect(img *image.RGBA, x, y, w, h, radius float64, c rgba, alpha fl
 			outside := math.Hypot(math.Max(qx, 0), math.Max(qy, 0))
 			inside := math.Min(math.Max(qx, qy), 0)
 			distance := outside + inside - radius
-			coverage := clamp01(0.5 - distance)
-			if coverage > 0 {
-				blend(img, px, py, c, alpha*coverage)
-			}
-		}
-	}
-}
-
-// fillCircle composes an antialiased circle.
-func fillCircle(img *image.RGBA, cx, cy, radius float64, c rgba, alpha float64) {
-	if radius <= 0 || alpha <= 0 {
-		return
-	}
-	minX := max(0, int(math.Floor(cx-radius))-1)
-	maxX := min(img.Bounds().Dx()-1, int(math.Ceil(cx+radius))+1)
-	minY := max(0, int(math.Floor(cy-radius))-1)
-	maxY := min(img.Bounds().Dy()-1, int(math.Ceil(cy+radius))+1)
-	for py := minY; py <= maxY; py++ {
-		for px := minX; px <= maxX; px++ {
-			distance := math.Hypot(float64(px)+0.5-cx, float64(py)+0.5-cy) - radius
 			coverage := clamp01(0.5 - distance)
 			if coverage > 0 {
 				blend(img, px, py, c, alpha*coverage)

@@ -20,11 +20,18 @@ const (
 	errorHold = 1500 * time.Millisecond
 	// tooShortHold keeps the dim state on screen before fading.
 	tooShortHold = 300 * time.Millisecond
-	// levelAttack and levelRelease smooth the Input level. Mapping from RMS to
-	// dBFS happens on the render side of the smoothing; the audio callback only
-	// publishes raw RMS.
-	levelAttack  = 20 * time.Millisecond
-	levelRelease = 120 * time.Millisecond
+	// levelAttack and levelRelease smooth the Input level. The raw RMS is mapped
+	// to a visual level before smoothing; the audio callback only publishes raw
+	// RMS.
+	levelAttack  = 50 * time.Millisecond
+	levelRelease = 180 * time.Millisecond
+	// floorFall and floorRise move the ambient noise floor used by the level
+	// meter. It drops quickly so bars return to rest in silence, and creeps up
+	// slowly so steady room noise does not keep them raised.
+	floorFall = 0.25
+	floorRise = 0.001
+	// minNoiseFloor keeps the ratio finite on a digitally silent device.
+	minNoiseFloor = 1e-4
 )
 
 // Clock supplies time and the render ticker. Tests inject a fake.
@@ -92,17 +99,18 @@ type Indicator struct {
 
 	closeOnce sync.Once
 	// The fields below are owned by the run goroutine.
-	disabled  atomic.Bool
-	visible   bool
-	phase     Phase
-	alpha     float64
-	fading    bool
-	fadeStart time.Time
-	holdUntil time.Time
-	delivered bool
-	levelVal  float64
-	lastTick  time.Time
-	shownAt   time.Time
+	disabled   atomic.Bool
+	visible    bool
+	phase      Phase
+	alpha      float64
+	fading     bool
+	fadeStart  time.Time
+	holdUntil  time.Time
+	delivered  bool
+	levelVal   float64
+	noiseFloor float64
+	lastTick   time.Time
+	shownAt    time.Time
 }
 
 // New starts an Indicator. A nil Presenter yields an inert indicator, so callers
@@ -229,6 +237,7 @@ func (i *Indicator) handleCue(cue cycle.Cue, now time.Time) {
 		i.holdUntil = time.Time{}
 		i.delivered = false
 		i.levelVal = 0
+		i.noiseFloor = 0
 		i.lastTick = now
 		i.shownAt = now
 		i.logPhase("recording")
@@ -305,7 +314,7 @@ func (i *Indicator) tick(now time.Time) {
 	i.lastTick = now
 
 	if i.phase == PhaseRecording && !i.fading && i.level != nil {
-		target := levelFromRMS(i.level.InputLevel())
+		target := i.levelTarget(i.level.InputLevel())
 		timeConstant := levelAttack
 		if target < i.levelVal {
 			timeConstant = levelRelease
@@ -386,11 +395,46 @@ func (i *Indicator) logPhase(phase string) {
 	i.onLog("indicator: " + phase)
 }
 
-// levelFromRMS maps full-scale RMS to dBFS in [-60,0] and then to [0,1].
-func levelFromRMS(rms float64) float64 {
+// levelTarget maps the raw RMS to a visual level relative to the ambient noise
+// floor. Absolute dBFS is a poor fit for a meter: a normal room easily sits at
+// -30 dBFS, so it would already fill half the scale and speech would barely
+// move the bars. Relative dB keeps the bars low in silence and responsive to
+// voice on any microphone.
+func (i *Indicator) levelTarget(rms float64) float64 {
+	// The first callbacks after Start can still report digital silence. Do not
+	// calibrate the floor from those, or it starts at the minimum and the meter
+	// stays pegged until the floor creeps up.
 	if rms <= 0 {
 		return 0
 	}
-	db := 20 * math.Log10(rms)
-	return clamp01((db + 60) / 60)
+	if i.noiseFloor <= 0 {
+		i.noiseFloor = rms
+		return 0
+	}
+	if rms < i.noiseFloor {
+		i.noiseFloor += (rms - i.noiseFloor) * floorFall
+	} else {
+		rise := floorRise
+		if rms > i.noiseFloor*4 {
+			// The floor was seeded from an unusually quiet moment; catch up in
+			// about a second instead of tens of seconds.
+			rise = 0.05
+		}
+		i.noiseFloor += (rms - i.noiseFloor) * rise
+	}
+	if i.noiseFloor < minNoiseFloor {
+		i.noiseFloor = minNoiseFloor
+	}
+	return levelAboveFloor(rms, i.noiseFloor)
+}
+
+func levelAboveFloor(rms, floor float64) float64 {
+	if rms <= floor || floor <= 0 {
+		return 0
+	}
+	// The floor maps to rest. A soft knee keeps quiet speech visible without
+	// pinning the bars to full scale on a high-SNR microphone, where speech can
+	// sit 25 dB or more above the room.
+	relativeDB := 20 * math.Log10(rms/floor)
+	return math.Tanh(relativeDB / 18)
 }
