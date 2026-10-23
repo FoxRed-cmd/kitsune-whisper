@@ -236,6 +236,31 @@ func TestClickOnlyWhileRecording(t *testing.T) {
 	}
 }
 
+func TestRecordingBarsFollowTheInputLevel(t *testing.T) {
+	h := newHarness(t)
+	h.level.set(0.02)
+	h.indicator.Cue(cycle.CueStart)
+	h.waitFrame(t)
+
+	advance := func() *image.RGBA {
+		h.clock.advance(50 * time.Millisecond)
+		return h.waitFrame(t).image
+	}
+	for n := 0; n < 5; n++ {
+		advance()
+	}
+	quiet := advance()
+
+	h.level.set(0.08)
+	var loud *image.RGBA
+	for n := 0; n < 8; n++ {
+		loud = advance()
+	}
+	if countAccent(loud, 12) <= countAccent(quiet, 12) {
+		t.Fatal("bars did not grow when the input level rose")
+	}
+}
+
 func TestCancelHidesImmediately(t *testing.T) {
 	h := newHarness(t)
 	h.indicator.Cue(cycle.CueStart)
@@ -334,9 +359,9 @@ func TestFailedFrameDisablesOnceWithoutBreakingTheCycle(t *testing.T) {
 }
 
 func TestPresenterSelection(t *testing.T) {
-	newPresenter := func(name string, err error) (*fakePresenter, func() (indicator.Presenter, error), *atomic.Int32) {
+	newPresenter := func(name string, err error) (func() (indicator.Presenter, error), *atomic.Int32) {
 		calls := &atomic.Int32{}
-		return nil, func() (indicator.Presenter, error) {
+		return func() (indicator.Presenter, error) {
 			calls.Add(1)
 			if err != nil {
 				return nil, err
@@ -366,8 +391,8 @@ func TestPresenterSelection(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, layer, layerCalls := newPresenter("layer_shell", tc.layerErr)
-			_, x11, x11Calls := newPresenter("x11", tc.x11Err)
+			layer, layerCalls := newPresenter("layer_shell", tc.layerErr)
+			x11, x11Calls := newPresenter("x11", tc.x11Err)
 			presenter, err := indicator.Open(tc.configured, tc.env, indicator.Factories{LayerShell: layer, X11: x11})
 			if tc.wantErr {
 				if err == nil {

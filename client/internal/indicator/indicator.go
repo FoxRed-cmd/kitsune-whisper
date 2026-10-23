@@ -323,17 +323,18 @@ func (i *Indicator) tick(now time.Time) {
 		i.levelVal += (target - i.levelVal) * coefficient
 	}
 
-	if i.fading {
+	switch {
+	case i.fading:
 		elapsed := now.Sub(i.fadeStart)
 		if elapsed >= fadeDuration {
 			i.hideNow()
 			return
 		}
 		i.alpha = 1 - float64(elapsed)/float64(fadeDuration)
-	} else if !i.holdUntil.IsZero() && !now.Before(i.holdUntil) {
+	case !i.holdUntil.IsZero() && !now.Before(i.holdUntil):
 		i.beginFade(now)
 		i.alpha = 1
-	} else {
+	default:
 		i.alpha = 1
 	}
 	i.show(now)

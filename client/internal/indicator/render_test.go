@@ -35,8 +35,8 @@ func TestRenderScalesFrame(t *testing.T) {
 func TestHigherLevelProducesTallerBars(t *testing.T) {
 	quiet := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Level: 0.05, Alpha: 1, Scale: 1})
 	loud := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Level: 0.95, Alpha: 1, Scale: 1})
-	quietPixels := countAccent(quiet, 10, 20, 90, 52)
-	loudPixels := countAccent(loud, 10, 20, 90, 52)
+	quietPixels := countAccent(quiet, 10)
+	loudPixels := countAccent(loud, 10)
 	if quietPixels >= loudPixels {
 		t.Fatalf("higher level did not produce taller bars: quiet=%d loud=%d", quietPixels, loudPixels)
 	}
@@ -45,7 +45,7 @@ func TestHigherLevelProducesTallerBars(t *testing.T) {
 func TestErrorPhaseIsRed(t *testing.T) {
 	img := indicator.Render(indicator.Frame{Phase: indicator.PhaseError, Alpha: 1, Scale: 1})
 	pixel := img.RGBAAt(49, 44)
-	if !(pixel.R > pixel.G && pixel.R > pixel.B) {
+	if pixel.R <= pixel.G || pixel.R <= pixel.B {
 		t.Fatalf("error bars = %+v, want red", pixel)
 	}
 }
@@ -106,10 +106,10 @@ func countOpaque(img *image.RGBA, x0, y0, x1, y1 int) int {
 	return count
 }
 
-func countAccent(img *image.RGBA, x0, y0, x1, y1 int) int {
+func countAccent(img *image.RGBA, x0 int) int {
 	count := 0
-	for y := y0; y <= y1; y++ {
-		for x := x0; x <= x1; x++ {
+	for y := 20; y <= 52; y++ {
+		for x := x0; x <= 90; x++ {
 			pixel := img.RGBAAt(x, y)
 			if pixel.G > 100 && int(pixel.G) > int(pixel.R)+30 {
 				count++

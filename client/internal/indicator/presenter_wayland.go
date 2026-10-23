@@ -245,7 +245,6 @@ func NewLayerShell() (Presenter, error) {
 		}
 	} else {
 		p.scale = 1
-		scale = 1
 	}
 	if err := surface.Commit(); err != nil {
 		return fail("commit layer surface: %w", err)
