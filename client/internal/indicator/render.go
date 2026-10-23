@@ -16,13 +16,12 @@ import (
 // Logical frame geometry. The renderer works in logical pixels and scales the
 // whole frame by Frame.Scale.
 const (
-	// LogicalWidth is the width of the pill.
+	// LogicalWidth is the width of the frame; the pill fills it.
 	LogicalWidth = 220
 	// LogicalHeight is the height of the frame: a 16 px top margin plus the
 	// pill.
 	LogicalHeight = 72
-	// PillWidth and PillHeight describe the rounded island.
-	PillWidth  = 220
+	// PillHeight is the height of the rounded Recording indicator.
 	PillHeight = 56
 	// TopMargin places the pill 16 px below the top edge of the frame.
 	TopMargin = 16
@@ -58,9 +57,6 @@ type Frame struct {
 	Time time.Duration
 	// Scale is the integer output scale (1 for standard density).
 	Scale int
-	// Width is the logical canvas width. The pill is centred in it. Zero means
-	// LogicalWidth.
-	Width int
 }
 
 // StopRegion returns the clickable stop-button rectangle in physical pixels,
@@ -82,19 +78,15 @@ func Render(f Frame) *image.RGBA {
 	if scale < 1 {
 		scale = 1
 	}
-	width := f.Width
-	if width <= 0 {
-		width = LogicalWidth
-	}
 	alpha := clamp01(f.Alpha)
-	img := image.NewRGBA(image.Rect(0, 0, width*scale, LogicalHeight*scale))
+	img := image.NewRGBA(image.Rect(0, 0, LogicalWidth*scale, LogicalHeight*scale))
 	if alpha <= 0 {
 		return img
 	}
 
-	pillX := float64((width-PillWidth)/2) * float64(scale)
+	pillX := 0.0
 	pillY := float64(TopMargin * scale)
-	pillW := float64(PillWidth * scale)
+	pillW := float64(LogicalWidth * scale)
 	pillH := float64(PillHeight * scale)
 
 	fillRoundRect(img, pillX, pillY, pillW, pillH, pillH/2, rgba{0.075, 0.078, 0.09}, 0.94*alpha)
@@ -152,9 +144,10 @@ func Render(f Frame) *image.RGBA {
 
 	// Stop button, only while recording.
 	if f.Phase == PhaseRecording {
-		buttonX := pillX + float64((PillWidth-StopButtonMargin-StopButtonSize)*scale)
-		buttonY := pillY + float64(StopButtonMargin*scale)
-		size := float64(StopButtonSize * scale)
+		region := StopRegion(scale)
+		buttonX := float64(region.Min.X)
+		buttonY := float64(region.Min.Y)
+		size := float64(region.Dx())
 		fillRoundRect(img, buttonX, buttonY, size, size, size/2, rgba{1, 0.23, 0.19}, alpha)
 		inner := 12.0 * float64(scale)
 		inset := (size - inner) / 2
@@ -182,10 +175,10 @@ func fillRoundRect(img *image.RGBA, x, y, w, h, radius float64, c rgba, alpha fl
 	cy := y + h/2
 	halfW := w/2 - radius
 	halfH := h/2 - radius
-	minX := maxInt(0, int(math.Floor(x))-1)
-	maxX := minInt(img.Bounds().Dx()-1, int(math.Ceil(x+w))+1)
-	minY := maxInt(0, int(math.Floor(y))-1)
-	maxY := minInt(img.Bounds().Dy()-1, int(math.Ceil(y+h))+1)
+	minX := max(0, int(math.Floor(x))-1)
+	maxX := min(img.Bounds().Dx()-1, int(math.Ceil(x+w))+1)
+	minY := max(0, int(math.Floor(y))-1)
+	maxY := min(img.Bounds().Dy()-1, int(math.Ceil(y+h))+1)
 	for py := minY; py <= maxY; py++ {
 		for px := minX; px <= maxX; px++ {
 			qx := math.Abs(float64(px)+0.5-cx) - halfW
@@ -206,10 +199,10 @@ func fillCircle(img *image.RGBA, cx, cy, radius float64, c rgba, alpha float64) 
 	if radius <= 0 || alpha <= 0 {
 		return
 	}
-	minX := maxInt(0, int(math.Floor(cx-radius))-1)
-	maxX := minInt(img.Bounds().Dx()-1, int(math.Ceil(cx+radius))+1)
-	minY := maxInt(0, int(math.Floor(cy-radius))-1)
-	maxY := minInt(img.Bounds().Dy()-1, int(math.Ceil(cy+radius))+1)
+	minX := max(0, int(math.Floor(cx-radius))-1)
+	maxX := min(img.Bounds().Dx()-1, int(math.Ceil(cx+radius))+1)
+	minY := max(0, int(math.Floor(cy-radius))-1)
+	maxY := min(img.Bounds().Dy()-1, int(math.Ceil(cy+radius))+1)
 	for py := minY; py <= maxY; py++ {
 		for px := minX; px <= maxX; px++ {
 			distance := math.Hypot(float64(px)+0.5-cx, float64(py)+0.5-cy) - radius
@@ -259,18 +252,4 @@ func clamp01(value float64) float64 {
 		return 1
 	}
 	return value
-}
-
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

@@ -30,6 +30,9 @@ type x11Presenter struct {
 	colormap xproto.Colormap
 	scale    int
 	mapped   bool
+	// windowWidth and windowHeight track the current physical window size.
+	windowWidth  int
+	windowHeight int
 	// positionDirty asks the next Show to place the window on the monitor with
 	// the focused window. It is set on Hide and on creation.
 	positionDirty bool
@@ -84,6 +87,7 @@ func NewX11() (Presenter, error) {
 		conn.Close()
 		return nil, fmt.Errorf("allocate X11 window: %w", err)
 	}
+	scale := x11Scale(conn, screen.Root)
 	gcID, err := xproto.NewGcontextId(conn)
 	if err != nil {
 		conn.Close()
@@ -100,7 +104,7 @@ func NewX11() (Presenter, error) {
 	}
 	if err := xproto.CreateWindowChecked(
 		conn, depth, windowID, screen.Root,
-		0, 0, LogicalWidth, LogicalHeight, 0,
+		0, 0, uint16(LogicalWidth*scale), uint16(LogicalHeight*scale), 0,
 		xproto.WindowClassInputOutput, visual.VisualId,
 		mask, values,
 	).Check(); err != nil {
@@ -119,7 +123,7 @@ func NewX11() (Presenter, error) {
 		window:        windowID,
 		gc:            gcID,
 		colormap:      colormapID,
-		scale:         x11Scale(conn, screen.Root),
+		scale:         scale,
 		positionDirty: true,
 		clicks:        make(chan struct{}, 1),
 		updates:       make(chan x11Update, 1),
@@ -223,15 +227,17 @@ func (p *x11Presenter) apply(update x11Update) {
 	if width == 0 || height == 0 {
 		return
 	}
-	if !p.mapped || p.positionDirty {
+	if !p.mapped || p.positionDirty || p.windowWidth != int(width) || p.windowHeight != int(height) {
 		x, y := p.position(int(width))
-		values := []uint32{uint32(int16(x)), uint32(int16(y))}
+		values := []uint32{uint32(int16(x)), uint32(int16(y)), uint32(width), uint32(height)}
 		_ = xproto.ConfigureWindowChecked(
 			p.conn, p.window,
-			xproto.ConfigWindowX|xproto.ConfigWindowY,
+			xproto.ConfigWindowX|xproto.ConfigWindowY|xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
 			values,
 		).Check()
 		p.positionDirty = false
+		p.windowWidth = int(width)
+		p.windowHeight = int(height)
 	}
 	setInputRegion(p.conn, p.window, update.input)
 	data := toBGRA(update.frame)
@@ -264,19 +270,20 @@ func (p *x11Presenter) eventLoop() {
 }
 
 // position picks the monitor containing the focused window, falling back to the
-// pointer and then the primary or first monitor, and centres the pill 16 px
-// from its top edge.
+// pointer and then the primary or first monitor, centres the frame horizontally,
+// and pins the frame's top edge to the monitor top. The frame itself carries the
+// pill's top margin, so the pill lands TopMargin below the monitor edge.
 func (p *x11Presenter) position(width int) (int, int) {
 	monitors, err := randr.GetMonitors(p.conn, p.root, true).Reply()
 	if err == nil && monitors != nil && len(monitors.Monitors) > 0 {
 		x, y := p.focusPoint()
 		if monitor := monitorAt(monitors.Monitors, x, y); monitor != nil {
-			return centered(monitor, width), int(monitor.Y) + TopMargin*p.scale
+			return centered(monitor, width), int(monitor.Y)
 		}
 	}
 	_, _ = p.focusPoint()
 	screen := xproto.Setup(p.conn).DefaultScreen(p.conn)
-	return (int(screen.WidthInPixels) - width) / 2, TopMargin * p.scale
+	return (int(screen.WidthInPixels) - width) / 2, 0
 }
 
 func (p *x11Presenter) focusPoint() (int, int) {
@@ -294,7 +301,7 @@ func (p *x11Presenter) focusPoint() (int, int) {
 func centered(monitor *randr.MonitorInfo, width int) int {
 	// Prefer the monitor with the focused window. The caller uses the same
 	// point for the vertical placement, so centring horizontally here and
-	// pinning the top edge keeps the island predictable.
+	// pinning the top edge keeps the Recording indicator predictable.
 	x := int(monitor.X) + (int(monitor.Width)-width)/2
 	if x < int(monitor.X) {
 		x = int(monitor.X)
@@ -375,11 +382,7 @@ func x11Scale(conn *xgb.Conn, root xproto.Window) int {
 		}
 	}
 	if scale == 1 {
-		if value := os.Getenv("KITSUNE_INDICATOR_SCALE"); value != "" {
-			if parsed, err := strconv.ParseFloat(value, 64); err == nil {
-				scale = parsed
-			}
-		} else if value := os.Getenv("GDK_SCALE"); value != "" {
+		if value := os.Getenv("GDK_SCALE"); value != "" {
 			if parsed, err := strconv.ParseFloat(value, 64); err == nil {
 				scale = parsed
 			}

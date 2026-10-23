@@ -93,11 +93,11 @@ otherwise errors with an actionable message.
   sits above normal tiled windows; some compositors also place it above a
   fullscreen client. On X11, an override-redirect window usually sits above
   fullscreen but this depends on the compositor. The Client keeps working when
-  the island cannot be seen.
+  the Recording indicator cannot be seen.
 - **X11 focus-follows-mouse can move focus.** An override-redirect window never
   requests focus, but with focus-follows-mouse a pointer that comes to rest on
-  the island may redirect focus. Only the stop button accepts clicks; the rest
-  of the pill passes clicks through.
+  the Recording indicator may redirect focus. Only the stop button accepts
+  clicks; the rest of the pill passes clicks through.
 - **Windows is silent for now.** The native Win32 layered-window presenter is
   deferred (#42); the Client logs one warning when the indicator is requested
   there and keeps dictating.

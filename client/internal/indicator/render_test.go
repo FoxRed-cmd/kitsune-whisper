@@ -62,6 +62,19 @@ func TestStopButtonOnlyWhileRecording(t *testing.T) {
 	}
 }
 
+func TestStopRegionMatchesDrawnButtonAtEveryScale(t *testing.T) {
+	for _, scale := range []int{1, 2, 3} {
+		img := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Alpha: 1, Scale: scale})
+		region := indicator.StopRegion(scale)
+		if !region.In(img.Bounds()) {
+			t.Fatalf("scale %d: stop region %v is outside the frame %v", scale, region, img.Bounds())
+		}
+		if countRed(img, region) == 0 {
+			t.Fatalf("scale %d: no stop button inside the clickable region %v", scale, region)
+		}
+	}
+}
+
 func TestZeroAlphaProducesTransparentFrame(t *testing.T) {
 	img := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Alpha: 0, Scale: 1})
 	if countOpaque(img, 0, 0, indicator.LogicalWidth-1, indicator.LogicalHeight-1) != 0 {

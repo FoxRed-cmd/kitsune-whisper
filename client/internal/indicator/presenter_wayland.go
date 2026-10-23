@@ -159,7 +159,7 @@ func NewLayerShell() (Presenter, error) {
 	}
 
 	compositor := wl.NewCompositor(ctx)
-	compositorVersion := minVersion(found.compositor.Version, 4)
+	compositorVersion := min(found.compositor.Version, 4)
 	if err := registry.Bind(found.compositor.Name, found.compositor.Interface, compositorVersion, compositor); err != nil {
 		return fail("bind wl_compositor: %w", err)
 	}
@@ -168,7 +168,7 @@ func NewLayerShell() (Presenter, error) {
 		return fail("bind wl_shm: %w", err)
 	}
 	layerShell := wlr.NewZwlrLayerShellV1(ctx)
-	if err := registry.Bind(found.layerShell.Name, found.layerShell.Interface, minVersion(found.layerShell.Version, 5), layerShell); err != nil {
+	if err := registry.Bind(found.layerShell.Name, found.layerShell.Interface, min(found.layerShell.Version, 5), layerShell); err != nil {
 		return fail("bind wlr-layer-shell: %w", err)
 	}
 
@@ -178,18 +178,19 @@ func NewLayerShell() (Presenter, error) {
 	for i := range found.outputs {
 		global := found.outputs[i]
 		candidate := wl.NewOutput(ctx)
-		if err := registry.Bind(global.Name, global.Interface, minVersion(global.Version, 4), candidate); err != nil {
+		if err := registry.Bind(global.Name, global.Interface, min(global.Version, 4), candidate); err != nil {
 			continue
 		}
+		// Only the output that hosts the surface may set its buffer scale;
+		// listening to every output would let another monitor's scale win.
+		output = candidate
 		candidate.AddScaleHandler(scales)
-		if output == nil {
-			output = candidate
-		}
+		break
 	}
 	var seat *wl.Seat
 	if found.seat != nil {
 		seat = wl.NewSeat(ctx)
-		if err := registry.Bind(found.seat.Name, found.seat.Interface, minVersion(found.seat.Version, 5), seat); err != nil {
+		if err := registry.Bind(found.seat.Name, found.seat.Interface, min(found.seat.Version, 5), seat); err != nil {
 			seat = nil
 		}
 	}
@@ -377,7 +378,7 @@ func (p *waylandPresenter) apply(update waylandUpdate) {
 	_ = p.surface.DamageBuffer(
 		int32(offsetX),
 		int32(TopMargin*p.scale),
-		int32(PillWidth*p.scale),
+		int32(LogicalWidth*p.scale),
 		int32(PillHeight*p.scale),
 	)
 	p.setInput(update.input, offsetX)
@@ -576,13 +577,6 @@ func roundtrip(display *wl.Display) error {
 		return err
 	}
 	return display.Context().RunTill(callback)
-}
-
-func minVersion(advertised, maximum uint32) uint32 {
-	if advertised < maximum {
-		return advertised
-	}
-	return maximum
 }
 
 func (p *waylandPresenter) newPool(size int) (*shmPool, error) {

@@ -15,13 +15,13 @@ editor with the cursor in a document for the focus checks.
 - [ ] Speaking makes the seven bars rise and fall; silence keeps them low.
 - [ ] Pressing the hotkey again (or the External trigger) switches to the
       travelling-wave processing state.
-- [ ] The island fades (about 120 ms) just before the text is injected; the text
-      lands where the island was.
+- [ ] The indicator fades (about 120 ms) just before the text is injected; the
+      text lands where it was.
 - [ ] Clicking the red stop button stops the cycle; no character is typed by the
       click itself.
 - [ ] Clicking the transparent part of the pill passes the click through to the
       window underneath.
-- [ ] Esc hides the island immediately, with no fade.
+- [ ] Esc hides the indicator immediately, with no fade.
 - [ ] An accidental tap (shorter than `min_recording_seconds`) shows the dim
       state for about 300 ms and inserts nothing.
 - [ ] A failed Server request shows the red state for about 1.5 s, then fades;
@@ -30,7 +30,7 @@ editor with the cursor in a document for the focus checks.
 - [ ] `feedback.indicator: off` starts no window at all (check with a compositor
       window list); dictation and Earcons still work.
 - [ ] A long utterance stays visible until the max-recording bound stops it.
-- [ ] `kitsune-client record` and `transcribe-file` show no island.
+- [ ] `kitsune-client record` and `transcribe-file` show no indicator.
 - [ ] Exactly one warning appears in the log when the pinned backend is
       unavailable (`feedback.indicator: x11` with no `DISPLAY`); the Client keeps
       dictating.
@@ -61,7 +61,7 @@ editor with the cursor in a document for the focus checks.
 - [ ] With two outputs, confirm the pill appears on the documented primary/first
       output (Wayland clients cannot follow focus).
 - [ ] Only the stop button is clickable; keyboard focus never enters the pill.
-- [ ] Fullscreen a window and start a cycle; note whether the overlay remains
+- [ ] Fullscreen a window and start a cycle; note whether the indicator remains
       visible.
 
 ## Sway (Wayland, wlroots, layer-shell v4)
@@ -72,7 +72,7 @@ editor with the cursor in a document for the focus checks.
 ## KDE Plasma (Wayland)
 
 - [ ] `auto` selects layer-shell.
-- [ ] The overlay is above active fullscreen windows.
+- [ ] The indicator is above active fullscreen windows.
 - [ ] HiDPI and multi-output behaviour as above.
 
 ## GNOME (Wayland, XWayland)
@@ -87,7 +87,7 @@ editor with the cursor in a document for the focus checks.
 
 When the Win32 layered-window presenter lands, run the same common checks plus:
 
-- [ ] The island appears on the monitor with the foreground window.
+- [ ] The indicator appears on the monitor with the foreground window.
 - [ ] Per-monitor V2 DPI gives a crisp frame at each monitor's scale.
 - [ ] It is hidden while an exclusive-fullscreen app owns the display.
 - [ ] No taskbar or Alt-Tab entry; the stop button does not activate the window.
