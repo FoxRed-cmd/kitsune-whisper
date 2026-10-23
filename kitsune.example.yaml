@@ -103,6 +103,13 @@ client:
   wayland_tool: auto
   feedback:
     earcons: false
+    # auto | layer_shell | x11 | off. The Recording indicator is the on-screen
+    # pill that follows the live Input level while recording. auto uses a
+    # wlr-layer-shell overlay on Wayland (Hyprland, Sway, KDE Plasma), then the
+    # X11 window when DISPLAY is set (including GNOME through XWayland), then
+    # disables the indicator. An explicitly pinned backend never falls back;
+    # if it is unavailable the Client logs one warning and keeps dictating.
+    indicator: auto
   # "" = default cache path (~/.cache/kitsune-whisper/spool).
   spool_dir: ""
   log_level: info

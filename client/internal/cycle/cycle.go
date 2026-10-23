@@ -106,10 +106,11 @@ func (c *Core) Run(ctx context.Context, triggers <-chan Trigger) error {
 				if recording {
 					if err := c.recorder.Cancel(); err != nil {
 						c.fail(err)
+					} else {
+						c.cue(CueCancelled)
 					}
 					recording = false
 					maxC = nil
-					c.cue(CueStop)
 				}
 			}
 		case <-maxC:
@@ -139,9 +140,12 @@ func (c *Core) finish(ctx context.Context) {
 		return
 	}
 	if utterance.Duration < c.limits.MinRecording {
-		// Accidental taps are discarded silently: no cue, no request.
+		// Accidental taps are discarded: signal the short state but make no
+		// request.
+		c.cue(CueTooShort)
 		return
 	}
+	c.cue(CueProcessing)
 
 	timeout := SelectTimeout(c.limits.Timeout, utterance.Duration)
 	tctx, cancel := context.WithTimeout(ctx, timeout)
@@ -156,6 +160,7 @@ func (c *Core) finish(ctx context.Context) {
 		c.cue(CueStop)
 		return
 	}
+	c.cue(CueDelivering)
 	if err := c.injector.Inject(transcription.Text); err != nil {
 		// The speech transcribed but never reached the cursor; keep the audio
 		// so the Transcription can be recovered.

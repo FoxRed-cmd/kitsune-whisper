@@ -279,6 +279,8 @@ func TestToggleStartStopInjects(t *testing.T) {
 
 	h.triggers <- cycle.Toggle
 	wait(t, h.injector.signal, "injection")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
+	waitCue(t, h.feedback.ch, cycle.CueDelivering)
 	waitCue(t, h.feedback.ch, cycle.CueStop)
 
 	if texts := h.injector.snapshot(); len(texts) != 1 || texts[0] != "hello world" {
@@ -310,9 +312,10 @@ func TestRecordingsShorterThanMinimumAreDiscarded(t *testing.T) {
 	if spooled := h.spool.snapshot(); len(spooled) != 0 {
 		t.Fatalf("spooled %d, want 0", len(spooled))
 	}
+	waitCue(t, h.feedback.ch, cycle.CueTooShort)
 	select {
 	case cue := <-h.feedback.ch:
-		t.Fatalf("too-short recording should be silent, got cue %v", cue)
+		t.Fatalf("too-short recording should only signal TooShort, got another cue %v", cue)
 	case <-time.After(50 * time.Millisecond):
 	}
 }
@@ -331,6 +334,8 @@ func TestStartStopTriggersDriveHoldToTalk(t *testing.T) {
 	h.triggers <- cycle.Start
 	h.triggers <- cycle.Stop
 	wait(t, h.injector.signal, "injection")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
+	waitCue(t, h.feedback.ch, cycle.CueDelivering)
 	waitCue(t, h.feedback.ch, cycle.CueStop)
 
 	if got := h.recorder.startCount(); got != 1 {
@@ -356,6 +361,8 @@ func TestStopAfterAutoStopDoesNotRestart(t *testing.T) {
 	h.clock.fire()
 	wait(t, h.recorder.stopped, "recording to auto-stop")
 	wait(t, h.injector.signal, "injection")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
+	waitCue(t, h.feedback.ch, cycle.CueDelivering)
 	waitCue(t, h.feedback.ch, cycle.CueStop)
 
 	h.triggers <- cycle.Stop
@@ -380,7 +387,7 @@ func TestCancelDiscardsWithoutTranscribing(t *testing.T) {
 	waitCue(t, h.feedback.ch, cycle.CueStart)
 	h.triggers <- cycle.Cancel
 	wait(t, h.recorder.cancelled, "recording to cancel")
-	waitCue(t, h.feedback.ch, cycle.CueStop)
+	waitCue(t, h.feedback.ch, cycle.CueCancelled)
 
 	if calls, _ := h.transcriber.snapshot(); calls != 0 {
 		t.Fatalf("transcriber called %d times, want 0", calls)
@@ -402,6 +409,8 @@ func TestMaxLengthAutoStopsAndTranscribes(t *testing.T) {
 	h.clock.fire()
 	wait(t, h.recorder.stopped, "recording to auto-stop")
 	wait(t, h.injector.signal, "injection")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
+	waitCue(t, h.feedback.ch, cycle.CueDelivering)
 	waitCue(t, h.feedback.ch, cycle.CueStop)
 
 	if texts := h.injector.snapshot(); len(texts) != 1 || texts[0] != "long clip" {
@@ -420,6 +429,7 @@ func TestEmptyTranscriptInjectsNothing(t *testing.T) {
 	waitCue(t, h.feedback.ch, cycle.CueStart)
 	h.triggers <- cycle.Toggle
 	wait(t, h.transcriber.signal, "transcription")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
 	waitCue(t, h.feedback.ch, cycle.CueStop)
 
 	if texts := h.injector.snapshot(); len(texts) != 0 {
@@ -447,6 +457,7 @@ func TestTranscriberFailureSpoolsAndDoesNotInject(t *testing.T) {
 	waitCue(t, h.feedback.ch, cycle.CueStart)
 	h.triggers <- cycle.Toggle
 	wait(t, h.spool.signal, "spool")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
 	waitCue(t, h.feedback.ch, cycle.CueError)
 
 	if texts := h.injector.snapshot(); len(texts) != 0 {
@@ -474,6 +485,8 @@ func TestInjectorFailureSpoolsAndSignalsError(t *testing.T) {
 	waitCue(t, h.feedback.ch, cycle.CueStart)
 	h.triggers <- cycle.Toggle
 	wait(t, h.spool.signal, "spool")
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
+	waitCue(t, h.feedback.ch, cycle.CueDelivering)
 	waitCue(t, h.feedback.ch, cycle.CueError)
 
 	spooled := h.spool.snapshot()
@@ -498,6 +511,7 @@ func TestSpoolFailureSignalsSingleError(t *testing.T) {
 	wait(t, h.recorder.started, "recording to start")
 	waitCue(t, h.feedback.ch, cycle.CueStart)
 	h.triggers <- cycle.Toggle
+	waitCue(t, h.feedback.ch, cycle.CueProcessing)
 	waitCue(t, h.feedback.ch, cycle.CueError)
 
 	select {

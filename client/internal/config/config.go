@@ -31,9 +31,10 @@ type AudioConfig struct {
 	Device string `yaml:"device"`
 }
 
-// FeedbackConfig controls optional earcons.
+// FeedbackConfig controls optional Earcons and the Recording indicator.
 type FeedbackConfig struct {
-	Earcons bool `yaml:"earcons"`
+	Earcons   bool   `yaml:"earcons"`
+	Indicator string `yaml:"indicator"`
 }
 
 // ClientConfig is the fully resolved, validated Client configuration.
@@ -81,7 +82,7 @@ func Default() ClientConfig {
 		PasteShortcut:       "auto",
 		ClipboardRestore:    "auto",
 		WaylandTool:         "auto",
-		Feedback:            FeedbackConfig{Earcons: false},
+		Feedback:            FeedbackConfig{Earcons: false, Indicator: "auto"},
 		SpoolDir:            "",
 		LogLevel:            "info",
 		LogFile:             "",
@@ -273,7 +274,7 @@ var schema = map[string]any{
 	"paste_shortcut":        nil,
 	"clipboard_restore":     nil,
 	"wayland_tool":          nil,
-	"feedback":              map[string]any{"earcons": nil},
+	"feedback":              map[string]any{"earcons": nil, "indicator": nil},
 	"spool_dir":             nil,
 	"log_level":             nil,
 	"log_file":              nil,
@@ -476,6 +477,12 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 		return cfg, err
 	}
 	if cfg.Feedback.Earcons, err = asBool(feedback["earcons"], "client.feedback.earcons"); err != nil {
+		return cfg, err
+	}
+	if cfg.Feedback.Indicator, err = stringField(feedback, "indicator", "client.feedback.indicator"); err != nil {
+		return cfg, err
+	}
+	if err = oneOf(cfg.Feedback.Indicator, "client.feedback.indicator", "auto", "layer_shell", "x11", "off"); err != nil {
 		return cfg, err
 	}
 

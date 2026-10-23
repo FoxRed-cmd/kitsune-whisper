@@ -1,9 +1,12 @@
 package mic
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
@@ -44,11 +47,16 @@ type Recorder struct {
 	backend  Backend
 	selector string
 
-	mu       sync.Mutex
-	stream   Stream
-	active   bool
-	rate     int
-	channels int
+	mu     sync.Mutex
+	stream Stream
+	active bool
+	rate   int
+	// channels is read by the capture callback, which runs on the audio
+	// backend's thread. It is published before the stream starts so early
+	// audio is measured with the right channel count.
+	channels atomic.Int32
+	// level is the latest Input level in [0,1], stored as float64 bits.
+	level atomic.Uint64
 
 	pcmMu sync.Mutex
 	pcm   []byte
@@ -100,22 +108,30 @@ func (r *Recorder) Start() error {
 		return err
 	}
 	r.reset()
+	// Publish the native format before starting: the backend may call the
+	// capture callback before Start returns.
+	r.rate = stream.SampleRate()
+	r.channels.Store(int32(stream.Channels()))
 	if err := stream.Start(); err != nil {
 		_ = stream.Close()
 		return err
 	}
 	r.stream = stream
 	r.active = true
-	r.rate = stream.SampleRate()
-	r.channels = stream.Channels()
 	return nil
+}
+
+// InputLevel returns the latest Input level in [0,1], measured as the RMS of
+// the captured S16 samples across all channels. It is 0 while idle.
+func (r *Recorder) InputLevel() float64 {
+	return math.Float64frombits(r.level.Load())
 }
 
 // Stop ends capture and returns the utterance resampled to 16 kHz mono.
 func (r *Recorder) Stop() (cycle.Utterance, error) {
 	r.mu.Lock()
 	stream := r.stream
-	rate, channels := r.rate, r.channels
+	rate, channels := r.rate, int(r.channels.Load())
 	r.stream = nil
 	r.active = false
 	r.mu.Unlock()
@@ -124,6 +140,7 @@ func (r *Recorder) Stop() (cycle.Utterance, error) {
 	}
 
 	closeErr := stream.Close()
+	r.level.Store(0)
 	pcm := r.take()
 	if closeErr != nil {
 		return cycle.Utterance{}, fmt.Errorf("close capture stream: %w", closeErr)
@@ -148,13 +165,38 @@ func (r *Recorder) Cancel() error {
 	}
 	err := stream.Close()
 	r.reset()
+	r.level.Store(0)
 	return err
 }
 
 func (r *Recorder) append(pcm []byte) {
+	r.level.Store(math.Float64bits(rmsLevel(pcm, int(r.channels.Load()))))
 	r.pcmMu.Lock()
 	r.pcm = append(r.pcm, pcm...)
 	r.pcmMu.Unlock()
+}
+
+// rmsLevel maps S16 RMS to [0,1] full scale. Channels are combined by summing
+// squares, so out-of-phase stereo does not cancel to silence.
+func rmsLevel(pcm []byte, channels int) float64 {
+	if channels < 1 {
+		channels = 1
+	}
+	samples := len(pcm) / 2
+	samples -= samples % channels
+	if samples <= 0 {
+		return 0
+	}
+	var sumSquares float64
+	for i := 0; i < samples; i++ {
+		sample := float64(int16(binary.LittleEndian.Uint16(pcm[i*2:])))
+		sumSquares += sample * sample
+	}
+	level := math.Sqrt(sumSquares/float64(samples)) / 32768
+	if level > 1 {
+		return 1
+	}
+	return level
 }
 
 func (r *Recorder) take() []byte {

@@ -37,13 +37,28 @@ type Cue int
 const (
 	// CueStart signals that recording has begun.
 	CueStart Cue = iota
-	// CueStop signals that a cycle ended without error.
+	// CueProcessing signals that capture stopped and the Utterance is being
+	// transcribed.
+	CueProcessing
+	// CueDelivering signals that a non-empty Transcription has been received
+	// and Injection is about to happen.
+	CueDelivering
+	// CueStop signals that a cycle ended without error, whether it delivered
+	// text or successfully produced none.
 	CueStop
 	// CueError signals a failed cycle.
 	CueError
+	// CueCancelled signals that the user cancelled the recording.
+	CueCancelled
+	// CueTooShort signals that the Utterance was discarded by the
+	// MinRecording bound.
+	CueTooShort
 )
 
-// Feedback signals cycle state (earcons, logs).
+// Feedback signals cycle state (earcons, logs, the Recording indicator).
+//
+// Implementations must return quickly: they are called from the cycle's
+// goroutine and never block the Dictation cycle.
 type Feedback interface {
 	Cue(cue Cue)
 }

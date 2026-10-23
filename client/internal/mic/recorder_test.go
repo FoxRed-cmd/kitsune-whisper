@@ -20,6 +20,9 @@ type fakeStream struct {
 	rate     int
 	channels int
 	startErr error
+	// onStart runs inside Start, before it returns, to model a backend that
+	// delivers audio during stream start.
+	onStart func()
 
 	mu     sync.Mutex
 	closed bool
@@ -27,7 +30,12 @@ type fakeStream struct {
 
 func (s *fakeStream) SampleRate() int { return s.rate }
 func (s *fakeStream) Channels() int   { return s.channels }
-func (s *fakeStream) Start() error    { return s.startErr }
+func (s *fakeStream) Start() error {
+	if s.onStart != nil {
+		s.onStart()
+	}
+	return s.startErr
+}
 func (s *fakeStream) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -243,6 +251,99 @@ func TestRecorderCancelClosesAndDiscards(t *testing.T) {
 	if _, err := rec.Stop(); err == nil {
 		t.Fatal("stop after cancel should fail")
 	}
+}
+
+func TestInputLevelReportsSilenceFullScaleAndOutOfPhaseStereo(t *testing.T) {
+	cases := []struct {
+		name     string
+		channels int
+		pcm      []byte
+		want     float64
+		tolerant bool
+	}{
+		{name: "silence", channels: 1, pcm: constantSamples(100, 1, 0), want: 0},
+		{name: "full scale", channels: 1, pcm: constantSamples(100, 1, 32767), want: 1, tolerant: true},
+		{name: "out of phase stereo", channels: 2, pcm: outOfPhaseSamples(100), want: 1000.0 / 32768.0, tolerant: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			backend := singleDeviceBackend(audio.TargetSampleRate, tc.channels)
+			rec, err := mic.New(mic.Options{Backend: backend})
+			if err != nil {
+				t.Fatalf("new recorder: %v", err)
+			}
+			if err := rec.Start(); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			backend.push(tc.pcm)
+			got := rec.InputLevel()
+			if tc.tolerant {
+				if diff := got - tc.want; diff > 0.01 || diff < -0.01 {
+					t.Fatalf("InputLevel = %v, want ~%v", got, tc.want)
+				}
+			} else if got != tc.want {
+				t.Fatalf("InputLevel = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestInputLevelResetsOnStopAndCancel(t *testing.T) {
+	backend := singleDeviceBackend(audio.TargetSampleRate, 1)
+	rec, err := mic.New(mic.Options{Backend: backend})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	if err := rec.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	backend.push(constantSamples(100, 1, 10000))
+	if rec.InputLevel() == 0 {
+		t.Fatal("InputLevel should be non-zero while audio is captured")
+	}
+	if _, err := rec.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := rec.InputLevel(); got != 0 {
+		t.Fatalf("InputLevel after Stop = %v, want 0", got)
+	}
+
+	if err := rec.Start(); err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	backend.push(constantSamples(100, 1, 10000))
+	if err := rec.Cancel(); err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if got := rec.InputLevel(); got != 0 {
+		t.Fatalf("InputLevel after Cancel = %v, want 0", got)
+	}
+}
+
+func TestAudioArrivingDuringStreamStartIsMeasured(t *testing.T) {
+	backend := singleDeviceBackend(audio.TargetSampleRate, 2)
+	backend.stream.onStart = func() {
+		backend.push(constantSamples(100, 2, 8000))
+	}
+	rec, err := mic.New(mic.Options{Backend: backend})
+	if err != nil {
+		t.Fatalf("new recorder: %v", err)
+	}
+	if err := rec.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if got := rec.InputLevel(); got == 0 {
+		t.Fatal("audio delivered during Start was not measured: channel count was published too late")
+	}
+}
+
+func outOfPhaseSamples(frames int) []byte {
+	out := make([]byte, frames*2*2)
+	for i := 0; i < frames; i++ {
+		binary.LittleEndian.PutUint16(out[i*4:], uint16(1000))
+		binary.LittleEndian.PutUint16(out[i*4+2:], uint16(0x10000-1000))
+	}
+	return out
 }
 
 func TestRecorderStartPropagatesDeviceError(t *testing.T) {

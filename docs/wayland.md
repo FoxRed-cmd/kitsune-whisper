@@ -7,14 +7,20 @@ recorded in [`adr/0002-wayland-v1-stance.md`](adr/0002-wayland-v1-stance.md).
 
 ## Support matrix
 
-| Session | Hotkey | Injection |
-| --- | --- | --- |
-| **X11** | Full: `XGrabKey` global grab | Synthetic paste; previous clipboard restored where possible |
-| **Wayland — GNOME ≥48 / KDE Plasma ≥5.27** | `GlobalShortcuts` portal (one-time approval dialog) | `ydotool` if present, else clipboard-only with a "press Ctrl+V" hint |
-| **Wayland — wlroots (Sway, Hyprland, …) and any portal-less/denied session** | External trigger: bind `kitsune-client toggle` (compositor keybind or GNOME custom shortcut) | `wtype`, else `ydotool`, else clipboard-only |
+| Session | Hotkey | Injection | Recording indicator |
+| --- | --- | --- | --- |
+| **X11** | Full: `XGrabKey` global grab | Synthetic paste; previous clipboard restored where possible | Native X11 window on the focused monitor |
+| **Wayland — GNOME ≥48 / KDE Plasma ≥5.27** | `GlobalShortcuts` portal (one-time approval dialog) | `ydotool` if present, else clipboard-only with a "press Ctrl+V" hint | KDE: native layer-shell; GNOME: X11 window through XWayland |
+| **Wayland — wlroots (Sway, Hyprland, …) and any portal-less/denied session** | External trigger: bind `kitsune-client toggle` (compositor keybind or GNOME custom shortcut) | `wtype`, else `ydotool`, else clipboard-only | Native `wlr-layer-shell` overlay |
 
 `client.hotkey_backend` (`auto`|`portal`|`x11`) and `client.wayland_tool`
 (`auto`|`wtype`|`ydotool`|`none`) pin these choices. `auto` detects the session.
+`client.feedback.indicator` (`auto`|`layer_shell`|`x11`|`off`) pins the
+Recording indicator backend; `auto` prefers layer-shell and falls back to X11.
+
+GNOME on Wayland has no layer-shell, so the indicator is the X11 window running
+under XWayland; XWayland must be running. KDE Plasma and wlroots compositors get
+the native layer surface.
 
 ## Hotkey
 
@@ -79,6 +85,22 @@ otherwise errors with an actionable message.
   scope for v1; there is no synthetic typing beyond the tools above.
 - **XWayland is not a fix.** Forcing the X11 backend on a Wayland session
   (`hotkey_backend: x11`) may grab keys only while an XWayland window is focused.
+- **The Recording indicator follows the primary output on Wayland.** Wayland
+  clients cannot see which monitor owns the focused window, so the layer
+  surface is placed on the first/primary output. On X11 the indicator follows
+  the focused window's monitor.
+- **Stacking above fullscreen is compositor-dependent.** The layer-shell overlay
+  sits above normal tiled windows; some compositors also place it above a
+  fullscreen client. On X11, an override-redirect window usually sits above
+  fullscreen but this depends on the compositor. The Client keeps working when
+  the island cannot be seen.
+- **X11 focus-follows-mouse can move focus.** An override-redirect window never
+  requests focus, but with focus-follows-mouse a pointer that comes to rest on
+  the island may redirect focus. Only the stop button accepts clicks; the rest
+  of the pill passes clicks through.
+- **Windows is silent for now.** The native Win32 layered-window presenter is
+  deferred (#42); the Client logs one warning when the indicator is requested
+  there and keeps dictating.
 
 If the hotkey or injection isn't working, check the Client log
 (`~/.cache/kitsune-whisper/client.log`) — the selected backend and any fallback

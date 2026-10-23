@@ -62,6 +62,14 @@ _Avoid_: platform, mode
 A short synthesized tone that signals client state.
 _Avoid_: beep, sound, notification
 
+**Recording indicator**:
+The on-screen element that shows the current phase of the Dictation cycle and the Input level.
+_Avoid_: overlay, HUD, OSD, widget, island
+
+**Input level**:
+How loudly the user is speaking into the microphone, shown live by the Recording indicator.
+_Avoid_: volume, amplitude, VU meter
+
 **Spool**:
 Locally saved audio of an utterance whose transcription failed, kept so the speech is not lost.
 _Avoid_: cache, queue, retry store

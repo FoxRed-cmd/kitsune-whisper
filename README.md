@@ -24,8 +24,11 @@ touch the models. Audio never leaves the network.
 
 - **Client** (Go, user session) — binds the global hotkey, captures the
   microphone, resamples to 16 kHz mono, POSTs the utterance, then injects the
-  returned text at the cursor. On failure it saves the audio to the Spool instead
-  of losing it.
+  returned text at the cursor. A small **Recording indicator** shows the current
+  phase and live Input level while recording, with a clickable stop button; it
+  is optional, never takes focus, and failure to create it degrades to silent
+  dictation. On failure the Client saves the audio to the Spool instead of
+  losing it.
 - **Server** (Python + faster-whisper) — behind `POST /transcribe` it decodes the
   request, runs the VAD silence gate, transcribes on the auto-resolved device,
   and returns JSON. It can optionally post-process the text through an
@@ -60,6 +63,7 @@ flowchart LR
         inject["Injection<br/>clipboard + synthetic paste"]
         spool["Spool<br/>failed utterances"]
         earcon["Earcons (optional)"]
+        indicator["Recording indicator (optional)<br/>phase + live Input level"]
     end
 
     mic["Microphone"]
@@ -90,6 +94,7 @@ flowchart LR
     inject --> app
     cycle -.->|on failure| spool
     cycle -.-> earcon
+    cycle -.-> indicator
 ```
 
 ### A Dictation cycle

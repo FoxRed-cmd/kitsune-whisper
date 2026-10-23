@@ -81,6 +81,23 @@ func TestCuePlaysTheMatchingTone(t *testing.T) {
 	}
 }
 
+func TestProgressCuesAreSilent(t *testing.T) {
+	progress := []cycle.Cue{
+		cycle.CueProcessing,
+		cycle.CueDelivering,
+		cycle.CueCancelled,
+		cycle.CueTooShort,
+	}
+	for _, cue := range progress {
+		rec := &recorder{}
+		e := earcon.New(earcon.Options{Enabled: true, Play: rec.play})
+		e.Cue(cue)
+		if calls, _ := rec.snapshot(); calls != 0 {
+			t.Fatalf("cue %v: progress cues must be silent, played %d times", cue, calls)
+		}
+	}
+}
+
 func TestDisabledEarconsAreSilent(t *testing.T) {
 	rec := &recorder{}
 	e := earcon.New(earcon.Options{Enabled: false, Play: rec.play})

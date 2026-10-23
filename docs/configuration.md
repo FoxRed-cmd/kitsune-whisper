@@ -140,7 +140,8 @@ sidecar.
 | `paste_shortcut` | `auto`\|`ctrl_v`\|`ctrl_shift_v`\|`shift_insert` | `auto` | `auto` picks `ctrl_shift_v` in terminals and `ctrl_v` elsewhere; `shift_insert` is the classic console paste chord, so on X11/Wayland the transcription is published to the primary selection (the buffer a terminal pastes) as well as the clipboard. |
 | `clipboard_restore` | `auto`\|`always`\|`never` | `auto` | `auto` restores the previous clipboard where the OS reports when a synthetic paste is consumed (X11 and Wayland); Windows keeps the transcription. |
 | `wayland_tool` | `auto`\|`wtype`\|`ydotool`\|`none` | `auto` | Wayland injection chain. Ignored on X11/Windows. See [Wayland](wayland.md). |
-| `feedback.earcons` | bool | `false` | Optional start/stop/error tones. |
+| `feedback.earcons` | bool | `false` | Optional start/stop/error tones. Progress cues stay silent. |
+| `feedback.indicator` | `auto`\|`layer_shell`\|`x11`\|`off` | `auto` | On-screen Recording indicator and Input level meter. `auto` tries wlr-layer-shell on Wayland, then the X11 window when `DISPLAY` is set, then disables it. A pinned backend never falls back; an unavailable one logs one warning and dictation continues. See [Wayland](wayland.md). |
 | `spool_dir` | string | `""` | Where failed utterances are saved; `""` = `~/.cache/kitsune-whisper/spool` (`%LOCALAPPDATA%` on Windows). |
 | `log_level` | enum | `info` | Same levels as the Server. |
 | `log_file` | string | `""` | `""` = `~/.cache/kitsune-whisper/client.log` (`%LOCALAPPDATA%` on Windows). |

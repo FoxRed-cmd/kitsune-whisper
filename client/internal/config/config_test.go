@@ -30,11 +30,18 @@ func load(t *testing.T, opts config.LoadOptions) (config.ClientConfig, error) {
 	if opts.Env == nil {
 		opts.Env = map[string]string{}
 	}
+	// Keep every test off the real user config.
+	if _, ok := opts.Env["XDG_CONFIG_HOME"]; !ok {
+		opts.Env["XDG_CONFIG_HOME"] = t.TempDir()
+	}
 	return config.Load(opts)
 }
 
 func TestDefaultsWhenNoFile(t *testing.T) {
-	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
+	cfg, err := load(t, config.LoadOptions{
+		CWD: t.TempDir(),
+		Env: map[string]string{"XDG_CONFIG_HOME": t.TempDir()},
+	})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -43,6 +50,9 @@ func TestDefaultsWhenNoFile(t *testing.T) {
 	}
 	if cfg.ServerURL != "http://localhost:8000" || cfg.MinRecordingSeconds != 0.3 || cfg.Trigger != "toggle" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
+	}
+	if cfg.Feedback.Indicator != "auto" {
+		t.Fatalf("feedback.indicator = %q, want auto", cfg.Feedback.Indicator)
 	}
 }
 
@@ -244,6 +254,7 @@ func TestEnvNestingViaDoubleUnderscore(t *testing.T) {
 		Env: map[string]string{
 			"KITSUNE_CLIENT_AUDIO__DEVICE":         "USB Mic",
 			"KITSUNE_CLIENT_FEEDBACK__EARCONS":     "true",
+			"KITSUNE_CLIENT_FEEDBACK__INDICATOR":   "x11",
 			"KITSUNE_CLIENT_MIN_RECORDING_SECONDS": "0.5",
 		},
 	})
@@ -256,8 +267,33 @@ func TestEnvNestingViaDoubleUnderscore(t *testing.T) {
 	if !cfg.Feedback.Earcons {
 		t.Fatal("feedback.earcons should be true")
 	}
+	if cfg.Feedback.Indicator != "x11" {
+		t.Fatalf("feedback.indicator = %q, want x11", cfg.Feedback.Indicator)
+	}
 	if cfg.MinRecordingSeconds != 0.5 {
 		t.Fatalf("min = %v", cfg.MinRecordingSeconds)
+	}
+}
+
+func TestInvalidIndicatorValueNamesTheKey(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"feedback": map[string]any{"indicator": "layer"},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.feedback.indicator")
+	assertErrorContains(t, err, "auto, layer_shell, x11, off")
+}
+
+func TestIndicatorFromFile(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"feedback": map[string]any{"indicator": "off"},
+	})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Feedback.Indicator != "off" {
+		t.Fatalf("feedback.indicator = %q, want off", cfg.Feedback.Indicator)
 	}
 }
 

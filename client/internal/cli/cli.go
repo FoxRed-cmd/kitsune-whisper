@@ -26,10 +26,12 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
@@ -290,20 +292,31 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 		return 1
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	triggers := make(chan cycle.Trigger)
+	// The Recording indicator exists only for the interactive client; record
+	// and transcribe-file stay quiet.
+	indic := newIndicator(cfg, logger, recorder, triggers)
+	if indic != nil {
+		defer indic.Close()
+	}
+	extraFeedback := []cycle.Feedback{}
+	if indic != nil {
+		extraFeedback = append(extraFeedback, indic)
+	}
+
 	core := cycle.New(cycle.Options{
 		Recorder:    recorder,
 		Transcriber: newTranscriber(cfg, logger),
 		Injector:    injector,
-		Feedback:    newFeedback(cfg, logger),
+		Feedback:    newFeedback(cfg, logger, extraFeedback...),
 		Spool:       newSpool(cfg, logger),
 		OnError:     func(err error) { logger.Error("dictation failed: %v", err) },
 		Limits:      cycleLimits(cfg),
 	})
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	triggers := make(chan cycle.Trigger)
 	runDone := make(chan struct{})
 	go func() {
 		defer close(runDone)
@@ -435,9 +448,45 @@ type cycleFeedback struct {
 }
 
 func (f *cycleFeedback) Cue(cue cycle.Cue) {
-	if cue == cycle.CueStop || cue == cycle.CueError {
+	if cue == cycle.CueStop || cue == cycle.CueError || cue == cycle.CueCancelled {
 		f.once.Do(func() { close(f.done) })
 	}
+}
+
+// newIndicator builds the Recording indicator for the interactive run command.
+// It returns nil when the indicator is off, unavailable, or failed to start;
+// the Client then keeps dictating silently.
+func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic.Recorder, triggers chan<- cycle.Trigger) *indicator.Indicator {
+	if cfg.Feedback.Indicator == "off" {
+		return nil
+	}
+	current := session.Current()
+	presenter, err := indicator.Open(
+		cfg.Feedback.Indicator,
+		indicator.Environment{LayerShell: current.Wayland, X11: current.X11},
+		indicator.PlatformFactories(),
+	)
+	if err != nil {
+		logger.Warning("%v", err)
+		return nil
+	}
+	if presenter == nil {
+		return nil
+	}
+	logger.Info("recording indicator: %s backend", presenter.Name())
+	return indicator.New(indicator.Options{
+		Presenter: presenter,
+		Level:     recorder,
+		Clock:     nil,
+		OnClick: func() {
+			select {
+			case triggers <- cycle.Stop:
+			default:
+			}
+		},
+		OnLog:     func(message string) { logger.Debug("%s", message) },
+		OnWarning: func(message string) { logger.Warning("%s", message) },
+	})
 }
 
 // newLogger builds the Client logger from the configured log_level/log_file,
@@ -496,10 +545,18 @@ func (f logFeedback) Cue(cue cycle.Cue) {
 	switch cue {
 	case cycle.CueStart:
 		f.log.Debug("dictation cycle: started")
+	case cycle.CueProcessing:
+		f.log.Debug("dictation cycle: processing")
+	case cycle.CueDelivering:
+		f.log.Debug("dictation cycle: delivering")
 	case cycle.CueStop:
 		f.log.Debug("dictation cycle: finished")
 	case cycle.CueError:
 		f.log.Debug("dictation cycle: failed")
+	case cycle.CueCancelled:
+		f.log.Debug("dictation cycle: cancelled")
+	case cycle.CueTooShort:
+		f.log.Debug("dictation cycle: recording too short")
 	}
 }
 

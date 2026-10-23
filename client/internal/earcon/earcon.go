@@ -26,7 +26,9 @@ type Tone struct {
 	DurationMs  int
 }
 
-// ToneFor maps a cycle cue to its earcon.
+// ToneFor maps a cycle cue to its earcon. Progress cues (Processing,
+// Delivering, Cancelled, and TooShort) are silent, so a long dictation does not
+// turn into a stream of beeps; the zero Tone means silence.
 func ToneFor(cue cycle.Cue) Tone {
 	switch cue {
 	case cycle.CueStart:
@@ -36,7 +38,7 @@ func ToneFor(cue cycle.Cue) Tone {
 	case cycle.CueError:
 		return Tone{FrequencyHz: 220, DurationMs: 200}
 	default:
-		return Tone{FrequencyHz: 440, DurationMs: 80}
+		return Tone{}
 	}
 }
 
@@ -100,7 +102,11 @@ func (e *Earcons) Cue(cue cycle.Cue) {
 	if !e.enabled {
 		return
 	}
-	if err := e.play(Render(ToneFor(cue))); err != nil && e.onLog != nil {
+	tone := ToneFor(cue)
+	if tone.DurationMs <= 0 {
+		return
+	}
+	if err := e.play(Render(tone)); err != nil && e.onLog != nil {
 		e.onLog("earcon: " + err.Error())
 	}
 }
