@@ -42,6 +42,7 @@ x-server: &server
       read_only: true
       bind:
         create_host_path: false
+        selinux: z
     - kitsune-models:/models
 
 x-llama: &llama
