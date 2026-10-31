@@ -5,10 +5,6 @@
 /kitsune.yaml
 /.env
 
-### Agent skills (installed from skills-lock.json) ###
-.agents/skills/
-.claude/skills/
-
 ### Go ###
 *.exe
 *.exe~
