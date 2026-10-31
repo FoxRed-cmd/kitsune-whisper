@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/randr"
@@ -28,11 +30,16 @@ type x11Presenter struct {
 	window   xproto.Window
 	gc       xproto.Gcontext
 	colormap xproto.Colormap
-	scale    int
-	mapped   bool
+	// scale is stored as math.Float64bits so Scale can be read from the
+	// indicator goroutine while the update loop refreshes it.
+	scale  atomic.Uint64
+	mapped bool
 	// windowWidth and windowHeight track the current physical window size.
 	windowWidth  int
 	windowHeight int
+	// lastScaleCheck throttles re-reading the desktop scale while the window
+	// stays visible; it is owned by the update loop.
+	lastScaleCheck time.Time
 	// positionDirty asks the next Show to place the window on the monitor with
 	// the focused window. It is set on Hide and on creation.
 	positionDirty bool
@@ -88,6 +95,7 @@ func NewX11() (Presenter, error) {
 		return nil, fmt.Errorf("allocate X11 window: %w", err)
 	}
 	scale := x11Scale(conn, screen.Root)
+	size := FrameSize(scale)
 	gcID, err := xproto.NewGcontextId(conn)
 	if err != nil {
 		conn.Close()
@@ -104,7 +112,7 @@ func NewX11() (Presenter, error) {
 	}
 	if err := xproto.CreateWindowChecked(
 		conn, depth, windowID, screen.Root,
-		0, 0, uint16(LogicalWidth*scale), uint16(LogicalHeight*scale), 0,
+		0, 0, uint16(size.X), uint16(size.Y), 0,
 		xproto.WindowClassInputOutput, visual.VisualId,
 		mask, values,
 	).Check(); err != nil {
@@ -123,7 +131,6 @@ func NewX11() (Presenter, error) {
 		window:        windowID,
 		gc:            gcID,
 		colormap:      colormapID,
-		scale:         scale,
 		positionDirty: true,
 		clicks:        make(chan struct{}, 1),
 		updates:       make(chan x11Update, 1),
@@ -131,13 +138,16 @@ func NewX11() (Presenter, error) {
 		updateDone:    make(chan struct{}),
 		eventDone:     make(chan struct{}),
 	}
+	p.scale.Store(math.Float64bits(scale))
 	go p.updateLoop()
 	go p.eventLoop()
 	return p, nil
 }
 
 func (p *x11Presenter) Name() string { return "x11" }
-func (p *x11Presenter) Scale() int   { return p.scale }
+func (p *x11Presenter) Scale() float64 {
+	return math.Float64frombits(p.scale.Load())
+}
 func (p *x11Presenter) Clicks() <-chan struct{} {
 	return p.clicks
 }
@@ -227,6 +237,7 @@ func (p *x11Presenter) apply(update x11Update) {
 	if width == 0 || height == 0 {
 		return
 	}
+	p.refreshScale(time.Now())
 	if !p.mapped || p.positionDirty || p.windowWidth != int(width) || p.windowHeight != int(height) {
 		x, y := p.position(int(width))
 		values := []uint32{uint32(int16(x)), uint32(int16(y)), uint32(width), uint32(height)}
@@ -249,6 +260,14 @@ func (p *x11Presenter) apply(update x11Update) {
 		_ = xproto.MapWindowChecked(p.conn, p.window).Check()
 		p.mapped = true
 	}
+}
+
+func (p *x11Presenter) refreshScale(now time.Time) {
+	if !p.lastScaleCheck.IsZero() && now.Sub(p.lastScaleCheck) < time.Second {
+		return
+	}
+	p.lastScaleCheck = now
+	p.scale.Store(math.Float64bits(x11Scale(p.conn, p.root)))
 }
 
 func (p *x11Presenter) eventLoop() {
@@ -370,7 +389,7 @@ func setWindowProperties(conn *xgb.Conn, window xproto.Window) {
 
 var dpiPattern = regexp.MustCompile(`(?m)^Xft\.dpi:\s*([0-9.]+)`)
 
-func x11Scale(conn *xgb.Conn, root xproto.Window) int {
+func x11Scale(conn *xgb.Conn, root xproto.Window) float64 {
 	scale := 1.0
 	if atom, err := internAtom(conn, "RESOURCE_MANAGER"); err == nil {
 		if reply, err := xproto.GetProperty(conn, false, root, atom, xproto.AtomString, 0, 1<<16).Reply(); err == nil && reply != nil {
@@ -392,14 +411,11 @@ func x11Scale(conn *xgb.Conn, root xproto.Window) int {
 			}
 		}
 	}
-	rounded := int(math.Round(scale))
-	if rounded < 1 {
-		return 1
-	}
-	if rounded > 4 {
-		return 4
-	}
-	return rounded
+	// Xft.dpi carries fractional scale factors on Xorg (120 dpi is 125%), so
+	// keep the fraction instead of rounding to an integer. The renderer handles
+	// fractional geometry; rounding here would leave the indicator at 1x on a
+	// 125% desktop.
+	return clampScale(scale)
 }
 
 func internAtom(conn *xgb.Conn, name string) (xproto.Atom, error) {

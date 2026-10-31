@@ -21,7 +21,7 @@ type shownFrame struct {
 }
 
 type fakePresenter struct {
-	scale  int
+	scale  float64
 	frames chan shownFrame
 	hides  chan struct{}
 	closed chan struct{}
@@ -39,8 +39,8 @@ func newFakePresenter() *fakePresenter {
 	}
 }
 
-func (p *fakePresenter) Name() string { return "fake" }
-func (p *fakePresenter) Scale() int   { return p.scale }
+func (p *fakePresenter) Name() string   { return "fake" }
+func (p *fakePresenter) Scale() float64 { return p.scale }
 func (p *fakePresenter) Show(frame *image.RGBA, input image.Rectangle) {
 	if p.panic.Load() {
 		panic("presenter exploded")
@@ -419,7 +419,7 @@ func TestPresenterSelection(t *testing.T) {
 type namedPresenter struct{ name string }
 
 func (p *namedPresenter) Name() string                      { return p.name }
-func (p *namedPresenter) Scale() int                        { return 1 }
+func (p *namedPresenter) Scale() float64                    { return 1 }
 func (p *namedPresenter) Show(*image.RGBA, image.Rectangle) {}
 func (p *namedPresenter) Hide()                             {}
 func (p *namedPresenter) Close()                            {}

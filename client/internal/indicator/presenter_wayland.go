@@ -264,7 +264,7 @@ func NewLayerShell() (Presenter, error) {
 }
 
 func (p *waylandPresenter) Name() string            { return "layer_shell" }
-func (p *waylandPresenter) Scale() int              { return p.scale }
+func (p *waylandPresenter) Scale() float64          { return float64(p.scale) }
 func (p *waylandPresenter) Clicks() <-chan struct{} { return p.clicks }
 
 func (p *waylandPresenter) Show(frame *image.RGBA, input image.Rectangle) {

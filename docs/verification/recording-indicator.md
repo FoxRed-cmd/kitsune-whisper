@@ -45,6 +45,10 @@ editor with the cursor in a document for the focus checks.
 - [ ] With two monitors, focus windows on each in turn and start a cycle; the
       pill follows the focused monitor.
 - [ ] On a HiDPI (Xft.dpi > 96) display the pill is crisp, not upscaled.
+- [ ] At a fractional desktop scale (125% / Xft.dpi 120) the pill is 1.25× its
+      100% size, not rounded down to 1×.
+- [ ] Changing the desktop scale while the Client is running resizes the pill on
+      the next cycle without restarting the Client.
 - [ ] The pill has no window decorations, taskbar entry, or Alt-Tab entry.
 - [ ] It stays above tiled and borderless-fullscreen windows; note whether it
       stays above an exclusive-fullscreen app (compositor-dependent).

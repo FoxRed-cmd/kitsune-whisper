@@ -32,6 +32,35 @@ func TestRenderScalesFrame(t *testing.T) {
 	}
 }
 
+func TestRenderFractionalScale(t *testing.T) {
+	img := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Alpha: 1, Scale: 1.25})
+	size := indicator.FrameSize(1.25)
+	if img.Bounds().Dx() != size.X || img.Bounds().Dy() != size.Y {
+		t.Fatalf("125%% bounds = %v, want %v", img.Bounds(), size)
+	}
+	if size.X != 180 || size.Y != 90 {
+		t.Fatalf("125%% size = %v, want 180x90", size)
+	}
+}
+
+func TestFrameSizeKeepsFractionalScales(t *testing.T) {
+	cases := []struct {
+		scale float64
+		want  image.Point
+	}{
+		{1, image.Pt(144, 72)},
+		{1.25, image.Pt(180, 90)},
+		{1.5, image.Pt(216, 108)},
+		{1.75, image.Pt(252, 126)},
+		{2, image.Pt(288, 144)},
+	}
+	for _, tc := range cases {
+		if got := indicator.FrameSize(tc.scale); got != tc.want {
+			t.Fatalf("FrameSize(%v) = %v, want %v", tc.scale, got, tc.want)
+		}
+	}
+}
+
 func TestHigherLevelProducesTallerBars(t *testing.T) {
 	quiet := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Level: 0.05, Alpha: 1, Scale: 1})
 	loud := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Level: 0.95, Alpha: 1, Scale: 1})
@@ -63,14 +92,14 @@ func TestStopButtonOnlyWhileRecording(t *testing.T) {
 }
 
 func TestStopRegionMatchesDrawnButtonAtEveryScale(t *testing.T) {
-	for _, scale := range []int{1, 2, 3} {
+	for _, scale := range []float64{1, 1.25, 1.5, 2, 3} {
 		img := indicator.Render(indicator.Frame{Phase: indicator.PhaseRecording, Alpha: 1, Scale: scale})
 		region := indicator.StopRegion(scale)
 		if !region.In(img.Bounds()) {
-			t.Fatalf("scale %d: stop region %v is outside the frame %v", scale, region, img.Bounds())
+			t.Fatalf("scale %v: stop region %v is outside the frame %v", scale, region, img.Bounds())
 		}
 		if countRed(img, region) == 0 {
-			t.Fatalf("scale %d: no stop button inside the clickable region %v", scale, region)
+			t.Fatalf("scale %v: no stop button inside the clickable region %v", scale, region)
 		}
 	}
 }

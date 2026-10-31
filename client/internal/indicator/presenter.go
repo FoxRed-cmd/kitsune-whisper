@@ -12,9 +12,10 @@ import (
 type Presenter interface {
 	// Name identifies the backend for logs ("layer_shell", "x11").
 	Name() string
-	// Scale is the integer output scale, so the indicator can render crisp
-	// pixels instead of upscaling.
-	Scale() int
+	// Scale is the output scale factor, so the indicator can render crisp
+	// pixels instead of upscaling. Fractional factors are allowed (1.25 for a
+	// 125% desktop).
+	Scale() float64
 	// Show presents a premultiplied RGBA frame. Input is the clickable region
 	// in frame pixels; the zero rectangle means the whole frame passes clicks
 	// through.

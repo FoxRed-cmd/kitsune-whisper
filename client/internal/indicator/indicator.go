@@ -352,9 +352,6 @@ func (i *Indicator) show(now time.Time) {
 	}()
 
 	scale := i.presenter.Scale()
-	if scale < 1 {
-		scale = 1
-	}
 	input := image.Rectangle{}
 	if i.phase == PhaseRecording && !i.fading && i.alpha > 0.5 {
 		input = StopRegion(scale)
