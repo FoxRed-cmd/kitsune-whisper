@@ -31,7 +31,7 @@ var english = map[string]string{
 	"help.ui_language":         "The language of this window and the Tray. The system language is used unless you pick one.",
 	"hotkey.capture":           "Press the combination",
 	"field.hotkey":             "Dictation hotkey",
-	"help.hotkey":              "Press the combination in the field. Toggle or push-to-talk is set below.",
+	"help.hotkey":              "Press the combination in the field. Toggle or push-to-talk is set below. A combination another application already owns cannot be checked before registration.",
 	"field.cancel_hotkey":      "Cancel hotkey",
 	"help.cancel_hotkey":       "Discards the current recording without sending it to the Server.",
 	"field.trigger":            "Trigger mode",
