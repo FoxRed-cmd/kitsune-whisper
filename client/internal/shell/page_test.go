@@ -14,9 +14,11 @@ import (
 
 func sampleView() dictation.View {
 	return dictation.View{
-		Language: i18n.Russian,
-		Title:    "kitsune-whisper",
-		Subtitle: "Приватная диктовка в локальной сети",
+		Language:    i18n.Russian,
+		Title:       "kitsune-whisper",
+		ConfigTitle: "Файл настроек",
+		ConfigPath:  "/home/user/.config/kitsune-whisper/kitsune.yaml",
+		Subtitle:    "Приватная диктовка в локальной сети",
 		Actions: dictation.Actions{
 			Save:              "Сохранить",
 			Restart:           "Перезапустить клиент",
@@ -127,6 +129,8 @@ func TestPageRendersTheDictationScreens(t *testing.T) {
 		"Сохранить",
 		"Перезапустить клиент",
 		"Уровень входа",
+		"Файл настроек",
+		"/home/user/.config/kitsune-whisper/kitsune.yaml",
 		`data-hotkey="true"`,
 		`data-action="test-mic"`,
 		`data-action="stop-mic"`,
@@ -197,6 +201,17 @@ func TestSettingsHTMLEscapesHostileText(t *testing.T) {
 	}
 	if !strings.Contains(html, "&lt;/script&gt;") {
 		t.Fatal("settings fragment did not escape the closing tag")
+	}
+}
+
+func TestPageHidesTheActionsWithoutSettings(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, dictation.View{})
+	if !strings.Contains(page, `<footer id="actions" style="display:none">`) {
+		t.Fatal("a status-only page offers empty save and restart buttons")
+	}
+	withSettings := shell.Page(shell.Snapshot{}, sampleView())
+	if strings.Contains(withSettings, `<footer id="actions" style="display:none">`) {
+		t.Fatal("the actions are hidden despite a settings view")
 	}
 }
 

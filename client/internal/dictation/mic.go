@@ -103,7 +103,7 @@ func (s *Service) stopLevelTest() error {
 // streamLevels samples the recorder on every tick until the test stops, then
 // releases the device and closes the stream.
 func (s *Service) streamLevels(test *LevelTest, recorder Recorder) {
-	ticker := s.clock.NewTicker(LevelInterval)
+	ticker := s.clock.NewTicker(levelInterval)
 	defer ticker.Stop()
 	for {
 		select {

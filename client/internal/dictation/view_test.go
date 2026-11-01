@@ -3,9 +3,11 @@ package dictation_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 )
 
@@ -175,3 +177,50 @@ func TestViewSwitchesLanguageAfterSaving(t *testing.T) {
 		t.Fatalf("catalog language = %q, want ru", service.Catalog().Lang())
 	}
 }
+
+func TestViewListsMicrophonesForTheLevelTest(t *testing.T) {
+	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n  audio:\n    device: \"1\"\n")
+	store := openStore(t, path, nil, nil)
+	service := dictation.New(dictation.Options{
+		Store:   store,
+		Env:     map[string]string{"LANG": "en_US.UTF-8"},
+		Devices: func() ([]mic.Device, error) { return testDevices(), nil },
+	})
+	view := service.View()
+	if view.DeviceError != "" {
+		t.Fatalf("device error = %q", view.DeviceError)
+	}
+	field := fieldByPath(t, view, "client.audio.device")
+	want := []dictation.Option{
+		{Value: "", Label: "System default"},
+		{Value: "0", Label: "Built-in Microphone"},
+		{Value: "1", Label: "USB Yeti (System default)"},
+	}
+	if len(field.Options) != len(want) {
+		t.Fatalf("options = %+v", field.Options)
+	}
+	for i := range want {
+		if field.Options[i] != want[i] {
+			t.Errorf("option %d = %+v, want %+v", i, field.Options[i], want[i])
+		}
+	}
+}
+
+func TestViewExplainsAnUnavailableDeviceList(t *testing.T) {
+	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
+	store := openStore(t, path, nil, nil)
+	service := dictation.New(dictation.Options{
+		Store: store,
+		Env:   map[string]string{"LANG": "en_US.UTF-8"},
+		Devices: func() ([]mic.Device, error) {
+			return nil, errNoAudio
+		},
+	})
+	view := service.View()
+	if !strings.Contains(view.DeviceError, "Could not list microphones") ||
+		!strings.Contains(view.DeviceError, "no audio backend") {
+		t.Fatalf("device error = %q", view.DeviceError)
+	}
+}
+
+var errNoAudio = errorString("no audio backend")

@@ -26,23 +26,6 @@ const (
 	Russian Lang = "ru"
 )
 
-// Supported lists the languages a user can pick, in display order.
-func Supported() []Lang { return []Lang{English, Russian} }
-
-// ParseLang reports whether value names a supported language. "auto" is
-// accepted as a setting but is not itself a concrete language.
-func ParseLang(value string) (Lang, bool) {
-	switch Lang(strings.ToLower(strings.TrimSpace(value))) {
-	case Auto:
-		return Auto, true
-	case English:
-		return English, true
-	case Russian:
-		return Russian, true
-	}
-	return "", false
-}
-
 // Detect resolves the operating system locale from the environment and the
 // platform's user locale. See DetectWith.
 func Detect(env map[string]string) Lang { return DetectWith(env, systemLocale()) }

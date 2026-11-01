@@ -397,3 +397,18 @@ func TestSaveOfOnlyTheInterfaceLanguageDoesNotRebuildAdapters(t *testing.T) {
 		t.Fatalf("a language-only save rebuilt runtime adapters %d times", runtime.count())
 	}
 }
+
+func TestSaveTranslatesTypeValidationMessages(t *testing.T) {
+	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
+	service := newService(t, path, map[string]string{"LANG": "ru_RU.UTF-8"}, &fakeRuntime{})
+
+	outcome, _ := service.Save(map[string]any{"paste": "yes"})
+	if len(outcome.Errors) != 1 || !strings.Contains(outcome.Errors[0], "Выберите «включено» или «выключено»") {
+		t.Fatalf("boolean error = %v, want a translated message", outcome.Errors)
+	}
+
+	outcome, _ = service.Save(map[string]any{"language": 5})
+	if len(outcome.Errors) != 1 || !strings.Contains(outcome.Errors[0], "Введите текст") {
+		t.Fatalf("string error = %v, want a translated message", outcome.Errors)
+	}
+}

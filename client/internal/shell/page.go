@@ -23,6 +23,11 @@ func Page(initial Snapshot, settings dictation.View) string {
 	if settings.Language != "" {
 		language = string(settings.Language)
 	}
+	actionsStyle := ""
+	if len(settings.Sections) == 0 {
+		// A build without a settings store has nothing to save or restart.
+		actionsStyle = ` style="display:none"`
+	}
 	return strings.NewReplacer(
 		"__LANG__", html.EscapeString(language),
 		"__TITLE__", html.EscapeString(title),
@@ -31,6 +36,7 @@ func Page(initial Snapshot, settings dictation.View) string {
 		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
+		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
 }
@@ -50,6 +56,9 @@ func SettingsHTML(view dictation.View) string {
 	}
 	if view.DeviceError != "" {
 		out.WriteString(`<p class="device-error">` + escape(view.DeviceError) + `</p>`)
+	}
+	if view.ConfigPath != "" {
+		out.WriteString(`<p class="config-path">` + escape(view.ConfigTitle) + `: <code>` + escape(view.ConfigPath) + `</code></p>`)
 	}
 	return out.String()
 }
@@ -203,7 +212,7 @@ const pageHTML = `<!doctype html>
   </section>
   <div class="messages" id="messages"></div>
   <div id="settings">__SETTINGS__</div>
-  <footer>
+  <footer id="actions"__ACTIONS_STYLE__>
     <button type="button" class="primary" data-action="save" id="save-button">__SAVE__</button>
     <button type="button" data-action="restart" id="restart-button">__RESTART__</button>
     <span class="hint" id="restart-hint">__RESTART_HINT__</span>

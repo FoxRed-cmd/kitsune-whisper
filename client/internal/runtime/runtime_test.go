@@ -729,3 +729,33 @@ func TestApplyRequiresARunningRuntime(t *testing.T) {
 		t.Fatalf("apply after stop = %v, want ErrNotRunning", err)
 	}
 }
+
+// TestApplyRejectsAnIncompleteRebuild keeps the running Client alive when a
+// factory hands back a partial adapter set.
+func TestApplyRejectsAnIncompleteRebuild(t *testing.T) {
+	h := newHarness(t, nil)
+	h.rebuild = func(config.ClientConfig) (runtime.Adapters, error) {
+		return runtime.Adapters{Hotkey: newFakeHotkey()}, nil
+	}
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	err := h.rt.Apply(config.Default())
+	if err == nil || !strings.Contains(err.Error(), "recorder is required") {
+		t.Fatalf("apply error = %v, want an incomplete-adapter error", err)
+	}
+	select {
+	case <-h.hotkey.exited:
+		t.Fatal("the running hotkey source was released after a rejected rebuild")
+	default:
+	}
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("control socket after a rejected rebuild: %v", err)
+	}
+	waitFor(t, "the original recorder", func() bool {
+		starts, _, _, _ := h.recorder.counts()
+		return starts == 1
+	})
+}

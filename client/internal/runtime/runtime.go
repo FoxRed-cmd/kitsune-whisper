@@ -306,6 +306,9 @@ func (r *Runtime) Apply(cfg config.ClientConfig) error {
 	if err != nil {
 		return fmt.Errorf("runtime: apply: %w", err)
 	}
+	if err := validateAdapters(adapters); err != nil {
+		return fmt.Errorf("runtime: apply: %w", err)
+	}
 
 	// Stop the old generation first: two hotkey sources must never hold the
 	// same keys at once.
@@ -607,6 +610,20 @@ func (r *Runtime) fatalError() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.fatal
+}
+
+// validateAdapters rejects an incomplete rebuild before it replaces working
+// adapters, so a factory bug cannot leave the cycle with nil ports.
+func validateAdapters(adapters Adapters) error {
+	switch {
+	case adapters.Recorder == nil:
+		return errors.New("recorder is required")
+	case adapters.Transcriber == nil:
+		return errors.New("transcriber is required")
+	case adapters.Injector == nil:
+		return errors.New("injector is required")
+	}
+	return nil
 }
 
 func validate(opts Options) error {

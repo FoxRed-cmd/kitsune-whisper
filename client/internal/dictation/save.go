@@ -62,6 +62,10 @@ func (s *Service) Save(patch map[string]any) (Outcome, error) {
 
 	result, err := s.opts.Store.Save(patch)
 	if err != nil {
+		var fieldErr *settings.Error
+		if !errors.As(err, &fieldErr) {
+			s.logf("settings save failed: %v", err)
+		}
 		outcome.Errors = append(outcome.Errors, localizeStoreError(catalog, err)...)
 		return outcome, nil
 	}
@@ -75,7 +79,6 @@ func (s *Service) Save(patch map[string]any) (Outcome, error) {
 
 	var hot []Change
 	var restart []string
-	needsApply := false
 	for _, change := range result.Changes {
 		rendered := Change{
 			Path:  change.Path,
@@ -84,29 +87,34 @@ func (s *Service) Save(patch map[string]any) (Outcome, error) {
 		}
 		if change.Mode == settings.ApplyHot {
 			hot = append(hot, rendered)
-			if !shellApplied[change.Path] {
-				needsApply = true
-			}
 			continue
 		}
 		outcome.RestartRequired = append(outcome.RestartRequired, rendered)
 		restart = append(restart, rendered.Label)
 	}
 
-	outcome.Applied = hot
-	if needsApply && s.opts.Runtime != nil {
+	// A hot change the shell renders itself is applied by re-rendering; every
+	// other hot change needs the runtime to rebuild its adapters. Without a
+	// runtime (a headless build) those changes take effect on the next start.
+	var runtimeChanges []Change
+	for _, change := range hot {
+		if shellApplied[change.Path] {
+			outcome.Applied = append(outcome.Applied, change)
+			continue
+		}
+		if s.opts.Runtime == nil {
+			outcome.RestartRequired = append(outcome.RestartRequired, change)
+			restart = append(restart, change.Label)
+			continue
+		}
+		runtimeChanges = append(runtimeChanges, change)
+	}
+	if len(runtimeChanges) > 0 {
 		if err := s.opts.Runtime.Apply(s.opts.Store.Snapshot().Config); err != nil {
 			s.logf("apply settings: %v", err)
 			outcome.Errors = append(outcome.Errors, catalog.T("error.apply", err.Error()))
-			// The shell-rendered changes still took effect; only the ones that
-			// needed the runtime did not.
-			applied := make([]Change, 0, len(hot))
-			for _, change := range hot {
-				if shellApplied[change.Path] {
-					applied = append(applied, change)
-				}
-			}
-			outcome.Applied = applied
+		} else {
+			outcome.Applied = append(outcome.Applied, runtimeChanges...)
 		}
 	}
 
@@ -115,16 +123,6 @@ func (s *Service) Save(patch map[string]any) (Outcome, error) {
 		outcome.Notices = append(outcome.Notices, catalog.T("notice.restartRequired", strings.Join(restart, ", ")))
 	}
 	return outcome, nil
-}
-
-// ApplyConfig saves nothing but asks the running Client to rebuild its hot
-// adapters from the store's current effective configuration. It is used when
-// the window needs to re-apply after an external change, and by tests.
-func (s *Service) ApplyConfig() error {
-	if s.opts.Runtime == nil {
-		return errors.New("dictation: no runtime is configured")
-	}
-	return s.opts.Runtime.Apply(s.opts.Store.Snapshot().Config)
 }
 
 // shellApplied are the hot fields the Settings shell itself renders from the
@@ -195,9 +193,15 @@ func localizeFieldError(catalog i18n.Catalog, field settings.FieldError) string 
 		localized = catalog.T("error.field.choice", strings.TrimPrefix(message, "must be one of "))
 	case strings.HasPrefix(message, "locked: "):
 		localized = catalog.T("error.field.locked", lockReason(catalog, strings.TrimPrefix(message, "locked: ")))
-	case strings.Contains(message, "must be a number") ||
-		strings.Contains(message, "must be greater") ||
-		strings.Contains(message, "must not exceed"):
+	case message == "must be a string":
+		localized = catalog.T("error.field.text")
+	case message == "must be a boolean":
+		localized = catalog.T("error.field.boolean")
+	case strings.Contains(message, "must be a number"):
+		localized = catalog.T("error.field.number")
+	case strings.Contains(message, "must not exceed"):
+		localized = catalog.T("error.field.range")
+	case strings.Contains(message, "must be greater"):
 		localized = catalog.T("error.field.invalid", message)
 	default:
 		localized = catalog.T("error.field.invalid", message)
