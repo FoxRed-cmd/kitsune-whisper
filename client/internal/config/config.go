@@ -564,12 +564,6 @@ func collectFieldPaths(prefix string, known map[string]any, out *[]string) {
 	}
 }
 
-// DefaultsMap returns the built-in configuration as a nested map shaped like
-// the file's "client:" section.
-func DefaultsMap() (map[string]any, error) {
-	return defaultsMap()
-}
-
 // Validate validates a "client:" section as it would be read from the file,
 // without environment or CLI overrides, and returns the resolved
 // configuration or a field error.

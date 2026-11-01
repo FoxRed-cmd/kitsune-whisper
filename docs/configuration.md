@@ -48,11 +48,12 @@ CLI flags  >  environment  >  file  >  built-in defaults
 Keys are `snake_case`; units are suffixes (`_seconds`, `_mb`). Unknown keys in
 the binary's own section are a **startup error** (typo safety) — the other
 section is ignored entirely. Validation is fail-fast and names the offending
-field path. The configuration is read once at startup; changes apply on
-**restart** (there is no hot reload). The Server's configuration store
-(`kitsune_server.store`) validates with these same rules and writes the
-`server:` section atomically, classifying each change as hot-applied or
-restart-required for the Admin API that will drive it.
+field path. The configuration is read once at startup. The configuration stores
+(the Server's `kitsune_server.store` and the Client's settings store) classify
+each change as hot-applied or restart-required, and write their section
+atomically while preserving the rest of the file. Classification is advisory
+until live apply lands with the Settings window and the Admin API: until then
+**every persisted change still takes effect on the next start**.
 
 Check a config without starting either process:
 
@@ -65,8 +66,8 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `expose_to_network` | bool | `false` | LAN exposure switch. Off = the Server binds loopback only. On = it binds `0.0.0.0` (or an explicit non-loopback `host`) and requires a restart. |
-| `host` | string | `127.0.0.1` | Bind address. A non-loopback value is rejected unless `expose_to_network` is true. |
+| `expose_to_network` | bool | `false` | LAN exposure switch. On = the Server binds `0.0.0.0` when `host` is left at its default; an explicit `host` wins. Off = loopback unless `host` is explicit. Needs a restart. |
+| `host` | string | `127.0.0.1` | Bind address. An explicit value always wins, including the legacy `host: 0.0.0.0`; prefer `expose_to_network: true`. A non-loopback `host` without that switch still works and logs a migration warning. |
 | `port` | int | `8765` | Bind port (1–65535). The default moved from `8000` to `8765` for the desktop install; set `port: 8000` to keep an existing setup. |
 | `model` | string | `small` | Active model: a faster-whisper size name (`tiny`, `base`, `small`, `medium`, `large-v3`, `turbo`, `distil-large-v3`) **or** a path to a local CTranslate2 model directory. |
 | `device` | `auto`\|`cpu`\|`cuda` | `auto` | `auto` uses CTranslate2's CUDA detection and falls back to CPU. |

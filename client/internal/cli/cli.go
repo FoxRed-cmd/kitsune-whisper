@@ -318,7 +318,7 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 	})
 	if err := rt.Start(ctx); err != nil {
 		_ = recorder.Close()
-		logger.Error("runtime: %v", err)
+		logger.Error("%v", err)
 		return 1
 	}
 
