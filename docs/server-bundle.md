@@ -71,6 +71,8 @@ alone.
   logon from a UTF-16 XML definition. It runs the bundle's `pythonw.exe`, sets
   `<Hidden>true</Hidden>`, and restarts on failure, so no console window opens.
   The cached XML lives in `%APPDATA%\kitsune-whisper\kitsune-server-task.xml`.
+  Task Scheduler discards the process output, so there is no log sink on Windows
+  yet; the diagnostics work will add one.
 
 Never a system service: both run as the installing user without elevation.
 
@@ -134,7 +136,7 @@ CUDA wheels and models are never bundled.
 ## Uninstall
 
 `kitsune-server uninstall` stops and removes the unit/task, deletes the cached
-task XML, removes the launcher, and deletes the bundle root. It is idempotent
-and preserves `kitsune.yaml` and `server.download_root` (models). A future
-installer offers a separate purge step for those (see the spec's uninstall
-stories).
+task XML on Windows, removes the launcher, and deletes the bundle root. It is
+idempotent and preserves `kitsune.yaml` and `server.download_root` (models). A
+future installer offers a separate purge step for those (see the spec's
+uninstall stories).

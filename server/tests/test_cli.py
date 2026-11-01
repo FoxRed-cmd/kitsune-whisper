@@ -9,8 +9,6 @@ import yaml
 from kitsune_server import __version__, bundle, cli, server, supervisor
 from kitsune_server.supervisor import CommandResult, Invocation
 
-ARTIFACT_URL = "https://example.test/kitsune-server.tar.gz"
-
 
 class FakeRunner:
     """Reply to supervisor commands without a real systemctl/schtasks."""
