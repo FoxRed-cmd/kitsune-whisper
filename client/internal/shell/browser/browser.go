@@ -56,7 +56,7 @@ type state struct {
 	statusRev   int64
 	status      shell.Snapshot
 	settingsRev int64
-	settings    map[string]any
+	settings    *shell.SettingsPayload
 	messagesRev int64
 	messages    map[string]any
 	spoolRev    int64
@@ -257,14 +257,9 @@ func (w *window) Update(snapshot shell.Snapshot) {
 func (w *window) UpdateSettings(view shell.SettingsView) {
 	w.desktop.mu.Lock()
 	w.desktop.state.settingsRev++
-	w.desktop.state.settings = map[string]any{
-		"html":     shell.SettingsHTML(view),
-		"language": view.Language,
-		"title":    view.Title,
-		"subtitle": view.Subtitle,
-		"actions":  view.Actions,
-		"sections": view.Sections,
-		"wizard":   view.Wizard,
+	w.desktop.state.settings = &shell.SettingsPayload{
+		SettingsView: view,
+		HTML:         shell.SettingsHTML(view),
 	}
 	w.desktop.mu.Unlock()
 }

@@ -194,6 +194,14 @@ type SettingsView struct {
 	Wizard wizard.View `json:"wizard"`
 }
 
+// SettingsPayload is the JSON shape of a settings update: the view plus its
+// rendered HTML. The embedded Wails window and the browser Settings page both
+// consume the same payload, so their renderers cannot drift.
+type SettingsPayload struct {
+	SettingsView
+	HTML string `json:"html"`
+}
+
 func (s *Shell) serversView() servers.View {
 	if s.opts.Servers == nil {
 		return servers.View{}

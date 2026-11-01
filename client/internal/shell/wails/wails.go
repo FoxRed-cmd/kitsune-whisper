@@ -251,14 +251,8 @@ func (w *window) Update(snapshot shell.Snapshot) {
 	w.win.ExecJS("window.renderStatus(" + string(payload) + ")")
 }
 
-// settingsPayload is the view plus the HTML fragment rendered from it.
-type settingsPayload struct {
-	shell.SettingsView
-	HTML string `json:"html"`
-}
-
 func (w *window) UpdateSettings(view shell.SettingsView) {
-	payload, err := json.Marshal(settingsPayload{SettingsView: view, HTML: shell.SettingsHTML(view)})
+	payload, err := json.Marshal(shell.SettingsPayload{SettingsView: view, HTML: shell.SettingsHTML(view)})
 	if err != nil {
 		return
 	}
