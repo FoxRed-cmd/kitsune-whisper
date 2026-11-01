@@ -294,7 +294,7 @@ func wizardTryHTML(view wizard.View) string {
 	out.WriteString(`<p class="help">` + escape(view.Labels.TryHelp) + `</p>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.TryTitle) + `: ` +
 		`<span data-wizard-phase>` + escape(try.PhaseLabel) + `</span> · ` +
-		`<span data-wizard-try-state>` + escape(try.Phase) + `</span></p>`)
+		`<span data-wizard-try-state>` + escape(try.StateLabel) + `</span></p>`)
 	switch {
 	case try.Passed:
 		out.WriteString(`<p class="notice">` + escape(view.Labels.TryPassed) + `</p>`)
@@ -302,9 +302,13 @@ func wizardTryHTML(view wizard.View) string {
 		out.WriteString(`<h4>` + escape(view.Labels.TryMissing) + `</h4><ul class="wizard-missing">`)
 		for _, reason := range try.Reasons {
 			out.WriteString(`<li>` + escape(reason.Text))
+			if reason.Start {
+				out.WriteString(` <button type="button" data-action="wizard-try-start-server">` +
+					escape(view.Labels.TryStartServer) + `</button>`)
+			}
 			if reason.Step != "" {
 				out.WriteString(` <button type="button" data-action="wizard-goto" data-step="` +
-					escape(string(reason.Step)) + `">` + escape(view.Labels.Next) + `</button>`)
+					escape(string(reason.Step)) + `">` + escape(view.Labels.GotoStep) + `</button>`)
 			}
 			out.WriteString(`</li>`)
 		}

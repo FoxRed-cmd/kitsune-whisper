@@ -445,6 +445,8 @@ var russian = map[string]string{
 	"wizard.try.missingTitle": "Пока не готово:",
 	"wizard.try.error":        "Последний цикл диктовки завершился ошибкой: %s",
 	"wizard.try.finish":       "Завершить настройку",
+	"wizard.try.startServer":  "Запустить сервер",
+	"wizard.gotoStep":         "Открыть этот шаг",
 
 	"wizard.try.missing.profile":     "Нет активного профиля сервера.",
 	"wizard.try.missing.server":      "Сервер %s недоступен.",

@@ -447,6 +447,8 @@ var english = map[string]string{
 	"wizard.try.missingTitle": "Not ready yet:",
 	"wizard.try.error":        "The last Dictation cycle failed: %s",
 	"wizard.try.finish":       "Finish setup",
+	"wizard.try.startServer":  "Start the Server",
+	"wizard.gotoStep":         "Open this step",
 
 	"wizard.try.missing.profile":     "No Server profile is active.",
 	"wizard.try.missing.server":      "The Server %s is unreachable.",

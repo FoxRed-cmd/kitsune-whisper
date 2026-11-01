@@ -139,8 +139,9 @@ func (s *Service) initialLocked() State {
 }
 
 // normalize repairs a loaded state: unknown steps fall back to the first step,
-// duplicate entries are removed, and the wizard starts hidden so a restart
-// never forces it open. The user can reopen it from Settings.
+// duplicate entries are removed, a completed wizard resumes on the try step,
+// and the wizard starts hidden so a restart never forces it open. The user can
+// reopen it from Settings.
 func normalize(state State) State {
 	state.Version = stateVersion
 	state.Active = false
@@ -149,8 +150,15 @@ func normalize(state State) State {
 	}
 	state.Done = uniqueSteps(state.Done)
 	state.Skipped = uniqueSteps(state.Skipped)
+	for _, step := range state.Done {
+		state.Skipped = removeStep(state.Skipped, step)
+	}
+	for _, step := range state.Skipped {
+		state.Done = removeStep(state.Done, step)
+	}
 	if state.Completed {
 		state.SkippedAll = false
+		state.Step = StepTry
 	}
 	if state.SkippedAll {
 		state.Completed = false
@@ -256,7 +264,9 @@ func (s *Service) SkipStep() error {
 	return s.mutate(func(state *State) {
 		if state.Step == StepTry {
 			markSkipped(state, state.Step)
-			complete(state)
+			state.Completed = true
+			state.SkippedAll = false
+			state.Active = false
 			return
 		}
 		markSkipped(state, state.Step)
@@ -303,6 +313,14 @@ func (s *Service) DeferModel(name string) error {
 			state.Step = StepServer
 		}
 		state.Active = true
+	})
+}
+
+// ClearDeferred forgets a deferred model after one is downloaded and
+// activated, so the launcher stops mentioning it.
+func (s *Service) ClearDeferred() error {
+	return s.mutate(func(state *State) {
+		state.DeferredModel = ""
 	})
 }
 

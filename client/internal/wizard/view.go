@@ -124,18 +124,20 @@ type Labels struct {
 	ServerActive        string `json:"serverActive"`
 	ServerNoProfile     string `json:"serverNoProfile"`
 
-	TryTitle     string `json:"tryTitle"`
-	TryHelp      string `json:"tryHelp"`
-	TryReady     string `json:"tryReady"`
-	TryStart     string `json:"tryStart"`
-	TryStop      string `json:"tryStop"`
-	TryConfirm   string `json:"tryConfirm"`
-	TryRetry     string `json:"tryRetry"`
-	TryPassed    string `json:"tryPassed"`
-	TryNotPassed string `json:"tryNotPassed"`
-	TryMissing   string `json:"tryMissing"`
-	TryError     string `json:"tryError"`
-	TryFinish    string `json:"tryFinish"`
+	TryTitle       string `json:"tryTitle"`
+	TryHelp        string `json:"tryHelp"`
+	TryReady       string `json:"tryReady"`
+	TryStart       string `json:"tryStart"`
+	TryStop        string `json:"tryStop"`
+	TryConfirm     string `json:"tryConfirm"`
+	TryRetry       string `json:"tryRetry"`
+	TryPassed      string `json:"tryPassed"`
+	TryNotPassed   string `json:"tryNotPassed"`
+	TryMissing     string `json:"tryMissing"`
+	TryError       string `json:"tryError"`
+	TryFinish      string `json:"tryFinish"`
+	TryStartServer string `json:"tryStartServer"`
+	GotoStep       string `json:"gotoStep"`
 
 	NoticeSaved          string `json:"noticeSaved"`
 	ErrorState           string `json:"errorState"`
@@ -214,8 +216,9 @@ type ServerView struct {
 
 // ReasonView is one translated missing prerequisite.
 type ReasonView struct {
-	Text string `json:"text"`
-	Step Step   `json:"step,omitempty"`
+	Text  string `json:"text"`
+	Step  Step   `json:"step,omitempty"`
+	Start bool   `json:"start,omitempty"`
 }
 
 // TryView is the final try-it step's rendered state.
@@ -226,6 +229,7 @@ type TryView struct {
 	Running      bool         `json:"running"`
 	Phase        string       `json:"phase"`
 	PhaseLabel   string       `json:"phaseLabel"`
+	StateLabel   string       `json:"stateLabel"`
 	RuntimeError string       `json:"runtimeError,omitempty"`
 }
 
@@ -403,18 +407,20 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		ServerActive:        catalog.T("wizard.server.active"),
 		ServerNoProfile:     catalog.T("wizard.server.noProfile"),
 
-		TryTitle:     catalog.T("wizard.try.title"),
-		TryHelp:      catalog.T("wizard.try.help"),
-		TryReady:     catalog.T("wizard.try.ready"),
-		TryStart:     catalog.T("wizard.try.start"),
-		TryStop:      catalog.T("wizard.try.stop"),
-		TryConfirm:   catalog.T("wizard.try.confirm"),
-		TryRetry:     catalog.T("wizard.try.retry"),
-		TryPassed:    catalog.T("wizard.try.passed"),
-		TryNotPassed: catalog.T("wizard.try.notPassed"),
-		TryMissing:   catalog.T("wizard.try.missingTitle"),
-		TryError:     catalog.T("wizard.try.error"),
-		TryFinish:    catalog.T("wizard.try.finish"),
+		TryTitle:       catalog.T("wizard.try.title"),
+		TryHelp:        catalog.T("wizard.try.help"),
+		TryReady:       catalog.T("wizard.try.ready"),
+		TryStart:       catalog.T("wizard.try.start"),
+		TryStop:        catalog.T("wizard.try.stop"),
+		TryConfirm:     catalog.T("wizard.try.confirm"),
+		TryRetry:       catalog.T("wizard.try.retry"),
+		TryPassed:      catalog.T("wizard.try.passed"),
+		TryNotPassed:   catalog.T("wizard.try.notPassed"),
+		TryMissing:     catalog.T("wizard.try.missingTitle"),
+		TryError:       catalog.T("wizard.try.error"),
+		TryFinish:      catalog.T("wizard.try.finish"),
+		TryStartServer: catalog.T("wizard.try.startServer"),
+		GotoStep:       catalog.T("wizard.gotoStep"),
 
 		NoticeSaved:          catalog.T("wizard.notice.saved"),
 		ErrorState:           catalog.T("wizard.error.state"),
@@ -593,12 +599,14 @@ func tryView(catalog i18n.Catalog, service *Service, data Data) TryView {
 		Running:      data.Running,
 		Phase:        data.Phase,
 		PhaseLabel:   phaseLabel(catalog, data.Phase),
+		StateLabel:   stateLabel(catalog, data.Phase),
 		RuntimeError: data.RuntimeError,
 	}
 	for _, reason := range TryReadiness(data) {
 		view.Reasons = append(view.Reasons, ReasonView{
-			Text: catalog.T(reason.Key, reason.Args...),
-			Step: reason.Step,
+			Text:  catalog.T(reason.Key, reason.Args...),
+			Step:  reason.Step,
+			Start: reason.Key == "wizard.try.missing.stopped",
 		})
 	}
 	view.Ready = len(view.Reasons) == 0
@@ -610,6 +618,18 @@ func phaseLabel(catalog i18n.Catalog, phase string) string {
 		phase = "idle"
 	}
 	return catalog.T("phase." + phase)
+}
+
+// stateLabel maps a Dictation phase onto the Tray's coarse state label.
+func stateLabel(catalog i18n.Catalog, phase string) string {
+	state := "idle"
+	switch phase {
+	case "recording":
+		state = "recording"
+	case "processing", "delivering":
+		state = "processing"
+	}
+	return catalog.T("state." + state)
 }
 
 func humanBytes(value int64) string {
@@ -664,7 +684,7 @@ func LabelKeys() []string {
 		"wizard.try.title", "wizard.try.help", "wizard.try.ready", "wizard.try.start",
 		"wizard.try.stop", "wizard.try.confirm", "wizard.try.retry", "wizard.try.passed",
 		"wizard.try.notPassed", "wizard.try.missingTitle", "wizard.try.error", "wizard.try.finish",
-		"wizard.try.missing.profile", "wizard.try.missing.server", "wizard.try.missing.runtime",
+		"wizard.try.startServer", "wizard.gotoStep", "wizard.try.missing.profile", "wizard.try.missing.server", "wizard.try.missing.runtime",
 		"wizard.try.missing.model", "wizard.try.missing.modelFailed", "wizard.try.missing.stopped",
 		"wizard.try.missing.mic",
 		"wizard.notice.saved", "wizard.error.state", "wizard.error.choice",
@@ -679,6 +699,7 @@ func LabelKeys() []string {
 		"server.unknown", "server.online", "server.offline", "server.unauthenticated",
 		"server.unpinned", "server.mismatch",
 		"phase.idle", "phase.recording", "phase.processing", "phase.delivering",
+		"state.idle", "state.recording", "state.processing", "state.error",
 	}...)
 	for _, step := range AllSteps {
 		keys = append(keys, "wizard.step."+string(step))

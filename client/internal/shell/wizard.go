@@ -187,6 +187,8 @@ func (s *Shell) handleWizardIntent(intent Intent) {
 		s.wizardTryStart()
 	case IntentWizardTryStop:
 		s.wizardTryStop()
+	case IntentWizardTryStartServer:
+		s.wizardTryStartServer()
 	case IntentWizardTryConfirm:
 		s.reportWizardError(s.opts.Wizard.MarkTry(true))
 		s.pushSettings()
@@ -364,6 +366,9 @@ func (s *Shell) wizardModelReady() bool {
 	data := s.wizardData()
 	presence := wizard.ModelPresence(data)
 	if presence.ModelActive {
+		if s.opts.Wizard.State().DeferredModel != "" {
+			s.reportWizardError(s.opts.Wizard.ClearDeferred())
+		}
 		return true
 	}
 	if s.opts.Wizard.State().DeferredModel != "" {
@@ -495,6 +500,7 @@ func (s *Shell) wizardModelActivate(model, path string) {
 	if path != "" {
 		name = path
 	}
+	s.reportWizardError(s.opts.Wizard.ClearDeferred())
 	s.pushWizard()
 	s.pushMessages([]string{s.catalog().T("notice.model.activated", name)}, nil)
 }
@@ -606,6 +612,31 @@ func (s *Shell) wizardTryStop() {
 		return
 	}
 	s.opts.Send(cycle.Stop)
+}
+
+// wizardTryStartServer clears a soft-stop from the try step, then refreshes
+// the status so the step can become ready.
+func (s *Shell) wizardTryStartServer() {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	profileID := s.activeServerID()
+	if profileID == "" {
+		s.pushMessages(nil, []string{s.catalog().T("wizard.error.noProfile")})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if _, err := s.opts.Servers.Start(ctx, profileID); err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.start", err.Error())})
+		return
+	}
+	s.pushMessages([]string{s.catalog().T("notice.server.started", s.activeProfileName())}, nil)
+	go func() {
+		s.checkServer(context.Background())
+		s.pushSettings()
+	}()
 }
 
 // cancelWizardCycle discards an in-progress recording when the user leaves the

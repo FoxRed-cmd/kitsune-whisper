@@ -493,29 +493,30 @@ const (
 	IntentServerStop         = "server-stop"
 	IntentServerStart        = "server-start"
 
-	IntentWizardOpen          = "wizard-open"
-	IntentWizardClose         = "wizard-close"
-	IntentWizardNext          = "wizard-next"
-	IntentWizardBack          = "wizard-back"
-	IntentWizardSkip          = "wizard-skip"
-	IntentWizardSkipAll       = "wizard-skip-all"
-	IntentWizardRestart       = "wizard-restart"
-	IntentWizardFinish        = "wizard-finish"
-	IntentWizardGoTo          = "wizard-goto"
-	IntentWizardRefresh       = "wizard-refresh"
-	IntentWizardMicStart      = "wizard-mic-start"
-	IntentWizardMicStop       = "wizard-mic-stop"
-	IntentWizardValidate      = "wizard-validate-hotkey"
-	IntentWizardModelDownload = "wizard-model-download"
-	IntentWizardModelCancel   = "wizard-model-cancel"
-	IntentWizardModelActivate = "wizard-model-activate"
-	IntentWizardModelDefer    = "wizard-model-defer"
-	IntentWizardLocal         = "wizard-local"
-	IntentWizardPairRemote    = "wizard-pair-remote"
-	IntentWizardTryStart      = "wizard-try-start"
-	IntentWizardTryStop       = "wizard-try-stop"
-	IntentWizardTryConfirm    = "wizard-try-confirm"
-	IntentWizardTryFail       = "wizard-try-fail"
+	IntentWizardOpen           = "wizard-open"
+	IntentWizardClose          = "wizard-close"
+	IntentWizardNext           = "wizard-next"
+	IntentWizardBack           = "wizard-back"
+	IntentWizardSkip           = "wizard-skip"
+	IntentWizardSkipAll        = "wizard-skip-all"
+	IntentWizardRestart        = "wizard-restart"
+	IntentWizardFinish         = "wizard-finish"
+	IntentWizardGoTo           = "wizard-goto"
+	IntentWizardRefresh        = "wizard-refresh"
+	IntentWizardMicStart       = "wizard-mic-start"
+	IntentWizardMicStop        = "wizard-mic-stop"
+	IntentWizardValidate       = "wizard-validate-hotkey"
+	IntentWizardModelDownload  = "wizard-model-download"
+	IntentWizardModelCancel    = "wizard-model-cancel"
+	IntentWizardModelActivate  = "wizard-model-activate"
+	IntentWizardModelDefer     = "wizard-model-defer"
+	IntentWizardLocal          = "wizard-local"
+	IntentWizardPairRemote     = "wizard-pair-remote"
+	IntentWizardTryStart       = "wizard-try-start"
+	IntentWizardTryStop        = "wizard-try-stop"
+	IntentWizardTryStartServer = "wizard-try-start-server"
+	IntentWizardTryConfirm     = "wizard-try-confirm"
+	IntentWizardTryFail        = "wizard-try-fail"
 )
 
 // HandleIntent applies one page intent. Validation failures are shown in the
@@ -655,7 +656,7 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		IntentWizardValidate, IntentWizardModelDownload, IntentWizardModelCancel,
 		IntentWizardModelActivate, IntentWizardModelDefer, IntentWizardLocal,
 		IntentWizardPairRemote, IntentWizardTryStart, IntentWizardTryStop,
-		IntentWizardTryConfirm, IntentWizardTryFail:
+		IntentWizardTryStartServer, IntentWizardTryConfirm, IntentWizardTryFail:
 		if s.opts.Wizard == nil {
 			return errors.New("the setup wizard is not available in this build")
 		}

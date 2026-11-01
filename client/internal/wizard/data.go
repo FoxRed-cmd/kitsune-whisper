@@ -252,10 +252,7 @@ func modelError(data Data) string {
 	if models := data.Servers.Models; models != nil && models.Error != "" {
 		return models.Error
 	}
-	if lifecycle := data.Servers.Lifecycle; lifecycle != nil && lifecycle.ModelState == "failed" {
-		return "the Server reported a failed model"
-	}
-	return data.Server.ModelState
+	return "the Server reported a failed model"
 }
 
 func profileName(view servers.View) string {

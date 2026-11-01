@@ -125,6 +125,32 @@ func TestBackDoesNotLeaveTheFirstStep(t *testing.T) {
 	}
 }
 
+func TestSkippingTheTryStepRecordsItAndCompletes(t *testing.T) {
+	service := newService(t, tempState(t))
+	_ = service.Open()
+	for i := 0; i < len(wizard.SetupSteps); i++ {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if service.Step() != wizard.StepTry {
+		t.Fatalf("step = %q, want try", service.Step())
+	}
+	if err := service.SkipStep(); err != nil {
+		t.Fatalf("skip try: %v", err)
+	}
+	state := service.State()
+	if !state.Completed || state.Active {
+		t.Fatalf("state = %+v", state)
+	}
+	if !contains(state.Skipped, wizard.StepTry) {
+		t.Fatalf("skipped = %v, want the try step", state.Skipped)
+	}
+	if contains(state.Done, wizard.StepTry) {
+		t.Fatal("a skipped try step is also done")
+	}
+}
+
 func TestSkipStepMarksSkippedAndAdvances(t *testing.T) {
 	service := newService(t, tempState(t))
 	_ = service.Open()
@@ -266,6 +292,22 @@ func TestSaveFailureKeepsInMemoryState(t *testing.T) {
 	}
 	if store.saves != 1 {
 		t.Fatalf("saves = %d", store.saves)
+	}
+}
+
+func TestClearDeferredForgetsTheDeferredModel(t *testing.T) {
+	service := newService(t, tempState(t))
+	_ = service.Open()
+	_ = service.Next()
+	_ = service.Next()
+	_ = service.Next()
+	_ = service.Next()
+	_ = service.DeferModel("medium")
+	if err := service.ClearDeferred(); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if got := service.State().DeferredModel; got != "" {
+		t.Fatalf("deferred model = %q", got)
 	}
 }
 

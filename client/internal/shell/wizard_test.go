@@ -617,6 +617,25 @@ func TestWizardPageEscapesHostileTextAndSpeaksRussian(t *testing.T) {
 	}
 }
 
+func TestWizardCloseIsRespectedByLaterHealthChecks(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	env := newWizardEnv(t, wiz)
+	env.start(t)
+	env.next(t, shell.Intent{})
+	env.intent(t, shell.Intent{Action: shell.IntentWizardClose})
+	if wiz.Active() {
+		t.Fatal("close left the wizard active")
+	}
+	// A later health refresh runs the auto-open decision again; the shell's
+	// once-per-process guard must keep the closed wizard closed.
+	env.intent(t, shell.Intent{Action: shell.IntentWizardRefresh})
+	time.Sleep(50 * time.Millisecond)
+	if wiz.Active() {
+		t.Fatal("a health refresh reopened a closed wizard")
+	}
+	env.stop(t)
+}
+
 func TestWizardCloseStopsMicAndKeepsProgress(t *testing.T) {
 	wiz, path := newWizardService(t)
 	env := newWizardEnv(t, wiz)

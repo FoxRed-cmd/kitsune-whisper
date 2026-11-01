@@ -839,6 +839,8 @@ const pageHTML = `<!doctype html>
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
     }
+    var wizardOutput = document.getElementById("wizard-try-output");
+    if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
   }
   function renderSpool(v) {
     var host = document.getElementById("settings");
@@ -1101,7 +1103,11 @@ const pageHTML = `<!doctype html>
         name: wizardValue("wizard-server-name")
       });
     } else if (action === "wizard-try-start") {
+      var wizardOutput = document.getElementById("wizard-try-output");
+      if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
       sendIntent({ action: "wizard-try-start" });
+    } else if (action === "wizard-try-start-server") {
+      sendIntent({ action: "wizard-try-start-server" });
     } else if (action === "wizard-try-stop") {
       sendIntent({ action: "wizard-try-stop" });
     } else if (action === "wizard-try-confirm") {
