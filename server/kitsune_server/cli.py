@@ -18,6 +18,12 @@ from typing import Any, get_args
 
 from . import __version__, bundle, supervisor
 from .config import ConfigError, Device, ServerConfig, dump_config, load_config, resolve_config_file
+from .trust import (
+    CertificateError,
+    DeviceStore,
+    DeviceStoreError,
+    device_store_path,
+)
 
 STOP_EPILOG = (
     "Soft-stop through the Admin API (unload the model but keep serving) "
@@ -92,6 +98,17 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=STOP_EPILOG,
     )
     commands.add_parser("restart", parents=[common], help="restart the supervised Server")
+    devices = commands.add_parser(
+        "devices",
+        parents=[common],
+        help="list trusted Devices or revoke one",
+    )
+    device_commands = devices.add_subparsers(
+        dest="devices_command", metavar="COMMAND", required=True
+    )
+    device_commands.add_parser("list", help="list paired Devices")
+    revoke = device_commands.add_parser("revoke", help="revoke a Device by id or name")
+    revoke.add_argument("device_ref", metavar="ID_OR_NAME")
     install = commands.add_parser(
         "install",
         parents=[common],
@@ -254,6 +271,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _supervised(supervisor.stop, "stopped")
     if command == "restart":
         return _supervised(supervisor.restart, "restarted")
+    if command == "devices":
+        return _devices(args)
     if command == "install":
         return _install(args)
     if command == "uninstall":
@@ -281,6 +300,10 @@ def _start(args: argparse.Namespace) -> int:
     except server_module.PortInUseError as exc:
         server_module.record_failure(log_file, f"error: {exc}")
         return _fail(str(exc))
+    except (CertificateError, DeviceStoreError) as exc:
+        message = f"trust error: {exc}"
+        server_module.record_failure(log_file, message)
+        return _fail(message)
     except EngineLoadError as exc:
         message = f"engine error: {exc}"
         server_module.record_failure(log_file, message)
@@ -312,6 +335,55 @@ def _status(args: argparse.Namespace) -> int:
     else:
         print("supervisor: not installed")
     print(f"config:     {_supervised_config_path(layout, manifest, args)}")
+    return 0
+
+
+def _devices(args: argparse.Namespace) -> int:
+    """List or revoke Devices on this Server host (no Admin API needed)."""
+    from datetime import UTC, datetime
+
+    try:
+        config = _load(args)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    path = device_store_path(config)
+    try:
+        store = DeviceStore(path)
+    except DeviceStoreError as exc:
+        return _fail(str(exc))
+
+    def stamp(value: float | None) -> str:
+        if value is None:
+            return "never"
+        return datetime.fromtimestamp(value, UTC).isoformat(timespec="seconds")
+
+    if args.devices_command == "list":
+        devices = store.list()
+        if not devices:
+            print(f"no Devices are paired ({path})")
+            return 0
+        print(f"{'ID':<18} {'NAME':<24} {'CREATED':<26} LAST SEEN")
+        for device in devices:
+            print(
+                f"{device.id:<18} {device.name:<24} "
+                f"{stamp(device.created_at):<26} {stamp(device.last_seen)}"
+            )
+        return 0
+
+    target = next(
+        (device for device in store.list() if device.id == args.device_ref),
+        None,
+    )
+    if target is None:
+        matches = [device for device in store.list() if device.name == args.device_ref]
+        if len(matches) == 1:
+            target = matches[0]
+    if target is None:
+        return _fail(f"no Device matches {args.device_ref!r}; run 'kitsune-server devices list'")
+    if not store.revoke(target.id):
+        return _fail(f"Device {target.id!r} disappeared before it could be revoked")
+    print(f"revoked Device {target.name} ({target.id}); its next request is rejected")
     return 0
 
 

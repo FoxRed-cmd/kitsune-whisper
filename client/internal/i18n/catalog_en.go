@@ -10,9 +10,17 @@ var english = map[string]string{
 	"status.phase":   "Phase",
 	"status.client":  "Client",
 	"status.profile": "Server profile",
+	"status.server":  "Server status",
 	"status.version": "Version",
 	"status.running": "running",
 	"status.stopped": "stopped",
+
+	"server.unknown":         "Checking…",
+	"server.online":          "Online",
+	"server.offline":         "Unreachable",
+	"server.unauthenticated": "Not paired",
+	"server.unpinned":        "Certificate not pinned",
+	"server.mismatch":        "Certificate changed",
 
 	"state.idle":       "Idle",
 	"state.recording":  "Recording",

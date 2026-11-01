@@ -12,7 +12,8 @@ the bottom, because it cannot be observed from an automated session.
 It brings up a real Server (local Python or Docker, CPU or GPU), synthesizes a
 speech WAV (Windows SAPI / espeak-ng, or `--speech <file>`), and checks:
 
-- `/health` reports `model`/`device`/`compute_type`/`ready`.
+- The authenticated `/status` reports `model`/`device`/`compute_type`/`ready`,
+  and `/health` reports liveness and the version without a token.
 - A speech WAV round-trips through `POST /transcribe` and returns non-empty text.
 - The real Client binary (`kitsune-client transcribe-file`) transcribes the same
   WAV, and reports an unreachable Server as an error.

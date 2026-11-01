@@ -290,12 +290,25 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	if status == "" {
 		status = "kitsune-whisper"
 	}
+	serverState := labels.ServerState
+	tooltip := status
+	if snapshot.Profile != "" && serverState != "" {
+		tooltip = status + " · " + snapshot.Profile + ": " + serverState
+	}
 	t.tray.SetIcon(shell.Icon(snapshot.State))
-	t.tray.SetTooltip(status)
+	t.tray.SetTooltip(tooltip)
 
 	menu := application.NewMenu()
 	statusItem := menu.Add(status)
 	statusItem.SetEnabled(false)
+	if snapshot.Profile != "" {
+		serverItem := menu.Add(labels.Profile + ": " + snapshot.Profile)
+		serverItem.SetEnabled(false)
+	}
+	if serverState != "" {
+		serverStateItem := menu.Add(labels.Server + ": " + serverState)
+		serverStateItem.SetEnabled(false)
+	}
 	if snapshot.Error != "" {
 		detail := menu.Add(truncate(snapshot.Error, 64))
 		detail.SetEnabled(false)

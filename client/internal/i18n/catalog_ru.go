@@ -8,9 +8,17 @@ var russian = map[string]string{
 	"status.phase":   "Фаза",
 	"status.client":  "Клиент",
 	"status.profile": "Профиль сервера",
+	"status.server":  "Состояние сервера",
 	"status.version": "Версия",
 	"status.running": "работает",
 	"status.stopped": "остановлен",
+
+	"server.unknown":         "Проверка…",
+	"server.online":          "Доступен",
+	"server.offline":         "Недоступен",
+	"server.unauthenticated": "Не сопоставлен",
+	"server.unpinned":        "Сертификат не закреплён",
+	"server.mismatch":        "Сертификат изменился",
 
 	"state.idle":       "Ожидание",
 	"state.recording":  "Запись",

@@ -28,8 +28,10 @@ const (
 	// LocalServerID is the stable id of the profile a fresh install uses to
 	// reach the Server on the same machine.
 	LocalServerID = "local"
-	// LocalServerURL is the default address of the Local Server.
-	LocalServerURL = "http://localhost:8765"
+	// LocalServerURL is the default address of the Local Server. TLS is on by
+	// default there, so the profile starts with the HTTPS scheme and the
+	// certificate is pinned during auto-pairing.
+	LocalServerURL = "https://localhost:8765"
 	// migratedServerID is the profile that an existing client.server_url
 	// becomes during migration.
 	migratedServerID = "default"

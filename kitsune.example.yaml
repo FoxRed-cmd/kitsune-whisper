@@ -35,17 +35,19 @@ server:
   max_upload_mb: 30
   # Unload the model after this many idle seconds; 0 keeps it resident.
   idle_unload_seconds: 600
-  # TLS is on by default. The HTTPS listener, self-signed certificate, and
-  # pinning land with the desktop install; this release records the setting.
-  # Set enabled: false only for an explicit insecure-HTTP setup.
+  # TLS is on by default. The Server generates a self-signed certificate on
+  # first start, keeps it in the state directory, and logs its SHA-256
+  # fingerprint; the Client pins that fingerprint when it pairs. Set
+  # enabled: false only for an explicit insecure-HTTP setup.
   # cert_file/key_file are optional overrides and must be set together.
   tls:
     enabled: true
     cert_file: null
     key_file: null
   # Device tokens are required unless an operator opts into anonymous access.
+  # The Server stores only token hashes; revoking a Device takes effect at once.
   allow_anonymous: false
-  # Paired Device records: "" uses the OS data directory.
+  # Paired Device records: "" uses devices.json in the OS state directory.
   devices_file: ""
   log_level: info
   decode:
@@ -92,8 +94,9 @@ client:
   servers:
     - id: local
       name: Local Server
-      url: http://localhost:8765
+      url: https://localhost:8765
       # SHA-256 fingerprint of the Server certificate; "" until pairing pins it.
+      # The Client fills it in from the TLS handshake during auto-pairing.
       fingerprint: ""
       auto_pair: true
   active_server: local

@@ -8,7 +8,8 @@ audio never leaves your network.
   resamples to 16 kHz mono, and injects the transcription via clipboard +
   synthetic paste.
 - A Python **Server** transcribes with faster-whisper, auto-detects CUDA vs CPU,
-  and exposes `POST /transcribe` and `GET /health`. It ships as a native
+  and exposes the authenticated `POST /transcribe` and `GET /status` plus an
+  unauthenticated `GET /health`. It ships as a native
   per-user bundle (pinned runtime, no system Python or Docker) and as a Docker
   image for a dedicated host.
 - An optional **LLM sidecar** (the official llama.cpp server, behind the opt-in
@@ -34,9 +35,9 @@ touch the models. Audio never leaves the network.
 - **Server** (Python + faster-whisper) — behind `POST /transcribe` it decodes the
   request, runs the VAD silence gate, transcribes on the auto-resolved device,
   and returns JSON. It can optionally post-process the text through an
-  OpenAI-compatible LLM endpoint (see **Processing** below). `GET /health`
-  reports the resolved device, compute type, model, and whether processing is
-  enabled.
+  OpenAI-compatible LLM endpoint (see **Processing** below). The authenticated
+  `GET /status` reports the resolved device, compute type, model, and whether
+  processing is enabled; `GET /health` stays minimal.
 - **Processing** (optional) — a request may ask the Server to **Refine** (remove
   disfluencies, add punctuation) and/or **Summarize** (compress to the key
   points). Refine runs before Summarize. It is off by default and never makes
@@ -187,22 +188,23 @@ point it at this same file instead with `--config ./kitsune.yaml` or
 
 The first run downloads the Whisper `small` model and the Qwen3 GGUF into the
 shared `kitsune-models` volume; later runs reuse them. The Server listens on
-`http://localhost:8765`, and the sidecar is reachable on the compose network as
-`llama` — which the Server services are already pointed at.
+`https://localhost:8765` with a self-signed certificate (the `-k` flag below
+accepts it; the Client pins the fingerprint instead), and the sidecar is
+reachable on the compose network as `llama` — which the Server services are
+already pointed at.
 
-Confirm the GPU and processing are live (give the sidecar a moment to warm up;
-the Server degrades gracefully until it answers):
-
-```sh
-curl http://localhost:8765/health
-```
-
-`device` should be `cuda`, `compute_type` `float16`, and `processing.enabled`
-`true`. To smoke-test the pipeline without the Client:
+Every transcription and management request needs a Device token. The loopback
+auto-pairing path cannot see a Docker port forward as loopback, so a Docker
+Server pairs with a code from inside the container. That in-container flow is
+the next packaging step; until it lands, the health endpoint proves the Server
+is alive:
 
 ```sh
-curl -F audio=@sample.wav -F refine=true http://localhost:8765/transcribe
+curl -k https://localhost:8765/health
 ```
+
+It returns `status` and `version` only. The native per-user install does not
+have this limitation: the Client auto-pairs over loopback on the same machine.
 
 ### 2. Client
 
@@ -226,11 +228,16 @@ client:
   servers:
     - id: local
       name: Local Server
-      url: http://localhost:8765
+      url: https://localhost:8765
       fingerprint: ""
       auto_pair: true
   active_server: local
 ```
+
+On the same machine the Client auto-pairs with the Local Server over loopback:
+it receives a Device token, stores it in the OS keychain (or a `0600` file), and
+pins the certificate fingerprint into the profile. A remote Server needs its
+one-time Pairing code. Tokens never appear in this file or in the logs.
 
 Restart the Client service after editing (`systemctl --user restart
 kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask
@@ -299,8 +306,8 @@ The `gpu` profile needs the host to expose an NVIDIA GPU to Docker:
 - **Windows (WSL2)**: use Docker Desktop with the WSL2 backend and a distro with
   GPU passthrough; confirm `nvidia-smi` works inside WSL before starting.
 - The image bundles `nvidia-cublas-cu12`, because the CTranslate2 wheel ships cuDNN
-  but not cuBLAS. `/health` reports the resolved `device`/`compute_type`, so you can
-  confirm the GPU is actually in use.
+  but not cuBLAS. The authenticated `/status` reports the resolved
+  `device`/`compute_type`, so you can confirm the GPU is actually in use.
 
 ### Recommended hardware
 

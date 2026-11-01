@@ -40,8 +40,29 @@ def make_wav(seconds: float = 0.5, rate: int = 16000, channels: int = 1) -> byte
     return buffer.getvalue()
 
 
-def make_client(app: FastAPI) -> httpx.AsyncClient:
+def make_client(
+    app: FastAPI,
+    token: str | None = None,
+    *,
+    peer: tuple[str, int] = ("127.0.0.1", 1234),
+) -> httpx.AsyncClient:
+    """Build an ASGI client.
+
+    Unless a token is given explicitly, the client authenticates with a fresh
+    Device so tests about transcription keep exercising the real auth path
+    without repeating pairing in every test. Pass ``token=""`` for an
+    unauthenticated request.
+    """
+    headers: dict[str, str] = {}
+    if token is None:
+        config = getattr(app.state, "config", None)
+        if config is None or not config.allow_anonymous:
+            _, issued = app.state.devices.create("Test client", peer[0])
+            token = issued
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+        transport=httpx.ASGITransport(app=app, client=peer),
         base_url="http://kitsune.test",
+        headers=headers,
     )

@@ -206,6 +206,7 @@ const pageHTML = `<!doctype html>
       <dt id="label-phase">—</dt><dd id="phase">idle</dd>
       <dt id="label-running">—</dt><dd id="running">—</dd>
       <dt id="label-server">—</dt><dd id="server">—</dd>
+      <dt id="label-server-status">—</dt><dd id="server-status">—</dd>
       <dt id="label-version">—</dt><dd id="version">—</dd>
     </dl>
     <p class="error" id="error"></p>
@@ -231,10 +232,12 @@ const pageHTML = `<!doctype html>
     text("phase", labels.phaseValue);
     text("running", s.running ? labels.running : labels.stopped);
     text("server", s.profile || "—");
+    text("server-status", labels.serverState || "—");
     text("version", s.version || "—");
     text("label-phase", labels.phase);
     text("label-running", labels.client);
     text("label-server", labels.profile);
+    text("label-server-status", labels.server);
     text("label-version", labels.version);
     var error = document.getElementById("error");
     if (error) {

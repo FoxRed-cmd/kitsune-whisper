@@ -8,6 +8,7 @@ import pytest
 import yaml
 from kitsune_server import __version__, bundle, cli, server, supervisor
 from kitsune_server.supervisor import CommandResult, Invocation
+from kitsune_server.trust import DeviceStore
 
 
 class FakeRunner:
@@ -246,6 +247,35 @@ def test_install_without_a_config_file_pins_no_path(
         supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
     ).read_text(encoding="utf-8")
     assert "--config" not in unit
+
+
+def test_devices_list_and_revoke_use_the_configured_store(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    devices_file = tmp_path / "devices.json"
+    config = tmp_path / "kitsune.yaml"
+    config.write_text(f"server:\n  devices_file: {devices_file}\n", encoding="utf-8")
+    store = DeviceStore(devices_file)
+    device, token = store.create("Laptop")
+
+    assert cli.main(["--config", str(config), "devices", "list"]) == 0
+    output = capsys.readouterr().out
+    assert device.id in output
+    assert "Laptop" in output
+
+    assert cli.main(["--config", str(config), "devices", "revoke", device.id]) == 0
+    assert "revoked Device Laptop" in capsys.readouterr().out
+    assert DeviceStore(devices_file).verify(token) is None
+
+
+def test_devices_revoke_unknown_reports_one_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "kitsune.yaml"
+    config.write_text(f"server:\n  devices_file: {tmp_path / 'devices.json'}\n", encoding="utf-8")
+
+    assert cli.main(["--config", str(config), "devices", "revoke", "missing"]) == 1
+    assert "no Device matches" in capsys.readouterr().err
 
 
 def test_status_reports_the_config_file_the_supervisor_reads(

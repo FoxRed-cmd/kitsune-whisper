@@ -90,12 +90,13 @@ def is_loopback_host(host: str) -> bool:
 
 
 class TlsConfig(_StrictModel):
-    """TLS settings for the future HTTPS listener (setup lands in a later ticket).
+    """TLS settings for the HTTPS listener.
 
-    TLS is on by default. ``cert_file``/``key_file`` are optional overrides and
-    must be set together; the listener, self-signed certificate generation, and
-    Client pinning land with the desktop install. Setting ``enabled: false`` is
-    the explicit insecure-HTTP opt-out for advanced setups.
+    TLS is on by default. A self-signed certificate is generated at first start
+    and persisted in the Server state directory; ``cert_file``/``key_file`` are
+    optional overrides and must be set together. The Client pins the reported
+    fingerprint. Setting ``enabled: false`` is the explicit insecure-HTTP
+    opt-out for advanced setups.
     """
 
     enabled: bool = True

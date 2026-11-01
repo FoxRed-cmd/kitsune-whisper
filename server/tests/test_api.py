@@ -47,41 +47,51 @@ def audio_part(
     return {"audio": ("clip.wav", make_wav(seconds, rate=rate, channels=channels), "audio/wav")}
 
 
-async def test_health_shape() -> None:
+async def test_health_reports_liveness_and_version_only() -> None:
     app, _ = build()
-    async with make_client(app) as client:
+    async with make_client(app, token="") as client:
         response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "model": "fake",
-        "device": "cpu",
-        "compute_type": "int8",
-        "ready": True,
-        "processing": {"enabled": True, "refine": True, "summarize": True},
-        "gpu": {"available": False, "device_count": 0, "device": "cpu"},
-    }
+    assert response.json() == {"status": "ok", "version": "0.1.0"}
 
 
-async def test_health_reports_gpu_availability() -> None:
+async def test_status_shape() -> None:
+    app, _ = build()
+    async with make_client(app) as client:
+        response = await client.get("/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["version"] == "0.1.0"
+    assert body["model"] == "fake"
+    assert body["device"] == "cpu"
+    assert body["compute_type"] == "int8"
+    assert body["ready"] is True
+    assert body["processing"] == {"enabled": True, "refine": True, "summarize": True}
+    assert body["gpu"] == {"available": False, "device_count": 0, "device": "cpu"}
+    assert body["tls_fingerprint"] == ""
+    assert body["auth"] == {"anonymous": False, "device": "Test client"}
+
+
+async def test_status_reports_gpu_availability() -> None:
     transcriber = FakeTranscriber(info=EngineInfo("fake", "cuda", "float16"))
     app, _ = build(transcriber=transcriber, cuda_device_count=2)
     async with make_client(app) as client:
-        response = await client.get("/health")
+        response = await client.get("/status")
     assert response.json()["gpu"] == {"available": True, "device_count": 2, "device": "cuda"}
 
 
-async def test_health_reports_cpu_when_cuda_is_forced_off() -> None:
+async def test_status_reports_cpu_when_cuda_is_forced_off() -> None:
     app, _ = build(ServerConfig(workers=1, device="cpu"), cuda_device_count=1)
     async with make_client(app) as client:
-        response = await client.get("/health")
+        response = await client.get("/status")
     assert response.json()["gpu"] == {"available": True, "device_count": 1, "device": "cpu"}
 
 
-async def test_health_reports_disabled_processing() -> None:
+async def test_status_reports_disabled_processing() -> None:
     app, _ = build(processor=DisabledTextProcessor())
     async with make_client(app) as client:
-        response = await client.get("/health")
+        response = await client.get("/status")
     assert response.json()["processing"] == {
         "enabled": False,
         "refine": False,

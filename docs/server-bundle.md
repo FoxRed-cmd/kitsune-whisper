@@ -129,8 +129,9 @@ It never picks a random port.
 
 ## Health and GPU
 
-`GET /health` keeps its existing contract and adds a `gpu` block:
-`{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
+`GET /health` stays minimal (`status` and `version`) and unauthenticated. The
+authenticated `GET /status` reports the model, device, readiness, and a `gpu`
+block: `{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
 comes from CTranslate2, imported lazily; the resolved device honours
 `server.device`, so a GPU machine can still report `device: cpu`. CPU-only hosts
 are fully supported. CUDA wheels remain an optional download (later packaging

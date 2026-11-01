@@ -18,9 +18,10 @@ The first match wins:
    - Windows: `%APPDATA%\kitsune-whisper\kitsune.yaml`.
 
 If no file is found, built-in defaults apply: the Local Server profile points at
-`http://localhost:8765`, which is also the Server's default port. An existing
-`client.server_url` is migrated into the active Server profile on load, so an
-older configuration keeps working without edits.
+`https://localhost:8765`, which is also the Server's default port (TLS is on by
+default). An existing `client.server_url` is migrated into the active Server
+profile on load, so an older configuration keeps working without edits; a
+plain-HTTP URL keeps working only when the Server runs with `tls.enabled: false`.
 
 ## Precedence
 
@@ -77,14 +78,14 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `download_root` | string | `~/.cache/kitsune-whisper/models` | Hugging Face cache for models. In Docker this is overridden to `/models` (a named volume). |
 | `catalog_file` | string | `""` | Model catalog metadata file; `""` uses the catalog bundled with the release. |
 | `offline` | bool | `false` | Sets `HF_HUB_OFFLINE`/`local_files_only`; no network, and the model must already be cached. |
-| `devices_file` | string | `""` | Paired Device store; `""` uses the OS data directory. |
+| `devices_file` | string | `""` | Paired Device store; `""` uses `devices.json` in the OS state directory. The file stores names, timestamps, and token **hashes**, never plaintext tokens. |
 | `max_audio_seconds` | int | `300` | Requests longer than this return `413`. |
 | `max_upload_mb` | float | `30` | Requests larger than this return `413`. |
 | `idle_unload_seconds` | int | `600` | Unload the model after this many idle seconds; `0` keeps it resident. |
-| `tls.enabled` | bool | `true` | TLS is on by default; `false` is the explicit insecure-HTTP opt-out. The HTTPS listener and self-signed certificate land with the desktop install — this release accepts and reports the setting. |
+| `tls.enabled` | bool | `true` | TLS is on by default. On first start the Server generates a self-signed certificate in the state directory (`tls/server.crt` and `tls/server.key`), reuses it on later starts, and logs its SHA-256 fingerprint. `false` is the explicit insecure-HTTP opt-out. |
 | `tls.cert_file` | string | unset | Certificate override; must be set together with `tls.key_file`. |
 | `tls.key_file` | string | unset | Private-key override; must be set together with `tls.cert_file`. |
-| `allow_anonymous` | bool | `false` | Device tokens are required by default; set `true` only to allow anonymous access. Enforcement lands with the desktop install, so the safe default is recorded now. |
+| `allow_anonymous` | bool | `false` | `POST /transcribe` and the authenticated status endpoint require a Device token by default; set `true` only to allow anonymous access. |
 | `log_level` | `debug`\|`info`\|`warning`\|`error` | `info` | Logs to stderr and appends to `server.log` in the user state directory (`~/.local/state/kitsune-whisper/`, `%LOCALAPPDATA%\kitsune-whisper\` on Windows). |
 | `decode.task` | `transcribe`\|`translate` | `transcribe` | Whisper task. |
 | `decode.language` | string | `auto` | Fallback language when a request omits one; `auto` detects. |
@@ -117,8 +118,10 @@ skipped, and the Server returns the previous stage's text with the reason in
 `warnings` — transcription itself never becomes a `5xx` because of processing.
 The Client logs those warnings.
 
-`GET /health` advertises it as a `processing: {enabled, refine, summarize}` block.
-The endpoint is any OpenAI-compatible service; see
+The authenticated `GET /status` advertises it as a
+`processing: {enabled, refine, summarize}` block; the unauthenticated
+`GET /health` reports liveness and version only. The endpoint is any
+OpenAI-compatible service; see
 [Optional post-processing](install.md#optional-post-processing) for the bundled
 local sidecar and for pointing at an external provider.
 
@@ -134,13 +137,53 @@ sidecar.
 > network, so its appearance of "local" depends on where that network runs —
 > the privacy call is the operator's, made through `base_url`.
 
+## Trust, TLS, and Devices
+
+The Server identifies itself with a self-signed certificate generated on first
+start. The certificate stays in `tls/` under the Server's state directory (or
+`tls.cert_file`/`tls.key_file` when set), so a restart keeps the same identity.
+Its SHA-256 fingerprint is logged at startup and returned by pairing; it is not
+a secret. Regenerate it only by deleting the pair, which forces every Device to
+pair again.
+
+Every `/transcribe` and `/status` request needs `Authorization: Bearer
+<Device token>`. Missing, malformed, unknown, and revoked tokens all return
+`401` with the `{error:{code:"unauthorized",message:...}}` envelope and a
+`WWW-Authenticate: Bearer` header. `/health` stays unauthenticated and reports
+only liveness and the version.
+
+`POST /pair/local` issues a Device token without a code, but only to a genuine
+loopback peer. A Docker port forward makes the peer the bridge gateway, so a
+Docker Server cannot use local auto-pairing. The endpoint returns the token once;
+the Server stores only its hash.
+
+Revoke a Device from the Server host without an Admin API client:
+
+```sh
+kitsune-server devices list
+kitsune-server devices revoke <ID_OR_NAME>
+```
+
+The next request from a revoked Device is rejected immediately, including in a
+running Server: the store notices the file changed and reloads it. On a Docker
+Server the store lives on the `kitsune-state` volume; run the same command
+inside the container (`docker exec <container> kitsune-server devices list`).
+
+The Client keeps each token in the OS keychain (Windows Credential Manager,
+Linux Secret Service) and falls back to a file with mode `0600` under
+`$XDG_CONFIG_HOME/kitsune-whisper/tokens` (`%APPDATA%` on Windows) when no
+keychain is available. Tokens are never written to `kitsune.yaml` and never
+logged. The certificate fingerprint **is** written to the Server profile; an
+HTTPS profile without one is refused before any token is sent, and a changed
+fingerprint produces a distinct "certificate changed, pair again" error.
+
 ## `client:` section
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `servers` | list | Local Server profile | Ordered **Server profiles**. Each entry has `id` (required, unique), `name`, `url` (required, absolute), `fingerprint` (pinned Server certificate SHA-256; `""` until pairing), and `auto_pair` (`true` only for the Local Server). Unknown profile keys and duplicate ids are rejected. |
 | `active_server` | string | first profile | The `id` of the profile that receives every Utterance. Exactly one profile is active; there is no automatic fallback. Defaults to the first profile when omitted. |
-| `server_url` | URL | `http://localhost:8765` | **Deprecated.** Full URL of a single Server. When no `servers` list exists it migrates into one active profile (`Default Server`); once `servers` exists it no longer decides routing, but it must still be a valid URL when present. |
+| `server_url` | URL | `https://localhost:8765` | **Deprecated.** Full URL of a single Server. When no `servers` list exists it migrates into one active profile (`Default Server`); once `servers` exists it no longer decides routing, but it must still be a valid URL when present. |
 | `hotkey` | string | `Ctrl+Shift+Space` | Global toggle/hold key. |
 | `hotkey_backend` | `auto`\|`portal`\|`x11` | `auto` | Linux session backend. See [Wayland](wayland.md). |
 | `cancel_hotkey` | string | `Esc` | Aborts the current utterance without injecting. |

@@ -14,11 +14,13 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // ErrRestart is returned by Run when the user asked to restart the Client. The
@@ -122,20 +124,22 @@ const (
 // Labels are the translated strings the page and the Tray render. They travel
 // with the snapshot so a language switch updates both without a restart.
 type Labels struct {
-	State      string `json:"state"`
-	Status     string `json:"status"`
-	Start      string `json:"start"`
-	Stop       string `json:"stop"`
-	Settings   string `json:"settings"`
-	Restart    string `json:"restart"`
-	Quit       string `json:"quit"`
-	Phase      string `json:"phase"`
-	PhaseValue string `json:"phaseValue"`
-	Client     string `json:"client"`
-	Profile    string `json:"profile"`
-	Version    string `json:"version"`
-	Running    string `json:"running"`
-	Stopped    string `json:"stopped"`
+	State       string `json:"state"`
+	Status      string `json:"status"`
+	Start       string `json:"start"`
+	Stop        string `json:"stop"`
+	Settings    string `json:"settings"`
+	Restart     string `json:"restart"`
+	Quit        string `json:"quit"`
+	Phase       string `json:"phase"`
+	PhaseValue  string `json:"phaseValue"`
+	Client      string `json:"client"`
+	Profile     string `json:"profile"`
+	Version     string `json:"version"`
+	Running     string `json:"running"`
+	Stopped     string `json:"stopped"`
+	Server      string `json:"server"`
+	ServerState string `json:"serverState"`
 }
 
 // Snapshot is the one immutable status the window and the Tray render.
@@ -146,7 +150,10 @@ type Snapshot struct {
 	Phase   runtime.Phase `json:"phase"`
 	State   State         `json:"state"`
 	Error   string        `json:"error,omitempty"`
-	Labels  Labels        `json:"labels"`
+	// Server is the advisory reachability and authentication state of the
+	// active profile. It never changes routing.
+	Server trust.Status `json:"server"`
+	Labels Labels       `json:"labels"`
 }
 
 // NewSnapshot maps the runtime status onto the shell's render model with
@@ -170,6 +177,7 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 		Phase:   status.Phase,
 		State:   state,
 		Error:   status.Error,
+		Server:  trust.Status{State: trust.StateUnknown},
 	}
 	snapshot.Labels = labelsFor(i18n.For(i18n.English), snapshot)
 	return snapshot
@@ -179,21 +187,32 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 	state := catalog.T("state." + string(snapshot.State))
 	return Labels{
-		State:      state,
-		Status:     catalog.T("tray.status", state),
-		Start:      catalog.T("tray.start"),
-		Stop:       catalog.T("tray.stop"),
-		Settings:   catalog.T("tray.settings"),
-		Restart:    catalog.T("tray.restart"),
-		Quit:       catalog.T("tray.quit"),
-		Phase:      catalog.T("status.phase"),
-		PhaseValue: phaseLabel(catalog, snapshot.Phase),
-		Client:     catalog.T("status.client"),
-		Profile:    catalog.T("status.profile"),
-		Version:    catalog.T("status.version"),
-		Running:    catalog.T("status.running"),
-		Stopped:    catalog.T("status.stopped"),
+		State:       state,
+		Status:      catalog.T("tray.status", state),
+		Start:       catalog.T("tray.start"),
+		Stop:        catalog.T("tray.stop"),
+		Settings:    catalog.T("tray.settings"),
+		Restart:     catalog.T("tray.restart"),
+		Quit:        catalog.T("tray.quit"),
+		Phase:       catalog.T("status.phase"),
+		PhaseValue:  phaseLabel(catalog, snapshot.Phase),
+		Client:      catalog.T("status.client"),
+		Profile:     catalog.T("status.profile"),
+		Version:     catalog.T("status.version"),
+		Running:     catalog.T("status.running"),
+		Stopped:     catalog.T("status.stopped"),
+		Server:      catalog.T("status.server"),
+		ServerState: serverStateLabel(catalog, snapshot.Server.State),
 	}
+}
+
+// serverStateLabel translates the Server reachability/auth state shown next to
+// the active profile.
+func serverStateLabel(catalog i18n.Catalog, state trust.ServerState) string {
+	if state == "" {
+		state = trust.StateUnknown
+	}
+	return catalog.T("server." + string(state))
 }
 
 // phaseLabel translates the Dictation phase shown in the status card.
@@ -220,6 +239,11 @@ type Options struct {
 	Version string
 	// Profile is the active Server profile's name.
 	Profile string
+	// CheckServer probes the active Server. The result is advisory and is
+	// rendered in the Tray and the Settings window. It is optional.
+	CheckServer func(context.Context) trust.Status
+	// CheckInterval is the slow health probe interval; 0 uses 30 seconds.
+	CheckInterval time.Duration
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
 }
@@ -229,11 +253,13 @@ type Shell struct {
 	opts Options
 	log  Logger
 
-	mu        sync.Mutex
-	snapshot  Snapshot
-	window    Window
-	tray      Tray
-	levelTest dictation.LevelStream
+	mu            sync.Mutex
+	snapshot      Snapshot
+	runtimeStatus runtime.Status
+	server        trust.Status
+	window        Window
+	tray          Tray
+	levelTest     dictation.LevelStream
 
 	quitCh    chan struct{}
 	restartCh chan struct{}
@@ -248,11 +274,13 @@ func New(opts Options) *Shell {
 	if log == nil {
 		log = nopLogger{}
 	}
+	server := trust.Status{State: trust.StateUnknown}
 	return &Shell{
 		opts:      opts,
 		log:       log,
 		quitCh:    make(chan struct{}),
 		restartCh: make(chan struct{}),
+		server:    server,
 		snapshot:  NewSnapshot(runtime.Status{}, opts.Version, opts.Profile),
 	}
 }
@@ -274,6 +302,11 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	}
 
 	go s.consume(updates)
+	monitorCtx, stopMonitor := context.WithCancel(ctx)
+	defer stopMonitor()
+	if s.opts.CheckServer != nil {
+		go s.monitorServer(monitorCtx)
+	}
 
 	runtimeDone := make(chan error, 1)
 	go func() { runtimeDone <- s.opts.Runtime.Wait() }()
@@ -385,11 +418,9 @@ func (s *Shell) update(status runtime.Status) {
 	if status.Phase == runtime.PhaseRecording {
 		s.stopLevelTest()
 	}
-	snapshot := NewSnapshot(status, s.opts.Version, s.opts.Profile)
-	snapshot.Labels = labelsFor(s.catalog(), snapshot)
 	s.mu.Lock()
-	s.snapshot = snapshot
-	window, tray := s.window, s.tray
+	s.runtimeStatus = status
+	snapshot, window, tray := s.renderLocked()
 	s.mu.Unlock()
 	if window != nil {
 		window.Update(snapshot)
@@ -397,6 +428,60 @@ func (s *Shell) update(status runtime.Status) {
 	if tray != nil {
 		tray.Update(snapshot)
 	}
+}
+
+// updateServer renders a new advisory Server state without disturbing the
+// Dictation status.
+func (s *Shell) updateServer(status trust.Status) {
+	s.mu.Lock()
+	s.server = status
+	snapshot, window, tray := s.renderLocked()
+	s.mu.Unlock()
+	if window != nil {
+		window.Update(snapshot)
+	}
+	if tray != nil {
+		tray.Update(snapshot)
+	}
+}
+
+// renderLocked builds the snapshot from the stored Dictation and Server state.
+// s.mu must be held.
+func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
+	snapshot := NewSnapshot(s.runtimeStatus, s.opts.Version, s.opts.Profile)
+	snapshot.Server = s.server
+	snapshot.Labels = labelsFor(s.catalog(), snapshot)
+	s.snapshot = snapshot
+	return snapshot, s.window, s.tray
+}
+
+// monitorServer probes the active Server once at startup and then on the slow
+// interval until the Client stops. A probe that hangs is bounded by CheckServer.
+func (s *Shell) monitorServer(ctx context.Context) {
+	s.checkServer(ctx)
+	interval := s.opts.CheckInterval
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.checkServer(ctx)
+		}
+	}
+}
+
+func (s *Shell) checkServer(ctx context.Context) {
+	if s.opts.CheckServer == nil {
+		return
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	s.updateServer(s.opts.CheckServer(checkCtx))
 }
 
 // Snapshot returns the latest rendered snapshot.

@@ -42,6 +42,8 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"gopkg.in/yaml.v3"
 )
 
 // Version is the Client build version. Release builds override it with
@@ -148,9 +150,17 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "settings":
 		return runSettings(rest[1:], cfg, *verbose, stderr)
 	case "transcribe-file":
-		return runTranscribeFile(rest[1:], cfg, *verbose, stdout, stderr)
+		return runTranscribeFile(rest[1:], cfg, serveOptions{
+			verbose:    *verbose,
+			configPath: *configPath,
+			overrides:  overrides,
+		}, stdout, stderr)
 	case "record":
-		return runRecord(rest[1:], *seconds, cfg, *verbose, stdout, stderr)
+		return runRecord(rest[1:], *seconds, cfg, serveOptions{
+			verbose:    *verbose,
+			configPath: *configPath,
+			overrides:  overrides,
+		}, stdout, stderr)
 	case "toggle":
 		return runToggle(rest[1:], cfg, *verbose, stderr)
 	default:
@@ -160,13 +170,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, stdout, stderr io.Writer) int {
+func runTranscribeFile(args []string, cfg config.ClientConfig, so serveOptions, stdout, stderr io.Writer) int {
 	if len(args) != 1 {
 		fmt.Fprintln(stderr, "usage: kitsune-client transcribe-file <path.wav>")
 		return 2
 	}
-	logger := newLogger(cfg, verbose, stderr)
+	logger := newLogger(cfg, so.verbose, stderr)
 	defer func() { _ = logger.Close() }()
+	bootstrap := prepareTrust(context.Background(), cfg, so, logger)
+	cfg = bootstrap.cfg
 
 	data, err := os.ReadFile(args[0])
 	if err != nil {
@@ -186,7 +198,7 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, std
 	)
 	defer cancel()
 
-	client := newTranscriber(cfg, logger)
+	client := newTranscriber(cfg, logger, bootstrap.manager)
 	transcription, err := client.Transcribe(ctx, data)
 	if err != nil {
 		logger.Error("transcribe failed: %v", err)
@@ -200,13 +212,15 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, std
 // runRecord captures one Utterance from the configured microphone through the
 // Dictation cycle and prints the Transcription. It is the manual counterpart to
 // transcribe-file: a way to exercise real capture without the hotkeys.
-func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose bool, stdout, stderr io.Writer) int {
+func runRecord(args []string, seconds float64, cfg config.ClientConfig, so serveOptions, stdout, stderr io.Writer) int {
 	if len(args) != 0 || seconds <= 0 {
 		fmt.Fprintln(stderr, "usage: kitsune-client record [--seconds N]")
 		return 2
 	}
-	logger := newLogger(cfg, verbose, stderr)
+	logger := newLogger(cfg, so.verbose, stderr)
 	defer func() { _ = logger.Close() }()
+	bootstrap := prepareTrust(context.Background(), cfg, so, logger)
+	cfg = bootstrap.cfg
 
 	recorder, err := newRecorder(cfg, logger)
 	if err != nil {
@@ -220,7 +234,7 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose 
 	var runErr error
 	core := cycle.New(cycle.Options{
 		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg, logger),
+		Transcriber: newTranscriber(cfg, logger, bootstrap.manager),
 		Injector:    out,
 		Feedback:    newFeedback(cfg, logger, feedback),
 		Spool:       newSpool(cfg, logger),
@@ -362,20 +376,124 @@ type serveOptions struct {
 	overrides map[string]any
 }
 
+// trustBootstrap is the Client's trust state for one process: the effective
+// configuration (with a newly paired pin folded in), the token manager, and
+// the settings store the pin was written through.
+type trustBootstrap struct {
+	cfg     config.ClientConfig
+	manager *trust.Manager
+	store   *settings.Store
+}
+
+// prepareTrust opens the settings and token stores and auto-pairs the active
+// Local Server profile when it has no token. A Server that is down must not
+// stop the Client from starting: the failure is logged and the Tray reports
+// the Server as unreachable.
+func prepareTrust(
+	ctx context.Context,
+	cfg config.ClientConfig,
+	so serveOptions,
+	logger *logging.Logger,
+) trustBootstrap {
+	store, err := settings.Open(settings.Options{
+		Path:         so.configPath,
+		CLIOverrides: so.overrides,
+	})
+	if err != nil {
+		logger.Warning("settings unavailable: %v", err)
+		store = nil
+	}
+	var pins trust.PinWriter
+	if store != nil {
+		pins = fingerprintWriter(store)
+	}
+	manager := trust.NewManager(trust.NewTokenStore(paths.TokenDir()), pins, logger)
+	pairCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ensured, err := manager.Ensure(pairCtx, cfg)
+	if err != nil {
+		logger.Warning("%v", err)
+	}
+	return trustBootstrap{cfg: ensured, manager: manager, store: store}
+}
+
+// fingerprintWriter persists a paired certificate fingerprint in the Server
+// profile. The settings store remains the only writer of the "client:" section.
+func fingerprintWriter(store *settings.Store) trust.PinWriter {
+	return func(profileID, fingerprint string) error {
+		current := store.Snapshot().Config
+		for i := range current.Servers {
+			if current.Servers[i].ID == profileID {
+				current.Servers[i].Fingerprint = fingerprint
+			}
+		}
+		servers, err := profilePatch(current.Servers)
+		if err != nil {
+			return err
+		}
+		_, err = store.Save(map[string]any{"servers": servers})
+		return err
+	}
+}
+
+// profilePatch renders Server profiles through the config schema, so a new
+// profile field cannot be silently dropped by a settings save.
+func profilePatch(profiles []config.ServerProfile) ([]any, error) {
+	raw, err := yaml.Marshal(profiles)
+	if err != nil {
+		return nil, fmt.Errorf("encode Server profiles: %w", err)
+	}
+	var servers []any
+	if err := yaml.Unmarshal(raw, &servers); err != nil {
+		return nil, fmt.Errorf("encode Server profiles: %w", err)
+	}
+	return servers, nil
+}
+
+// serverCheck builds the advisory health probe the Tray and Settings poll. It
+// never changes routing and never surfaces the token. When the Local Server
+// was not running at startup, a later probe pairs it as soon as it answers,
+// so autostart order does not leave the Client permanently unpaired.
+func serverCheck(cfg config.ClientConfig, manager *trust.Manager) func(context.Context) trust.Status {
+	var mu sync.Mutex
+	current := cfg
+	return func(ctx context.Context) trust.Status {
+		mu.Lock()
+		defer mu.Unlock()
+		profile, ok := current.ActiveProfile()
+		if !ok {
+			return trust.Status{State: trust.StateUnknown}
+		}
+		// Ensure is cheap once a token and pin exist. It pairs a Local Server
+		// that started after the Client, so autostart order is irrelevant.
+		if ensured, ensureErr := manager.Ensure(ctx, current); ensureErr == nil {
+			current = ensured
+			profile, _ = current.ActiveProfile()
+		}
+		token, err := manager.Token(profile.ID)
+		if err != nil && !errors.Is(err, trust.ErrNoToken) {
+			token = ""
+		}
+		return trust.CheckServer(ctx, profile, token, 3*time.Second)
+	}
+}
+
 // serve builds the real adapters, starts the runtime, and either waits
 // headlessly or hands control to the desktop shell.
 func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr io.Writer) int {
 	logger := newLogger(cfg, so.verbose, stderr)
 	defer func() { _ = logger.Close() }()
 
-	adapters, err := buildAdapters(cfg, logger)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	bootstrap := prepareTrust(ctx, cfg, so, logger)
+	cfg = bootstrap.cfg
+	adapters, err := buildAdapters(cfg, logger, bootstrap.manager)
 	if err != nil {
 		logger.Error("%v", err)
 		return 1
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	var sh *shell.Shell
 	opts := runtime.Options{
@@ -390,7 +508,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 		// A settings change rebuilds the adapters through the same factory the
 		// initial launch used, so hot changes never need a process restart.
 		Rebuild: func(next config.ClientConfig) (runtime.Adapters, error) {
-			return buildAdapters(next, logger)
+			return buildAdapters(next, logger, bootstrap.manager)
 		},
 		ControlPath: paths.ControlSocket(),
 		Logger:      logger,
@@ -416,18 +534,19 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 
 	if so.gui {
 		var settingsService shell.Settings
-		if service := newSettingsService(rt, so, logger); service != nil {
+		if service := newSettingsService(bootstrap.store, rt, logger); service != nil {
 			settingsService = service
 		}
 		server, _ := cfg.ActiveProfile()
 		sh = shell.New(shell.Options{
-			Runtime:  rt,
-			Desktop:  wails.New(wails.Options{Version: Version, Logger: logger}),
-			Settings: settingsService,
-			Send:     rt.Trigger,
-			Version:  Version,
-			Profile:  server.Name,
-			Logger:   logger,
+			Runtime:     rt,
+			Desktop:     wails.New(wails.Options{Version: Version, Logger: logger}),
+			Settings:    settingsService,
+			Send:        rt.Trigger,
+			Version:     Version,
+			Profile:     server.Name,
+			CheckServer: serverCheck(cfg, bootstrap.manager),
+			Logger:      logger,
 		})
 	}
 
@@ -555,7 +674,7 @@ func (f *cycleFeedback) Cue(cue cycle.Cue) {
 // buildAdapters builds every adapter the runtime owns from a configuration.
 // The initial launch and every live Apply use the same factory, so a hot
 // change rebuilds exactly what a restart would.
-func buildAdapters(cfg config.ClientConfig, logger *logging.Logger) (runtime.Adapters, error) {
+func buildAdapters(cfg config.ClientConfig, logger *logging.Logger, manager *trust.Manager) (runtime.Adapters, error) {
 	mode, err := hotkey.ParseMode(cfg.Trigger)
 	if err != nil {
 		return runtime.Adapters{}, fmt.Errorf("hotkey: %w", err)
@@ -602,7 +721,7 @@ func buildAdapters(cfg config.ClientConfig, logger *logging.Logger) (runtime.Ada
 	return runtime.Adapters{
 		Hotkey:      source,
 		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg, logger),
+		Transcriber: newTranscriber(cfg, logger, manager),
 		Injector:    injector,
 		Spool:       newSpool(cfg, logger),
 		Feedback:    newFeedback(cfg, logger),
@@ -620,13 +739,8 @@ func buildAdapters(cfg config.ClientConfig, logger *logging.Logger) (runtime.Ada
 // newSettingsService builds the Dictation settings service the Settings window
 // edits. A settings store that cannot be opened disables the screens but keeps
 // dictation running.
-func newSettingsService(rt *runtime.Runtime, so serveOptions, logger *logging.Logger) *dictation.Service {
-	store, err := settings.Open(settings.Options{
-		Path:         so.configPath,
-		CLIOverrides: so.overrides,
-	})
-	if err != nil {
-		logger.Warning("settings unavailable: %v", err)
+func newSettingsService(store *settings.Store, rt *runtime.Runtime, logger *logging.Logger) *dictation.Service {
+	if store == nil {
 		return nil
 	}
 	return dictation.New(dictation.Options{
@@ -757,15 +871,91 @@ func newRecorder(cfg config.ClientConfig, logger *logging.Logger) (*mic.Recorder
 	})
 }
 
-// newTranscriber builds the HTTP adapter for the active Server profile.
-// config.Load always resolves exactly one active profile, so a missing match
-// here is impossible and the zero profile would fail loudly in the request.
-// Warnings from a successful response are routed to the Client log.
-func newTranscriber(cfg config.ClientConfig, logger *logging.Logger) transcribe.Transcriber {
+// newTranscriber builds the adapter for the active Server profile. It resolves
+// the Device token and pinned fingerprint on every utterance, so a Local Server
+// that pairs after startup starts working without restarting the Client, and a
+// profile without trust fails that utterance with the actionable trust error.
+func newTranscriber(
+	cfg config.ClientConfig,
+	logger *logging.Logger,
+	manager *trust.Manager,
+) transcribe.Transcriber {
 	profile, _ := cfg.ActiveProfile()
-	client := transcribe.NewHTTP(profile.URL, cfg.Language, cfg.InitialPrompt)
-	client.OnWarning = func(warning string) { logger.Warning("transcribe: %s", warning) }
-	return client
+	return &profileTranscriber{
+		profile:       profile,
+		language:      cfg.Language,
+		initialPrompt: cfg.InitialPrompt,
+		manager:       manager,
+		logger:        logger,
+	}
+}
+
+// profileTranscriber builds at most one HTTP adapter per credential state and
+// rebuilds it when the token or the pinned fingerprint changes.
+type profileTranscriber struct {
+	profile       config.ServerProfile
+	language      string
+	initialPrompt string
+	manager       *trust.Manager
+	logger        *logging.Logger
+
+	mu          sync.Mutex
+	client      *transcribe.HTTP
+	buildErr    error
+	token       string
+	fingerprint string
+	built       bool
+}
+
+func (p *profileTranscriber) Transcribe(ctx context.Context, audio []byte) (transcribe.Transcription, error) {
+	client, err := p.http()
+	if err != nil {
+		return transcribe.Transcription{}, err
+	}
+	return client.Transcribe(ctx, audio)
+}
+
+func (p *profileTranscriber) http() (*transcribe.HTTP, error) {
+	token := ""
+	if p.manager != nil {
+		stored, err := p.manager.Token(p.profile.ID)
+		switch {
+		case err == nil:
+			token = stored
+		case errors.Is(err, trust.ErrNoToken):
+			// Reported by the request as an unauthenticated Server.
+		default:
+			p.logger.Warning("transcribe: %v", err)
+		}
+	}
+	fingerprint := p.profile.Fingerprint
+	if p.manager != nil {
+		if pin := p.manager.Pin(p.profile.ID); pin != "" {
+			fingerprint = pin
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.built && token == p.token && fingerprint == p.fingerprint {
+		return p.client, p.buildErr
+	}
+	p.built = true
+	p.token = token
+	p.fingerprint = fingerprint
+	p.client, p.buildErr = transcribe.NewHTTPWithTrust(
+		p.profile.URL,
+		fingerprint,
+		token,
+		p.language,
+		p.initialPrompt,
+	)
+	if p.buildErr != nil {
+		p.logger.Warning("transcribe: profile %q is not trusted yet: %v", p.profile.Name, p.buildErr)
+		return nil, p.buildErr
+	}
+	p.client.OnWarning = func(warning string) { p.logger.Warning("transcribe: %s", warning) }
+	return p.client, nil
 }
 
 // cycleLimits maps the configured seconds bounds into cycle limits.

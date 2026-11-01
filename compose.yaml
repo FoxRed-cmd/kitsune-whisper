@@ -35,6 +35,11 @@ x-server: &server
     # Point Refine/Summarize at the bundled sidecar. Harmless when the `llm`
     # profile is off: processing stays disabled until kitsune.yaml enables it.
     KITSUNE_SERVER_PROCESSING__BASE_URL: http://llama:8080
+    # Keep the self-signed TLS identity and the Device allow-list on a volume,
+    # so a recreated container keeps the fingerprint and the paired Devices.
+    KITSUNE_SERVER_TLS__CERT_FILE: /state/tls/server.crt
+    KITSUNE_SERVER_TLS__KEY_FILE: /state/tls/server.key
+    KITSUNE_SERVER_DEVICES_FILE: /state/devices.json
   volumes:
     - type: bind
       source: ./kitsune.yaml
@@ -44,6 +49,7 @@ x-server: &server
         create_host_path: false
         selinux: z
     - kitsune-models:/models
+    - kitsune-state:/state
 
 x-llama: &llama
   restart: unless-stopped
@@ -109,3 +115,4 @@ services:
 
 volumes:
   kitsune-models:
+  kitsune-state:

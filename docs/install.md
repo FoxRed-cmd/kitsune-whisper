@@ -328,8 +328,9 @@ endpoint is unreachable, a step raises, exceeds
 `server.processing.stage_timeout_seconds`, or returns empty text, the affected
 step is skipped: the response keeps the previous stage's text (ultimately the raw
 **Transcription**), reports `applied: {refine, summarize}` for what actually ran,
-and lists the reason in `warnings` (which the Client logs). `GET /health`
-advertises the capability as a `processing: {enabled, refine, summarize}` block.
+and lists the reason in `warnings` (which the Client logs). The authenticated
+`GET /status` advertises the capability as a
+`processing: {enabled, refine, summarize}` block.
 
 #### Run the bundled local LLM
 
@@ -424,9 +425,9 @@ instant. CPU-only hosts are **supported but slower**, at ≈0.6–0.7× realtime
   2–3× faster than `small`) or `tiny` on the weakest hosts.
 
 The `base`/`tiny` figures are **derived estimates, not measured** — validate them
-on your own host. The Server logs a `WARN` when it resolves to CPU, and
-`GET /health` reports the resolved `device`/`compute_type` so you can confirm the
-GPU is actually in use.
+on your own host. The Server logs a `WARN` when it resolves to CPU, and the
+authenticated `GET /status` reports the resolved `device`/`compute_type` so you
+can confirm the GPU is actually in use.
 
 For GPU prerequisites, see [GPU prerequisites](../README.md#gpu-prerequisites).
 For the full config surface, see [Configuration](configuration.md).

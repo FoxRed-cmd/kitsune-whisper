@@ -34,7 +34,7 @@ EXPOSE 8765
 VOLUME ["/models"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health')"
+    CMD python -m kitsune_server.healthcheck
 
 ENTRYPOINT ["kitsune-server"]
 CMD ["--config", "/config/kitsune.yaml"]

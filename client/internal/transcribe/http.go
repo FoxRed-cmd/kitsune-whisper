@@ -8,7 +8,10 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // HTTP is a Transcriber that POSTs an utterance to a Server's /transcribe.
@@ -17,8 +20,39 @@ type HTTP struct {
 	Client        *http.Client
 	Language      string
 	InitialPrompt string
+	// Token is the Device token sent as "Authorization: Bearer". It is never
+	// logged, serialised, or included in an error.
+	Token string `json:"-"`
+	// Fingerprint is the pinned certificate SHA-256 for an HTTPS profile.
+	Fingerprint string
 	// OnWarning, when non-nil, receives each warning from a successful response.
 	OnWarning func(string)
+}
+
+// NewHTTPWithTrust builds an HTTP transcriber for one Server profile. An HTTPS
+// profile must carry a pinned fingerprint: without it the Client refuses before
+// opening a connection, so no audio or token crosses the network.
+func NewHTTPWithTrust(baseURL, fingerprint, token, language, initialPrompt string) (*HTTP, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Server URL: %w", err)
+	}
+	transcriber := &HTTP{
+		BaseURL:       baseURL,
+		Client:        &http.Client{Timeout: 0},
+		Language:      language,
+		InitialPrompt: initialPrompt,
+		Token:         token,
+		Fingerprint:   fingerprint,
+	}
+	if parsed.Scheme == "https" {
+		client, err := trust.PinnedClient(fingerprint, 0)
+		if err != nil {
+			return nil, err
+		}
+		transcriber.Client = client
+	}
+	return transcriber, nil
 }
 
 // NewHTTP builds an HTTP transcriber. language and initialPrompt are sent only
@@ -73,6 +107,9 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 		return Transcription{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if h.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.Token)
+	}
 
 	resp, err := h.client().Do(req)
 	if err != nil {

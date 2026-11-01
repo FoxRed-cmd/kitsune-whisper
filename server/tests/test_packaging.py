@@ -84,7 +84,9 @@ def test_both_profiles_mount_config_and_persist_models() -> None:
         assert config["source"] == "./kitsune.yaml"
         assert config["read_only"] is True
         assert "kitsune-models:/models" in mounts
+        assert "kitsune-state:/state" in mounts
     assert "kitsune-models" in compose["volumes"]
+    assert "kitsune-state" in compose["volumes"]
 
 
 def _nvidia_devices(service: Any) -> Any:
@@ -160,7 +162,12 @@ def test_container_listens_on_the_spec_port_and_exposes_only_when_asked() -> Non
     assert "KITSUNE_SERVER_EXPOSE_TO_NETWORK=true" in text
     assert "KITSUNE_SERVER_PORT=8765" in text
     assert "EXPOSE 8765" in text
-    assert "127.0.0.1:8765/health" in text
+    assert "python -m kitsune_server.healthcheck" in text
+    healthcheck = (REPO_ROOT / "server" / "kitsune_server" / "healthcheck.py").read_text(
+        encoding="utf-8"
+    )
+    assert "https://127.0.0.1:{port}/health" in healthcheck
+    assert "http://127.0.0.1:{port}/health" in healthcheck
     for profile in ("cpu", "gpu"):
         assert _service_for_profile(profile)["ports"] == ["8765:8765"]
 
@@ -210,7 +217,7 @@ def test_docker_remains_a_supported_server_deployment() -> None:
     # replace it.
     assert COMPOSE_PATH.is_file()
     assert "FROM ${BASE_IMAGE}" in DOCKERFILE_PATH.read_text(encoding="utf-8")
-    assert "127.0.0.1:8765/health" in DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "kitsune_server.healthcheck" in DOCKERFILE_PATH.read_text(encoding="utf-8")
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:

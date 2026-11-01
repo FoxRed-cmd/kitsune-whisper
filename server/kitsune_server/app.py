@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import ipaddress
 import logging
 import threading
 from collections.abc import Callable, Mapping
@@ -16,18 +17,22 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 import anyio.to_thread
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import __version__
 from .audio import AudioDecodeError, decode_audio
 from .config import ServerConfig, format_errors
 from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
 from .processor import ProcessingError, TextProcessor
 from .transcriber import Transcriber, resolve_workers
+from .trust import Certificate, DeviceStore
+from .trust import Device as TrustedDevice
 
 logger = logging.getLogger("kitsune.server")
 
@@ -89,22 +94,51 @@ class _StageOutcome:
     warning: str | None
 
 
+class LocalPairRequest(BaseModel):
+    """The body of the loopback auto-pair request."""
+
+    name: str = Field(default="Local client", min_length=1, max_length=128)
+
+
+def is_loopback_address(host: str | None) -> bool:
+    """Return True when the HTTP peer is on the loopback interface."""
+    if not host:
+        return False
+    candidate = host.strip()
+    # An IPv4-mapped IPv6 peer (::ffff:127.0.0.1) is still loopback.
+    if candidate.lower().startswith("::ffff:"):
+        candidate = candidate[7:]
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
 def create_app(
     config: ServerConfig,
     transcriber: Transcriber,
     processor: TextProcessor,
     *,
     cuda_device_count: int | None = None,
+    devices: DeviceStore | None = None,
+    certificate: Certificate | None = None,
+    version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
 
     ``cuda_device_count`` is the GPU detector's result. Production passes the
     detected count; tests pass a fake so the API seam never probes CUDA.
+    ``devices`` is the Device store; ``None`` keeps an in-memory store for
+    tests and throwaway Servers. ``certificate`` supplies the fingerprint the
+    Client pins; it is absent when TLS is explicitly disabled.
     """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
     app.state.transcriber = transcriber
     app.state.processor = processor
+    app.state.devices = devices if devices is not None else DeviceStore()
+    app.state.certificate = certificate
+    app.state.version = version
     if cuda_device_count is None:
         cuda_device_count = detect_cuda_devices()
     app.state.cuda_device_count = cuda_device_count
@@ -170,13 +204,61 @@ def create_app(
             return _StageOutcome(text, False, f"{name} produced no usable text")
         return _StageOutcome(output, True, None)
 
+    async def authenticate(request: Request) -> TrustedDevice | None:
+        """Require a valid Device token unless the operator opted out.
+
+        The failure message never says whether a token is unknown or revoked:
+        the store cannot tell them apart, and neither should the response.
+        """
+        if config.allow_anonymous:
+            return None
+        header = request.headers.get("authorization")
+        unauthorized = {
+            "WWW-Authenticate": "Bearer",
+        }
+        if not header or not header.strip():
+            raise ApiError(
+                401,
+                "unauthorized",
+                "a Device token is required; pair this Client with the Server",
+                unauthorized,
+            )
+        parts = header.split(None, 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+            raise ApiError(
+                401,
+                "unauthorized",
+                "the Authorization header must be 'Bearer <Device token>'",
+                unauthorized,
+            )
+        address = request.client.host if request.client is not None else None
+        device = app.state.devices.verify(parts[1].strip(), address)
+        if device is None:
+            raise ApiError(
+                401,
+                "unauthorized",
+                "the Device token is invalid or has been revoked; pair this Client again",
+                unauthorized,
+            )
+        return device
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        """Liveness and version only: reachable before pairing, no secrets."""
+        return {"status": "ok", "version": app.state.version}
+
+    @app.get("/status")
+    async def status(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Authenticated status for the Tray, Settings, and diagnostics."""
         info = transcriber.info
         capability = processor.info
         gpu = gpu_status(config, cuda_device_count=app.state.cuda_device_count)
+        certificate = app.state.certificate
         return {
             "status": "ok",
+            "version": app.state.version,
             "model": info.model,
             "device": info.device,
             "compute_type": info.compute_type,
@@ -187,9 +269,41 @@ def create_app(
                 "summarize": capability.summarize,
             },
             "gpu": gpu.as_dict(),
+            "tls_fingerprint": certificate.fingerprint if certificate is not None else "",
+            "auth": {
+                "anonymous": config.allow_anonymous,
+                "device": device.name if device else None,
+            },
         }
 
-    @app.post("/transcribe")
+    @app.post("/pair/local", status_code=201)
+    async def pair_local(
+        request: Request,
+        payload: LocalPairRequest | None = None,
+    ) -> dict[str, Any]:
+        """Issue a Device token to the Client on this machine, without a code.
+
+        Only a genuine loopback peer may use this endpoint. A Docker port
+        forward makes the peer address the bridge gateway, so Docker Servers
+        pair with a code instead (ADR 0008).
+        """
+        peer = request.client.host if request.client is not None else None
+        if not is_loopback_address(peer):
+            raise ApiError(
+                403,
+                "forbidden",
+                "local auto-pairing is available only from the loopback interface",
+            )
+        name = payload.name.strip() if payload is not None else "Local client"
+        device, token = app.state.devices.create(name, peer)
+        certificate = app.state.certificate
+        return {
+            "device": device.as_dict(),
+            "token": token,
+            "fingerprint": certificate.fingerprint if certificate is not None else "",
+        }
+
+    @app.post("/transcribe", dependencies=[Depends(authenticate)])
     async def transcribe(
         audio: Annotated[UploadFile, File()],
         language: Annotated[str | None, Form()] = None,

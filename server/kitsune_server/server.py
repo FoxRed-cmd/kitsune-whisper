@@ -19,6 +19,14 @@ from .gpu import detect_cuda_devices
 from .llm import OpenAITextProcessor
 from .processor import DisabledTextProcessor, TextProcessor
 from .transcriber import Transcriber
+from .trust import (
+    CERT_FILENAME,
+    KEY_FILENAME,
+    Certificate,
+    DeviceStore,
+    device_store_path,
+    load_or_create_certificate,
+)
 
 logger = logging.getLogger("kitsune.server")
 
@@ -125,6 +133,28 @@ def check_port_available(
         ) from exc
 
 
+def tls_paths(config: ServerConfig, *, data_dir: Path | None = None) -> tuple[Path, Path]:
+    """The certificate pair the listener uses: explicit overrides or the data dir."""
+    if config.tls.cert_file and config.tls.key_file:
+        return Path(config.tls.cert_file).expanduser(), Path(config.tls.key_file).expanduser()
+    base = data_dir if data_dir is not None else user_state_dir() / "tls"
+    return base / CERT_FILENAME, base / KEY_FILENAME
+
+
+def build_trust(
+    config: ServerConfig,
+    *,
+    data_dir: Path | None = None,
+) -> tuple[Certificate | None, DeviceStore]:
+    """Build the TLS identity and the Device store the Server runs with."""
+    certificate = None
+    if config.tls.enabled:
+        cert_file, key_file = tls_paths(config, data_dir=data_dir)
+        certificate = load_or_create_certificate(cert_file, key_file)
+    store = DeviceStore(device_store_path(config, data_dir=data_dir))
+    return certificate, store
+
+
 def build_transcriber(
     config: ServerConfig,
     *,
@@ -149,7 +179,19 @@ def run_server(
     configure_logging(config.log_level, log_file=log_file)
     # Fail before downloading or loading a model when the listener cannot bind.
     port_check(config.bind_host, config.port)
-    # Detect once so model loading and /health cannot disagree.
+    certificate, devices = build_trust(config)
+    if certificate is not None:
+        logger.info(
+            "TLS certificate %s (fingerprint %s)",
+            "generated" if certificate.created else "loaded",
+            certificate.fingerprint,
+        )
+    else:
+        logger.warning(
+            "server.tls.enabled is false: the Server is serving plain HTTP and "
+            "Device tokens cross the network in clear text"
+        )
+    # Detect once so model loading and /status cannot disagree.
     cuda_devices = detect_cuda_devices()
     transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
     info = transcriber.info
@@ -171,6 +213,8 @@ def run_server(
         transcriber,
         processor,
         cuda_device_count=cuda_devices,
+        devices=devices,
+        certificate=certificate,
     )
     if config.expose_to_network:
         logger.warning(
@@ -178,4 +222,14 @@ def run_server(
             config.bind_host,
             config.port,
         )
+    if certificate is not None:
+        uvicorn.run(
+            app,
+            host=config.bind_host,
+            port=config.port,
+            log_level=config.log_level,
+            ssl_certfile=str(certificate.cert_file),
+            ssl_keyfile=str(certificate.key_file),
+        )
+        return
     uvicorn.run(app, host=config.bind_host, port=config.port, log_level=config.log_level)

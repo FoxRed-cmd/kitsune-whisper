@@ -13,6 +13,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // fakeLogger records warning counts.
@@ -683,6 +684,41 @@ func TestNewSnapshotMapsPhasesAndErrors(t *testing.T) {
 		if got.Version != "v1" || got.Profile != "Local Server" {
 			t.Errorf("snapshot lost version/profile: %+v", got)
 		}
+	}
+}
+
+func TestServerStatusIsRenderedInTheWindowAndTray(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		CheckServer: func(context.Context) trust.Status {
+			return trust.Status{State: trust.StateOnline, Version: "0.1.0"}
+		},
+		Logger: &fakeLogger{},
+	})
+
+	done := start(t, sh, true)
+	waitFor(t, "the Server status", func() bool {
+		return sh.Snapshot().Server.State == trust.StateOnline
+	})
+
+	snapshot := sh.Snapshot()
+	if snapshot.Labels.ServerState != "Online" {
+		t.Fatalf("server label = %q", snapshot.Labels.ServerState)
+	}
+	traySnapshot, ok := desktop.traySnapshot()
+	if !ok || traySnapshot.Server.State != trust.StateOnline {
+		t.Fatalf("tray snapshot = %+v", traySnapshot.Server)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
 	}
 }
 

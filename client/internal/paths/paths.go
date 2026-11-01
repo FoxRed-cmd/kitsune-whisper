@@ -21,6 +21,17 @@ func CacheDir() string {
 // SpoolDir is the default directory for Spooled utterances.
 func SpoolDir() string { return filepath.Join(CacheDir(), "spool") }
 
+// TokenDir is where the 0600 Device-token fallback lives when the OS keychain
+// is unavailable. It sits under the user config directory, not the cache, so a
+// cache clean does not silently force a new pairing.
+func TokenDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = CacheDir()
+	}
+	return filepath.Join(base, "kitsune-whisper", "tokens")
+}
+
 // LogFile is the default path for the Client's log file.
 func LogFile() string { return filepath.Join(CacheDir(), "client.log") }
 
