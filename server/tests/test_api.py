@@ -21,11 +21,21 @@ def build(
     config: ServerConfig | None = None,
     transcriber: FakeTranscriber | None = None,
     processor: FakeTextProcessor | DisabledTextProcessor | None = None,
+    *,
+    cuda_device_count: int = 0,
 ) -> tuple[FastAPI, FakeTranscriber]:
     config = config or ServerConfig(workers=1)
     transcriber = transcriber or FakeTranscriber()
     processor = processor or FakeTextProcessor()
-    return create_app(config, transcriber, processor), transcriber
+    return (
+        create_app(
+            config,
+            transcriber,
+            processor,
+            cuda_device_count=cuda_device_count,
+        ),
+        transcriber,
+    )
 
 
 def audio_part(
@@ -49,7 +59,22 @@ async def test_health_shape() -> None:
         "compute_type": "int8",
         "ready": True,
         "processing": {"enabled": True, "refine": True, "summarize": True},
+        "gpu": {"available": False, "device_count": 0, "device": "cpu"},
     }
+
+
+async def test_health_reports_gpu_availability() -> None:
+    app, _ = build(cuda_device_count=2)
+    async with make_client(app) as client:
+        response = await client.get("/health")
+    assert response.json()["gpu"] == {"available": True, "device_count": 2, "device": "cuda"}
+
+
+async def test_health_reports_cpu_when_cuda_is_forced_off() -> None:
+    app, _ = build(ServerConfig(workers=1, device="cpu"), cuda_device_count=1)
+    async with make_client(app) as client:
+        response = await client.get("/health")
+    assert response.json()["gpu"] == {"available": True, "device_count": 1, "device": "cpu"}
 
 
 async def test_health_reports_disabled_processing() -> None:
@@ -473,7 +498,12 @@ class BlockingTranscriber:
 
 async def test_503_when_at_capacity() -> None:
     transcriber = BlockingTranscriber()
-    app = create_app(ServerConfig(workers=1), transcriber, DisabledTextProcessor())
+    app = create_app(
+        ServerConfig(workers=1),
+        transcriber,
+        DisabledTextProcessor(),
+        cuda_device_count=0,
+    )
     async with make_client(app) as client:
         first = asyncio.create_task(client.post("/transcribe", files=audio_part()))
         for _ in range(500):
