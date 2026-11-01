@@ -97,8 +97,9 @@ class Layout:
         )
         return cls(
             os_name=resolved,
-            # Per-user library directory, as ADR 0007 describes: never a system
-            # path and never next to the user's configuration.
+            # Per-user library directory by default, as ADR 0007 describes:
+            # never next to the user's configuration. A system package may
+            # override it with a read-only /usr/lib bundle.
             root=root,
             bin_dir=home / ".local" / "bin",
             config_dir=config_dir,

@@ -49,8 +49,9 @@ at most once:
   `/dev/uinput`, so the bundled `ydotoold` can inject text without adding you to
   a group or asking you to log out and back in.
 
-Nothing else runs as root during install, and re-running the installer never asks
-again once those pieces exist. Declining elevation with `--no-elevate` (or by
+Nothing else runs as root during install. Re-running never asks for packages or
+the rule again; if a current desktop session somehow missed the ACL, the
+installer reapplies the rule once. Declining elevation with `--no-elevate` (or by
 answering the prompt with no): the Client still installs and dictates, Settings
 open in your browser instead of an embedded window, and Wayland injection stays
 clipboard-only ("press Ctrl+V") until you re-run with elevation.

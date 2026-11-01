@@ -179,12 +179,24 @@ os_release_value() {
 # stack, even when no GTK library is installed yet. Ubuntu 24.04, Debian 12,
 # Fedora 40, and RHEL 10 are the first releases with the default build.
 distro_legacy() {
-  local id major like
+  local id major like codename
   id="$(os_release_value ID)"
   like="$(os_release_value ID_LIKE)"
   major="$(os_release_value VERSION_ID)"
   major="${major%%.*}"
   [[ "$major" =~ ^[0-9]+$ ]] || return 1
+  # An Ubuntu derivative's own version rarely tracks its base release (KDE
+  # neon 6.0 and elementary 8 are Ubuntu 24.04). Prefer the base codename.
+  codename="$(os_release_value UBUNTU_CODENAME)"
+  if [[ -z "$codename" && "$id" == ubuntu ]]; then
+    codename="$(os_release_value VERSION_CODENAME)"
+  fi
+  if [[ -n "$codename" && "$id" != ubuntu ]]; then
+    case "$codename" in
+      jammy|focal|bionic|xenial|trusty) return 0 ;;
+      *) return 1 ;;
+    esac
+  fi
   case "$id" in
     ubuntu) (( major < 24 )) ;;
     debian) (( major < 12 )) ;;
@@ -207,13 +219,12 @@ select_gui() {
     gtk4) printf 'gtk4\n' ;;
     gtk3) printf 'gtk3\n' ;;
     auto)
-      # An installed GTK4/WebKitGTK 6.0 stack always wins, even on a host whose
-      # distribution would otherwise get the legacy build.
+      # GTK4/WebKitGTK 6.0 is the default even when only GTK3 happens to be
+      # installed; the one sudo step can add the modern stack. Only a
+      # distribution that predates WebKitGTK 6.0 gets the legacy build.
       if has_gtk4; then
         printf 'gtk4\n'
       elif distro_legacy; then
-        printf 'gtk3\n'
-      elif has_gtk3; then
         printf 'gtk3\n'
       else
         printf 'gtk4\n'
@@ -496,7 +507,7 @@ uninstall_all() {
           warn "could not remove $UDEV_RULE; remove it manually"
         fi
       elif [[ -f "$UDEV_RULE_SYSTEM" || -f "$MODULES_FILE_SYSTEM" ]]; then
-        info "The packaged udev rule is removed with its package"
+        info "The udev rule is owned by the installed package; remove the package to delete it"
       fi
     fi
     info "kitsune-whisper purged (config, models, certificates, Devices, spool, logs, wizard)"

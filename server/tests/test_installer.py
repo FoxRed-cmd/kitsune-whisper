@@ -242,16 +242,67 @@ def test_gtk4_libs_select_the_default_build(sandbox, tmp_path):
     assert "client:gtk4" in binary.read_text(encoding="utf-8")
 
 
-def test_gtk3_only_hosts_select_the_legacy_build(sandbox, tmp_path):
+def test_gtk3_only_older_lts_hosts_select_the_legacy_build(sandbox, tmp_path):
     artifacts = make_artifacts(tmp_path)
     legacy_libs = tmp_path / "gtk3-libs"
     legacy_libs.write_text(GTK3_LIBS, encoding="utf-8")
+    os_release = tmp_path / "os-release"
+    os_release.write_text('ID=ubuntu\nVERSION_ID="22.04"\n', encoding="utf-8")
 
-    completed = install_client_only(sandbox, artifacts, env={"FAKE_LDCONFIG": str(legacy_libs)})
+    completed = install_client_only(
+        sandbox,
+        artifacts,
+        env={"FAKE_LDCONFIG": str(legacy_libs), "KITSUNE_OS_RELEASE": str(os_release)},
+    )
 
     assert completed.returncode == 0, completed.stderr
     binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
     assert "client:legacy" in binary.read_text(encoding="utf-8")
+
+
+def test_a_modern_host_with_only_gtk3_installs_the_default_gtk4_build(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+    legacy_libs = tmp_path / "gtk3-libs"
+    legacy_libs.write_text(GTK3_LIBS, encoding="utf-8")
+    os_release = tmp_path / "os-release"
+    os_release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n', encoding="utf-8")
+
+    completed = run_installer(
+        sandbox,
+        "--no-server",
+        "--no-wayland",
+        "--from",
+        str(artifacts),
+        env={
+            "FAKE_LDCONFIG": str(legacy_libs),
+            "KITSUNE_OS_RELEASE": str(os_release),
+            "KITSUNE_PACKAGE_MANAGER": "apt",
+        },
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
+    assert "client:gtk4" in binary.read_text(encoding="utf-8")
+
+
+def test_a_derivative_on_a_modern_base_gets_the_gtk4_build(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+    (tmp_path / "libs").write_text("", encoding="utf-8")
+    os_release = tmp_path / "os-release"
+    os_release.write_text(
+        'ID=neon\nID_LIKE=ubuntu\nVERSION_ID="6.0"\nUBUNTU_CODENAME=noble\n',
+        encoding="utf-8",
+    )
+
+    completed = install_client_only(
+        sandbox,
+        artifacts,
+        env={"KITSUNE_OS_RELEASE": str(os_release), "KITSUNE_PACKAGE_MANAGER": "apt"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
+    assert "client:gtk4" in binary.read_text(encoding="utf-8")
 
 
 def test_forced_legacy_installs_the_gtk3_stack_and_packages(sandbox, tmp_path):

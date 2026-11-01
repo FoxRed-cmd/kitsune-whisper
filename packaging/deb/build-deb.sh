@@ -127,8 +127,15 @@ if [[ -n "$SERVER_ARTIFACT" ]]; then
   cat > "$stage/usr/bin/kitsune-server" <<'EOF'
 #!/bin/sh
 # Run the packaged Server bundle with its own pinned runtime. The bundle lives
-# under /usr/lib; config, state, and models stay per user.
+# under /usr/lib; config, state, and models stay per user. apt owns this bundle,
+# so the user-level install/uninstall commands are not available here.
 export KITSUNE_SERVER_ROOT=/usr/lib/kitsune-whisper/server
+case "${1:-}" in
+  install|uninstall)
+    echo "this Server bundle is owned by the kitsune-whisper package; use apt to upgrade or remove it" >&2
+    exit 2
+    ;;
+esac
 exec /usr/lib/kitsune-whisper/server/runtime/bin/python3 -s /usr/lib/kitsune-whisper/server/bootstrap.py "$@"
 EOF
   chmod 0755 "$stage/usr/bin/kitsune-server"
@@ -290,14 +297,21 @@ if [ "$1" = configure ]; then
   modprobe uinput >/dev/null 2>&1 || true
   udevadm control --reload-rules >/dev/null 2>&1 || true
   udevadm trigger --name-match=uinput >/dev/null 2>&1 || true
-  # Start the user units now for the account that invoked apt. The units are
-  # also enabled globally for every user at login.
-  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
-    uid=$(id -u "$SUDO_USER" 2>/dev/null || true)
+  # Start the user units now for the account that invoked apt, pkexec, or the
+  # active seat. The units are also enabled globally for every user at login.
+  start_user="${SUDO_USER:-}"
+  if [ -z "$start_user" ] && [ -n "${PKEXEC_UID:-}" ]; then
+    start_user=$(getent passwd "$PKEXEC_UID" 2>/dev/null | cut -d: -f1)
+  fi
+  if [ -z "$start_user" ]; then
+    start_user=$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4 ~ /^seat/ {print $3; exit}')
+  fi
+  if [ -n "$start_user" ] && [ "$start_user" != root ]; then
+    uid=$(id -u "$start_user" 2>/dev/null || true)
     if [ -n "$uid" ] && [ -d "/run/user/$uid" ]; then
-      runuser -u "$SUDO_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+      runuser -u "$start_user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         systemctl --user daemon-reload >/dev/null 2>&1 || true
-      runuser -u "$SUDO_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+      runuser -u "$start_user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
         systemctl --user start kitsune-server.service kitsune-ydotoold.service kitsune-client.service \
         >/dev/null 2>&1 || true
     fi
