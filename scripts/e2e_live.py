@@ -221,8 +221,9 @@ class Harness:
             "  offline: false\n"
             # The live slice exercises decoding and latency, not the trust
             # flow; keep it on plain HTTP with anonymous access so the harness
-            # does not need to pair. TLS/token coverage lives in the unit and
-            # API tests until the e2e trust scenarios land.
+            # does not need to pair. Do not copy this into a deployment.
+            # Authenticated Docker parity (pair, Admin API, restart, soft-stop,
+            # persistence) is scripts/docker_smoke.py.
             "  tls:\n"
             "    enabled: false\n"
             "  allow_anonymous: true\n"

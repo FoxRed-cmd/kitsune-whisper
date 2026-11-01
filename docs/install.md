@@ -268,39 +268,130 @@ bundle needs no system Python and no Docker: its pinned runtime, the Server and
 all dependencies live inside the bundle. Release installers (#80/#81) own
 providing that bootstrap interpreter on a host that has none.
 
-Both deployments read the same user config file the Client does
+The native bundle reads the same user config file the Client does
 (`~/.config/kitsune-whisper/kitsune.yaml`,
 `%APPDATA%\kitsune-whisper\kitsune.yaml` on Windows). `install` pins the file it
-found; `status` prints the pinned path.
+found; `status` prints the pinned path. The Docker deployment reads the mounted
+`config/kitsune.yaml` instead (see [Docker](#docker)).
 
-The Server writes a log next to the user's state data — on Windows
+The native Server writes a log next to the user's state data — on Windows
 `%LOCALAPPDATA%\kitsune-whisper\server.log`, on Linux
 `~/.local/state/kitsune-whisper/server.log`. A hidden Windows start has no
 console, so this file is where a failed start (a taken port, an unreadable
-config, a model that cannot load) is diagnosed.
+config, a model that cannot load) is diagnosed. In Docker the log is on the
+state volume at `/state/kitsune-whisper/server.log`.
 
 ### Docker
 
-The Server runs as a Docker container with `restart: unless-stopped`
-(`compose.yaml`), so it comes back after a reboot or crash. Start it with one
-profile:
+The Docker image is the supported deployment for a dedicated host (for example
+a GPU desktop that stays on). It runs the same Server code, API, TLS, Device
+tokens, Admin API, and Model catalog as the native bundle; the difference is
+where configuration and state live.
 
 ```sh
-cp kitsune.example.yaml kitsune.yaml
+mkdir -p config
+cp kitsune.example.yaml config/kitsune.yaml
 docker compose --profile cpu up -d    # or: --profile gpu
 ```
 
-Upgrade:
+`./config` is bind-mounted **read-write as a directory** at `/config`, and the
+image sets `KITSUNE_CONFIG=/config/kitsune.yaml`. Two consequences:
+
+- The Admin API can save settings (an atomic rename inside `/config`); a
+  read-only single-file mount cannot be replaced and would return
+  `503 config_unavailable`. Edit `config/kitsune.yaml` by hand for the fields
+  the API locks, then restart the Server.
+- `docker exec <container> kitsune-server pair` reads the same file as the
+  running Server, because `docker exec` inherits the container environment
+  even though it does not inherit the image `CMD`.
+
+The container always listens on `8765`; the host port defaults to `8765` and
+can be changed without touching compose by putting `KITSUNE_HOST_PORT=9000` in
+a `.env` file next to `compose.yaml`. Keep the internal port at 8765: the image
+sets `KITSUNE_SERVER_PORT=8765` and the healthcheck reads it.
+
+| Store | Container | Contents | Survives |
+| --- | --- | --- | --- |
+| `./config/` (bind) | `/config` | `kitsune.yaml`, including Admin API writes | `down` and recreation; removed only with the host directory |
+| `kitsune-state` volume | `/state` | `tls/server.crt` + `server.key`, `devices.json`, `pairing.json`, `kitsune-whisper/lifecycle.json`, `kitsune-whisper/server.log` | `down`, recreation, image upgrade |
+| `kitsune-models` volume | `/models` | downloaded Whisper models and the llama.cpp GGUF | `down`, recreation, image upgrade |
+| host port | `8765/tcp` | HTTPS API and `/health` | n/a |
+
+The image sets `XDG_STATE_HOME=/state`, so the soft-stop flag and the log live
+on the state volume instead of the container filesystem. The certificate pair
+and Device store are pinned explicitly to `/state` as well, which keeps the
+fingerprint and the Device allow-list stable across recreation.
+
+#### Pair a Client
+
+Wait until `/health` answers, then generate a one-time code inside the
+container:
 
 ```sh
-docker compose pull && docker compose up -d
+docker exec <container> kitsune-server pair
 ```
 
-Uninstall (drops the downloaded models volume):
+The command prints the config file it read, an 8-character code (single use,
+10 minutes), and the certificate fingerprint. Enter the Server address and the
+code in the Client's **Settings → Servers and Devices**, or on another machine
+through the same screen. The Client pins the certificate fingerprint and stores
+the Device token. The published port cannot prove loopback origin, so
+`/pair/local` does not work for Docker; the code is the only remote path. There
+is deliberately no unauthenticated HTTP endpoint that mints codes.
+
+Revoke a Device through the Admin API/Settings, or from the Server host:
 
 ```sh
-docker compose down -v
+docker exec <container> kitsune-server devices list
+docker exec <container> kitsune-server devices revoke <ID_OR_NAME>
 ```
+
+#### Soft-stop, restart, and stopping the container
+
+- **Soft-stop** (`POST /admin/stop`, the Client's Stop action) unloads the
+  model, so `/transcribe` answers `503` with code `stopped`, and frees GPU
+  memory. The process, the Admin API, and `/health` stay up, so the container
+  is *not* restarted and Docker health stays green. `/admin/start` reloads the
+  model. The flag is saved on `/state`, so a recreated container starts
+  stopped until you start it; this matches the native install's semantics.
+- **Restart** (`POST /admin/restart`, or the Client's Restart) returns `202`
+  and exits with code `75`. Compose runs with `restart: unless-stopped`, so the
+  same container starts again with the same volumes and the Device tokens keep
+  working. A bare `docker run` needs `--restart unless-stopped` for this to
+  work; `docker compose restart` also works but bypasses the self-exit.
+- **Stopping on the host** (`docker compose stop`, `docker stop`) is a hard
+  stop. `restart: unless-stopped` does not bring back a manually stopped
+  container; use `docker compose start` (or `up -d`) afterwards. Do not use
+  container health to detect a soft-stop — `/health` is liveness, not
+  readiness; `/status` reports `stopped`/`model_state`.
+
+#### Upgrade and remove
+
+```sh
+docker compose pull && docker compose up -d    # upgrade
+docker compose down                            # remove the container, keep state/models/config
+docker compose down -v                         # remove named volumes too
+```
+
+`docker compose down` keeps `kitsune-state` and `kitsune-models`, so the
+certificate fingerprint, Devices, soft-stop flag, and downloads are reused. It
+does not remove `./config`.
+
+`docker compose down -v` deletes **both** named volumes: the certificate, all
+Device records and pairing codes, the lifecycle flag and log, the models, and
+the llama.cpp GGUF. The next start generates a new certificate, so every Client
+must pair again and re-pin the fingerprint, and the first transcription
+downloads the model again. Use it only for a deliberate fresh start.
+
+The container runs as root by default, so files it creates in `./config` and
+in a bind-mounted state directory are root-owned (`0600` for secrets, `0700`
+for `/state`). Named volumes avoid host permission surprises; on SELinux keep
+the `:z` label from compose. On Docker Desktop for Windows, prefer named
+volumes over host bind mounts for `/state` and `/models`.
+
+The real-container smoke for this flow is
+[`docs/verification/docker-smoke.md`](verification/docker-smoke.md); run it
+after changing the image, compose, or trust paths.
 
 ### Optional post-processing
 
