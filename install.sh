@@ -14,7 +14,7 @@
 #
 #   install.sh [options]
 #     --no-server             skip the native Server bundle
-#     --no-client             skip the Client binary (used by the .deb setup)
+#     --no-client             skip the Client binary (server/helpers only)
 #     --no-wayland            skip the bundled Wayland helpers
 #     --no-elevate            never run sudo; install the degraded fallback
 #     --gui gtk4|gtk3|auto    desktop build (default: auto)
@@ -179,8 +179,9 @@ os_release_value() {
 # stack, even when no GTK library is installed yet. Ubuntu 24.04, Debian 12,
 # Fedora 40, and RHEL 10 are the first releases with the default build.
 distro_legacy() {
-  local id major
+  local id major like
   id="$(os_release_value ID)"
+  like="$(os_release_value ID_LIKE)"
   major="$(os_release_value VERSION_ID)"
   major="${major%%.*}"
   [[ "$major" =~ ^[0-9]+$ ]] || return 1
@@ -189,7 +190,15 @@ distro_legacy() {
     debian) (( major < 12 )) ;;
     fedora) (( major < 40 )) ;;
     rhel|centos|rocky|almalinux) (( major < 10 )) ;;
-    *) return 1 ;;
+    *)
+      case "$like" in
+        *ubuntu*) (( major < 24 )) ;;
+        *debian*) (( major < 12 )) ;;
+        *fedora*) (( major < 40 )) ;;
+        *rhel*) (( major < 10 )) ;;
+        *) return 1 ;;
+      esac
+      ;;
   esac
 }
 
@@ -198,11 +207,13 @@ select_gui() {
     gtk4) printf 'gtk4\n' ;;
     gtk3) printf 'gtk3\n' ;;
     auto)
+      # An installed GTK4/WebKitGTK 6.0 stack always wins, even on a host whose
+      # distribution would otherwise get the legacy build.
       if has_gtk4; then
         printf 'gtk4\n'
-      elif has_gtk3; then
-        printf 'gtk3\n'
       elif distro_legacy; then
+        printf 'gtk3\n'
+      elif has_gtk3; then
         printf 'gtk3\n'
       else
         printf 'gtk4\n'
@@ -478,10 +489,14 @@ uninstall_all() {
   if [[ "$PURGE" == 1 ]]; then
     rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB"
     if [[ "$NO_ELEVATE" == 0 ]] && command -v sudo >/dev/null 2>&1; then
-      if sudo sh -c "rm -f '$UDEV_RULE' '$MODULES_FILE' && { udevadm control --reload-rules >/dev/null 2>&1 || true; }"; then
-        info "Removed the udev uinput rule"
-      else
-        warn "could not remove $UDEV_RULE; remove it manually"
+      if [[ -f "$UDEV_RULE" || -f "$MODULES_FILE" ]]; then
+        if sudo sh -c "rm -f '$UDEV_RULE' '$MODULES_FILE' && { udevadm control --reload-rules >/dev/null 2>&1 || true; }"; then
+          info "Removed the udev uinput rule"
+        else
+          warn "could not remove $UDEV_RULE; remove it manually"
+        fi
+      elif [[ -f "$UDEV_RULE_SYSTEM" || -f "$MODULES_FILE_SYSTEM" ]]; then
+        info "The packaged udev rule is removed with its package"
       fi
     fi
     info "kitsune-whisper purged (config, models, certificates, Devices, spool, logs, wizard)"
@@ -527,6 +542,11 @@ fi
 NEEDS_RULE=0
 if [[ ! -f "$UDEV_RULE" && ! -f "$UDEV_RULE_SYSTEM" ]] \
   || [[ ! -f "$MODULES_FILE" && ! -f "$MODULES_FILE_SYSTEM" ]]; then
+  NEEDS_RULE=1
+elif ! uinput_ready && [[ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]]; then
+  # The rule exists but this desktop session did not get the ACL (for example
+  # after adding the rule outside a seat). Re-run the rule step instead of
+  # silently asking the user to log out.
   NEEDS_RULE=1
 fi
 NEEDS_ELEVATION=0

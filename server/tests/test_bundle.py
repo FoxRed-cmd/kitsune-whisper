@@ -158,6 +158,28 @@ def test_linux_layout_is_per_user_and_keeps_config_separate(tmp_path: Path) -> N
     assert paths.manifest_path == paths.root / "bundle.json"
 
 
+def test_layout_can_point_at_a_packaged_server_root(tmp_path: Path) -> None:
+    """A system package keeps the read-only bundle under /usr/lib.
+
+    Config, state, and models stay per user; only the bundle root moves. The
+    packaged launcher sets KITSUNE_SERVER_ROOT so `kitsune-server status`
+    reports the package's manifest instead of an empty user directory.
+    """
+
+    paths = Layout.default(
+        os_name="linux",
+        environ={
+            "HOME": str(tmp_path / "home"),
+            "XDG_CONFIG_HOME": str(tmp_path / "home" / ".config"),
+            "KITSUNE_SERVER_ROOT": "/usr/lib/kitsune-whisper/server",
+        },
+    )
+
+    assert paths.root == Path("/usr/lib/kitsune-whisper/server")
+    assert paths.config_dir == tmp_path / "home" / ".config" / "kitsune-whisper"
+    assert paths.launcher == tmp_path / "home" / ".local" / "bin" / "kitsune-server"
+
+
 def test_windows_layout_uses_localappdata_and_a_cmd_launcher(tmp_path: Path) -> None:
     paths = layout(tmp_path, "windows")
 

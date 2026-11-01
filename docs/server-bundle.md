@@ -37,7 +37,8 @@ The launcher puts `<root>/lib` first on `sys.path`, runs the interpreter with
 bundle never imports a system Python or system site-packages. `bundle.json`
 records the version, runtime Python version, platform, source, the
 configuration and model directories, and the config file pinned for the
-supervisor.
+supervisor. A system package may set `KITSUNE_SERVER_ROOT` to a read-only bundle
+under `/usr/lib`; configuration, state, and models stay per user.
 
 ## Install
 

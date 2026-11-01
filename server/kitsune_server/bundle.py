@@ -73,20 +73,33 @@ class Layout:
         environ = os.environ if environ is None else environ
         home = Path(environ.get("HOME") or Path.home())
         config_dir = user_config_dir(environ, os_name=resolved)
+        # KITSUNE_SERVER_ROOT lets a system package point the CLI at its own
+        # read-only bundle under /usr/lib while config and state stay per user.
+        override = environ.get("KITSUNE_SERVER_ROOT")
         if resolved == "windows":
             local = environ.get("LOCALAPPDATA")
             local_dir = Path(local) if local else home / "AppData" / "Local"
+            root = (
+                Path(override).expanduser()
+                if override
+                else local_dir / "kitsune-whisper" / "Server"
+            )
             return cls(
                 os_name=resolved,
-                root=local_dir / "kitsune-whisper" / "Server",
+                root=root,
                 bin_dir=local_dir / "kitsune-whisper" / "bin",
                 config_dir=config_dir,
             )
+        root = (
+            Path(override).expanduser()
+            if override
+            else home / ".local" / "lib" / "kitsune-whisper" / "server"
+        )
         return cls(
             os_name=resolved,
             # Per-user library directory, as ADR 0007 describes: never a system
             # path and never next to the user's configuration.
-            root=home / ".local" / "lib" / "kitsune-whisper" / "server",
+            root=root,
             bin_dir=home / ".local" / "bin",
             config_dir=config_dir,
         )

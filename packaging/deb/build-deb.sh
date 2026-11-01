@@ -124,6 +124,14 @@ install -m 0644 "$EXAMPLE" "$stage/usr/share/kitsune-whisper/kitsune.example.yam
 if [[ -n "$SERVER_ARTIFACT" ]]; then
   mkdir -p "$stage/usr/lib/kitsune-whisper/server"
   tar -xzf "$SERVER_ARTIFACT" -C "$stage/usr/lib/kitsune-whisper/server"
+  cat > "$stage/usr/bin/kitsune-server" <<'EOF'
+#!/bin/sh
+# Run the packaged Server bundle with its own pinned runtime. The bundle lives
+# under /usr/lib; config, state, and models stay per user.
+export KITSUNE_SERVER_ROOT=/usr/lib/kitsune-whisper/server
+exec /usr/lib/kitsune-whisper/server/runtime/bin/python3 -s /usr/lib/kitsune-whisper/server/bootstrap.py "$@"
+EOF
+  chmod 0755 "$stage/usr/bin/kitsune-server"
   cat > "$stage/usr/lib/systemd/user/kitsune-server.service" <<'EOF'
 [Unit]
 Description=kitsune-whisper transcription Server
@@ -237,10 +245,17 @@ This package installs the Client, the native Server bundle, the bundled
 ydotool/wtype helpers, the /dev/uinput uaccess rule, and three systemd user
 units. The package manager supplied GTK and WebKitGTK.
 
-The units start at your next login. Start them now and seed a config template
-as yourself (no sudo):
+The units are enabled for every user at login, and the post-install step starts
+them once for the account that ran apt when it has a live session. To seed a
+config template and (re)start them as yourself, no sudo:
 
     kitsune-whisper-setup
+
+The packaged Server bundle also provides the usual commands:
+
+    kitsune-server status
+    kitsune-server pair
+    kitsune-server devices list
 
 Upgrade with apt. Remove the system package with apt; per-user config, models,
 certificates, Devices, spool, and logs are kept. Purge them with:
@@ -275,6 +290,18 @@ if [ "$1" = configure ]; then
   modprobe uinput >/dev/null 2>&1 || true
   udevadm control --reload-rules >/dev/null 2>&1 || true
   udevadm trigger --name-match=uinput >/dev/null 2>&1 || true
+  # Start the user units now for the account that invoked apt. The units are
+  # also enabled globally for every user at login.
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+    uid=$(id -u "$SUDO_USER" 2>/dev/null || true)
+    if [ -n "$uid" ] && [ -d "/run/user/$uid" ]; then
+      runuser -u "$SUDO_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+        systemctl --user daemon-reload >/dev/null 2>&1 || true
+      runuser -u "$SUDO_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+        systemctl --user start kitsune-server.service kitsune-ydotoold.service kitsune-client.service \
+        >/dev/null 2>&1 || true
+    fi
+  fi
 fi
 exit 0
 EOF

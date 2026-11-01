@@ -73,10 +73,13 @@ seed a config template and start them in the current session, run:
 
 ```sh
 sudo apt install ./kitsune-whisper_<version>_amd64.deb
-kitsune-whisper-setup        # no sudo: config template + start the user units
+kitsune-whisper-setup        # optional: seed config + start the user units now
+kitsune-server status        # bundled Server CLI from the package
 ```
 
-Older LTS distributions use `kitsune-whisper-legacy_<version>_amd64.deb`.
+The package installs the Server bundle too, so `kitsune-server status`, `pair`,
+and `devices` work without the one-line installer. Older LTS distributions use
+`kitsune-whisper-legacy_<version>_amd64.deb`.
 
 Windows (PowerShell 7+) — the Client only:
 

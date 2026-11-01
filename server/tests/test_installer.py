@@ -296,6 +296,39 @@ def test_an_older_lts_without_gui_libraries_selects_the_legacy_build(sandbox, tm
     assert "libwebkit2gtk-4.1-0" in privileged
 
 
+def test_a_modern_host_with_both_stacks_prefers_gtk4(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+    (tmp_path / "libs").write_text(GTK4_LIBS + GTK3_LIBS, encoding="utf-8")
+    os_release = tmp_path / "os-release"
+    os_release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n', encoding="utf-8")
+
+    completed = install_client_only(sandbox, artifacts, env={"KITSUNE_OS_RELEASE": str(os_release)})
+
+    assert completed.returncode == 0, completed.stderr
+    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
+    assert "client:gtk4" in binary.read_text(encoding="utf-8")
+
+
+def test_an_id_like_lts_derivative_selects_the_legacy_build(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+    (tmp_path / "libs").write_text("", encoding="utf-8")
+    os_release = tmp_path / "os-release"
+    os_release.write_text(
+        'ID=linuxmint\nID_LIKE=ubuntu\nVERSION_ID="21.3"\n',
+        encoding="utf-8",
+    )
+
+    completed = install_client_only(
+        sandbox,
+        artifacts,
+        env={"KITSUNE_OS_RELEASE": str(os_release), "KITSUNE_PACKAGE_MANAGER": "apt"},
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
+    assert "client:legacy" in binary.read_text(encoding="utf-8")
+
+
 def test_one_elevated_step_installs_dependencies_and_the_uinput_rule(sandbox, tmp_path):
     artifacts = make_artifacts(tmp_path)
     (tmp_path / "libs").write_text("", encoding="utf-8")
@@ -595,6 +628,7 @@ def test_the_deb_package_can_include_the_server_and_wayland_helpers(tmp_path):
         ["tar", "-tzf", "-"], input=data_tar, capture_output=True, check=True
     ).stdout.decode("utf-8")
     assert "usr/lib/kitsune-whisper/server/runtime/bin/python3" in names
+    assert "usr/bin/kitsune-server" in names
     assert "usr/lib/kitsune-whisper/wayland/bin/ydotoold" in names
     assert "usr/lib/systemd/user/kitsune-server.service" in names
     assert "usr/lib/systemd/user/kitsune-ydotoold.service" in names
