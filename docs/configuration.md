@@ -266,6 +266,10 @@ happens once when the Client starts; a Local Server that starts after the Client
 is reported offline until the Client restarts. That trade-off is deliberate:
 a periodic probe must not mint a Device token or change the active profile.
 
+Desktop notifications are Linux-only (`notify-send`). Other platforms log one
+message and keep the failure in the Settings window and the Tray menu with the
+Open Settings action, so no user-facing error depends on a notification.
+
 The Client keeps each token in the OS keychain (Windows Credential Manager,
 Linux Secret Service) and falls back to a file with mode `0600` under
 `$XDG_CONFIG_HOME/kitsune-whisper/tokens` (`%APPDATA%` on Windows) when no

@@ -600,6 +600,10 @@ func managementView() shell.SettingsView {
 			"server.port": {
 				Value: float64(8765), Source: "file", Mode: "restart",
 			},
+			"server.expose_to_network": {
+				Value: false, Source: "file", Locked: true, Mode: "restart",
+				Reason: "security change: use POST /admin/exposure",
+			},
 		},
 		Redacted: []string{"server.processing.api_key"},
 	}
@@ -717,5 +721,25 @@ func TestDiagnosticsPageEscapesHostileConfiguration(t *testing.T) {
 	}
 	if !strings.Contains(html, "&lt;/pre&gt;") {
 		t.Fatal("diagnostics did not escape a hostile value")
+	}
+}
+
+func TestLockedSecurityFieldIsRenderedReadOnly(t *testing.T) {
+	html := shell.SettingsHTML(managementView())
+	marker := `data-server-path="server.expose_to_network"`
+	start := strings.Index(html, marker)
+	if start < 0 {
+		t.Fatalf("the security field is missing from the page")
+	}
+	end := start + 200
+	if end > len(html) {
+		end = len(html)
+	}
+	fragment := html[start:end]
+	if !strings.Contains(fragment, "disabled") {
+		t.Fatalf("the security field is editable: %q", fragment)
+	}
+	if !strings.Contains(fragment, "Locked:") {
+		t.Fatalf("the security field does not explain why it is locked: %q", fragment)
 	}
 }
