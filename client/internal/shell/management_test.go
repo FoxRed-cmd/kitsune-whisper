@@ -486,6 +486,8 @@ func TestLiveStatusModelStateReachesTheSnapshotAndDiagnostics(t *testing.T) {
 		IdleUnloadSeconds: 600,
 		Stopped:           true,
 	}
+	// The catalog cache still says loaded; the live status must win.
+	service.view.Models = &servers.ModelsView{State: "loaded", ActiveModel: "small"}
 	service.mu.Unlock()
 	sh, desktop := newManagementShell(t, service, nil)
 
@@ -516,6 +518,9 @@ func TestLiveStatusModelStateReachesTheSnapshotAndDiagnostics(t *testing.T) {
 		view.Diagnostics.IdleUnloadSeconds != 600 ||
 		view.Diagnostics.ModelState != "Model stopped" {
 		t.Fatalf("diagnostics = %+v", view.Diagnostics)
+	}
+	if view.Servers.Models == nil || view.Servers.Models.State != "stopped" {
+		t.Fatalf("the Models screen disagrees with the live status: %+v", view.Servers.Models)
 	}
 
 	desktop.getTray().do(shell.ActionQuit)

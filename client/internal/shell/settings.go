@@ -374,6 +374,14 @@ func (s *Shell) settingsView() SettingsView {
 		lifecycle.Stopped = live.Stopped
 		lifecycle.Loaded = live.Loaded
 		serverView.Lifecycle = &lifecycle
+		if serverView.Models != nil {
+			// The Models screen is another consumer of the same payload: keep
+			// its state in step with the live /status body until the next
+			// catalog refresh.
+			models := *serverView.Models
+			models.State = live.ModelState
+			serverView.Models = &models
+		}
 	}
 	modelState := ""
 	if serverView.Lifecycle != nil {
