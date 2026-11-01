@@ -84,12 +84,16 @@ class SupervisorStatus:
 
 
 def _default_runner(args: Sequence[str]) -> CommandResult:
-    completed = subprocess.run(
-        list(args),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            list(args),
+            capture_output=True,
+            text=True,
+            errors="replace",
+            check=False,
+        )
+    except OSError as exc:  # systemctl/schtasks missing on this host
+        return CommandResult(1, "", str(exc))
     return CommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 

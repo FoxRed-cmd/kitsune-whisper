@@ -357,6 +357,20 @@ def test_default_environment_uses_the_xdg_config_home(
     assert env.config_home == tmp_path / "xdg"
 
 
+def test_default_runner_reports_a_missing_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing(args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(supervisor.subprocess, "run", missing)
+
+    result = supervisor._default_runner(["systemctl", "--user", "is-active"])
+
+    assert result.ok is False
+    assert "systemctl" in result.stderr
+
+
 def test_default_environment_reports_an_unsupported_platform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
