@@ -57,6 +57,8 @@ def test_states_report_value_and_source_per_field(tmp_path: Path) -> None:
     assert states["tls.enabled"].source == "default"
     assert states["tls.enabled"].value is True
     assert states["idle_unload_seconds"].value == 600
+    assert states["idle_unload_seconds"].mode == "hot"
+    assert states["port"].mode == "restart"
     assert store.state("port") == FieldState(9100, "file")
 
 

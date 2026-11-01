@@ -68,6 +68,7 @@ class FieldState:
     source: Source
     locked: bool = False
     reason: str | None = None
+    mode: ChangeImpact = "restart"
 
 
 @dataclass(frozen=True)
@@ -284,15 +285,16 @@ class ConfigStore:
             in_cli, _ = _lookup(cli_values, path)
             in_env, _ = _lookup(env_values, path)
             in_file, _ = _lookup(file_values, path)
+            mode = self.impact(path)
             if in_cli:
-                states[path] = FieldState(value, "cli", True, "set by command line")
+                states[path] = FieldState(value, "cli", True, "set by command line", mode)
             elif in_env:
                 env_name = f"{ENV_PREFIX}{path.upper().replace('.', '__')}"
-                states[path] = FieldState(value, "env", True, f"set by {env_name}")
+                states[path] = FieldState(value, "env", True, f"set by {env_name}", mode)
             elif in_file:
-                states[path] = FieldState(value, "file")
+                states[path] = FieldState(value, "file", mode=mode)
             else:
-                states[path] = FieldState(value, "default")
+                states[path] = FieldState(value, "default", mode=mode)
         return states
 
     def state(self, path: str) -> FieldState:
