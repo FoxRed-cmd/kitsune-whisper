@@ -20,6 +20,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/instance"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
@@ -417,6 +418,115 @@ func TestToggleDrivesControlSocket(t *testing.T) {
 	}
 	cancel()
 	<-done
+}
+
+func TestSettingsReportsMissingClient(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "settings"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "settings") {
+		t.Fatalf("stderr = %q, want a control-socket error", stderr.String())
+	}
+}
+
+func TestSettingsAsksTheRunningClientToShowTheWindow(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	listener, err := control.Listen(paths.ControlSocket())
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	commands := make(chan control.Command, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server := control.NewCommandServer(listener, func(command control.Command) error {
+			commands <- command
+			return nil
+		})
+		_ = server.ServeCommands(ctx)
+	}()
+
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "settings"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	select {
+	case got := <-commands:
+		if got != control.Settings {
+			t.Fatalf("delivered %q, want settings", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("settings was not delivered over the control socket")
+	}
+	cancel()
+	<-done
+}
+
+func TestSecondVisibleLaunchForwardsSettings(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	lock, err := instance.Acquire(paths.InstanceLock())
+	if err != nil {
+		t.Fatalf("hold instance lock: %v", err)
+	}
+	defer func() { _ = lock.Release() }()
+
+	listener, err := control.Listen(paths.ControlSocket())
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	commands := make(chan control.Command, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server := control.NewCommandServer(listener, func(command control.Command) error {
+			commands <- command
+			return nil
+		})
+		_ = server.ServeCommands(ctx)
+	}()
+
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "gui"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	select {
+	case got := <-commands:
+		if got != control.Settings {
+			t.Fatalf("forwarded %q, want settings", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second launch did not forward settings")
+	}
+	cancel()
+	<-done
+}
+
+func TestSecondHiddenLaunchExitsQuietly(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	lock, err := instance.Acquire(paths.InstanceLock())
+	if err != nil {
+		t.Fatalf("hold instance lock: %v", err)
+	}
+	defer func() { _ = lock.Release() }()
+
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "gui", "--hidden"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %s)", code, stderr.String())
+	}
 }
 
 func TestRecordRejectsNonPositiveSeconds(t *testing.T) {

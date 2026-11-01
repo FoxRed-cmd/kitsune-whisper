@@ -174,6 +174,7 @@ type harness struct {
 	spool    *fakeSpool
 	ind      *fakeIndicator
 	sock     string
+	settings atomic.Int32
 }
 
 // newHarness wires a runtime to fakes. The control socket lives in the test's
@@ -205,6 +206,7 @@ func newHarness(t *testing.T, transcriber *fakeTranscriber) *harness {
 		Injector:    h.injector,
 		Spool:       h.spool,
 		ControlPath: h.sock,
+		OnSettings:  func() { h.settings.Add(1) },
 		Indicator:   func(send func(cycle.Trigger)) cycle.Feedback { h.ind.send = send; return h.ind },
 		Clock:       nil,
 		Logger:      nil,
@@ -384,6 +386,49 @@ func TestControlSocketDrivesEveryCommand(t *testing.T) {
 	})
 }
 
+func TestSettingsCommandRevealsTheShell(t *testing.T) {
+	h := newHarness(t, nil)
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	if err := control.Send(h.sock, string(control.Settings)); err != nil {
+		t.Fatalf("send settings: %v", err)
+	}
+	if got := h.settings.Load(); got != 1 {
+		t.Fatalf("OnSettings calls = %d, want 1", got)
+	}
+}
+
+func TestSettingsCommandWithoutShellIsReported(t *testing.T) {
+	h := newHarness(t, nil)
+	// Drop the shell hook: a headless runtime answers with an actionable error
+	// instead of silently accepting the command.
+	cfg := config.Default()
+	cfg.MinRecordingSeconds = 0
+	cfg.MaxRecordingSeconds = 60
+	cfg.TimeoutSeconds = 5
+	h.rt = runtime.New(runtime.Options{
+		Config:      cfg,
+		Hotkey:      h.hotkey,
+		Recorder:    h.recorder,
+		Transcriber: &fakeTranscriber{},
+		Injector:    h.injector,
+		Spool:       h.spool,
+		ControlPath: h.sock,
+	})
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	err := control.Send(h.sock, string(control.Settings))
+	if err == nil || !strings.Contains(err.Error(), "headless") {
+		t.Fatalf("settings error = %v, want a headless explanation", err)
+	}
+}
+
 // awaitStatus reads subscription updates until want is observed.
 func awaitStatus(t *testing.T, ch <-chan runtime.Status, want runtime.Status) {
 	t.Helper()
@@ -439,6 +484,45 @@ func TestStatusTracksDictationPhase(t *testing.T) {
 		t.Fatalf("stop: %v", err)
 	}
 	awaitStatus(t, updates, runtime.Status{Running: false, Phase: runtime.PhaseIdle})
+}
+
+func TestStatusExposesTheLastErrorUntilTheNextCycle(t *testing.T) {
+	transcriber := &fakeTranscriber{err: errors.New("server unreachable")}
+	h := newHarness(t, transcriber)
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	updates, unsubscribe := h.rt.Subscribe()
+	defer unsubscribe()
+
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	waitFor(t, "recording", func() bool { return h.rt.Status().Phase == runtime.PhaseRecording })
+	if err := control.Send(h.sock, string(control.Stop)); err != nil {
+		t.Fatalf("send stop: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	observed := false
+	for !observed {
+		select {
+		case got := <-updates:
+			observed = got.Phase == runtime.PhaseIdle && strings.Contains(got.Error, "server unreachable")
+		case <-deadline:
+			t.Fatalf("status never exposed the failure: %+v", h.rt.Status())
+		}
+	}
+
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("send start again: %v", err)
+	}
+	waitFor(t, "error cleared", func() bool {
+		status := h.rt.Status()
+		return status.Phase == runtime.PhaseRecording && status.Error == ""
+	})
 }
 
 func TestWaitReturnsFatalHotkeyError(t *testing.T) {

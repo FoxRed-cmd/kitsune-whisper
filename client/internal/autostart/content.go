@@ -58,13 +58,15 @@ func desktopCommand(opts Options) string {
 	return commandArgs(opts, desktopQuote)
 }
 
-// commandArgs builds "binary [--config PATH] run" with the given field quoter.
+// commandArgs builds "binary [--config PATH] gui --hidden" with the given field
+// quoter. The desktop entry and the login unit launch the hidden shell so the
+// Tray is available without a window.
 func commandArgs(opts Options, quote func(string) string) string {
 	parts := []string{quote(opts.Binary)}
 	if opts.Config != "" {
 		parts = append(parts, "--config", quote(opts.Config))
 	}
-	return strings.Join(append(parts, "run"), " ")
+	return strings.Join(append(parts, "gui", "--hidden"), " ")
 }
 
 // desktopQuote applies the Exec key's quoting rules: an unquoted argument must
@@ -84,9 +86,9 @@ func desktopQuote(s string) string {
 // the principal to the installing account; when empty, Task Scheduler defaults
 // to the registering user.
 func taskXML(opts Options, user string) string {
-	args := "run"
+	args := "gui --hidden"
 	if opts.Config != "" {
-		args = `--config "` + xmlEscape(opts.Config) + `" run`
+		args = `--config "` + xmlEscape(opts.Config) + `" gui --hidden`
 	}
 	userID := ""
 	triggerUser := ""

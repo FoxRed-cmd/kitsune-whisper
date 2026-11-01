@@ -47,10 +47,13 @@ var (
 )
 
 // Status is the immutable snapshot a shell renders. Running reports the
-// runtime lifecycle; Phase reports the Dictation cycle within it.
+// runtime lifecycle; Phase reports the Dictation cycle within it. Error holds
+// the most recent handled failure until the next cycle starts, so a Tray can
+// show an error state without inventing one.
 type Status struct {
-	Running bool  `json:"running"`
-	Phase   Phase `json:"phase"`
+	Running bool   `json:"running"`
+	Phase   Phase  `json:"phase"`
+	Error   string `json:"error,omitempty"`
 }
 
 // Logger receives runtime lifecycle messages. *logging.Logger satisfies it.
@@ -96,6 +99,10 @@ type Options struct {
 	ControlListener net.Listener
 	// ControlPath is the control socket path; empty disables the socket.
 	ControlPath string
+	// OnSettings receives the control socket's settings command. The desktop
+	// shell sets it to show the Settings window; a headless runtime leaves it
+	// nil and answers the command with a clear error.
+	OnSettings func()
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
 }
@@ -109,6 +116,7 @@ type Runtime struct {
 	running  bool
 	stopped  bool
 	phase    Phase
+	lastErr  string
 	ctx      context.Context
 	cancel   context.CancelFunc
 	triggers chan cycle.Trigger
@@ -155,6 +163,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.done = done
 	r.running = true
 	r.phase = PhaseIdle
+	r.lastErr = ""
 	r.fatal = nil
 	r.closeErr = nil
 	r.mu.Unlock()
@@ -176,7 +185,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		Feedback:    feedback,
 		Spool:       r.opts.Spool,
 		Clock:       r.opts.Clock,
-		OnError:     func(err error) { r.log.Error("dictation failed: %v", err) },
+		OnError:     func(err error) { r.recordError(err) },
 		Limits:      limitsFor(r.opts.Config),
 	})
 
@@ -192,7 +201,8 @@ func (r *Runtime) Start(ctx context.Context) error {
 		senders.Add(1)
 		go func() {
 			defer senders.Done()
-			if err := control.NewServer(listener).Serve(runCtx, r.send); err != nil {
+			server := control.NewCommandServer(listener, r.handleCommand)
+			if err := server.ServeCommands(runCtx); err != nil {
 				r.log.Warning("external trigger: %v", err)
 			}
 		}()
@@ -255,8 +265,12 @@ func (r *Runtime) Wait() error {
 func (r *Runtime) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return Status{Running: r.running, Phase: r.phase}
+	return Status{Running: r.running, Phase: r.phase, Error: r.lastErr}
 }
+
+// Trigger feeds one Dictation trigger into the cycle. The desktop Tray uses it;
+// the control socket and global hotkey feed the same channel.
+func (r *Runtime) Trigger(trigger cycle.Trigger) { r.send(trigger) }
 
 // Subscribe returns a channel that receives a Status on every lifecycle or
 // phase change, starting with the current snapshot. The returned function
@@ -269,7 +283,7 @@ func (r *Runtime) Subscribe() (<-chan Status, func()) {
 	id := r.nextSub
 	r.nextSub++
 	r.subs[id] = ch
-	ch <- Status{Running: r.running, Phase: r.phase}
+	ch <- Status{Running: r.running, Phase: r.phase, Error: r.lastErr}
 	r.mu.Unlock()
 
 	unsubscribe := func() {
@@ -369,6 +383,33 @@ func (r *Runtime) send(trigger cycle.Trigger) {
 	}
 }
 
+// handleCommand routes one control-socket command: triggers feed the Dictation
+// cycle, and settings asks the desktop shell to reveal its window.
+func (r *Runtime) handleCommand(command control.Command) error {
+	if trigger, ok := command.Trigger(); ok {
+		r.send(trigger)
+		return nil
+	}
+	if command != control.Settings {
+		return fmt.Errorf("unsupported command %q", command)
+	}
+	if r.opts.OnSettings == nil {
+		return errors.New("no Settings window is available while running headless; launch the gui role")
+	}
+	r.opts.OnSettings()
+	return nil
+}
+
+// recordError publishes a handled Dictation failure for the Tray's error
+// state. The message stays visible until the next cycle starts.
+func (r *Runtime) recordError(err error) {
+	r.log.Error("dictation failed: %v", err)
+	r.mu.Lock()
+	r.lastErr = err.Error()
+	r.mu.Unlock()
+	r.notify()
+}
+
 // observe maps a cycle cue to a phase and publishes a changed snapshot.
 func (r *Runtime) observe(cue cycle.Cue) {
 	phase, ok := phaseForCue(cue)
@@ -377,6 +418,10 @@ func (r *Runtime) observe(cue cycle.Cue) {
 	}
 	r.mu.Lock()
 	changed := r.phase != phase
+	if cue == cycle.CueStart {
+		changed = changed || r.lastErr != ""
+		r.lastErr = ""
+	}
 	r.phase = phase
 	r.mu.Unlock()
 	if changed {
@@ -387,7 +432,7 @@ func (r *Runtime) observe(cue cycle.Cue) {
 func (r *Runtime) notify() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	status := Status{Running: r.running, Phase: r.phase}
+	status := Status{Running: r.running, Phase: r.phase, Error: r.lastErr}
 	for _, ch := range r.subs {
 		select {
 		case ch <- status:

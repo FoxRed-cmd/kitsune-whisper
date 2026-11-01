@@ -9,6 +9,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -28,11 +29,15 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/instance"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/restart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
@@ -45,6 +50,8 @@ var Version = "dev"
 // commands that take the curated global flags on either side of the name.
 var subcommands = map[string]bool{
 	"run":                 true,
+	"gui":                 true,
+	"settings":            true,
 	"toggle":              true,
 	"transcribe-file":     true,
 	"record":              true,
@@ -61,6 +68,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	device := fs.String("device", "", "audio input device override")
 	verbose := fs.Bool("verbose", false, "shorthand for log_level=debug, also echoed to stderr")
 	seconds := fs.Float64("seconds", 5, "record: capture length in seconds")
+	hidden := fs.Bool("hidden", false, "gui: start in the Tray without a window")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, usage())
@@ -129,6 +137,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch rest[0] {
 	case "run":
 		return runClient(cfg, *verbose, stderr)
+	case "gui":
+		return runGUI(rest[1:], *hidden, cfg, *verbose, stderr)
+	case "settings":
+		return runSettings(rest[1:], cfg, *verbose, stderr)
 	case "transcribe-file":
 		return runTranscribeFile(rest[1:], cfg, *verbose, stdout, stderr)
 	case "record":
@@ -251,11 +263,78 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose 
 	return 0
 }
 
-// runClient is the interactive Client: the headless runtime owns the hotkeys,
-// capture, Dictation cycle, Recording indicator, Spool, and control socket,
-// injecting each Transcription into the focused field via the clipboard plus a
-// synthetic paste. This function only builds the real adapters and waits.
+// runClient starts the headless Client. It takes the single-instance lock so a
+// second Client cannot grab the same hotkeys and microphone; a duplicate `run`
+// exits quietly because the user already has a Client.
 func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	lock, code := acquireLock(false, false, stderr)
+	if lock == nil {
+		return code
+	}
+	defer func() { _ = lock.Release() }()
+	return serve(cfg, verbose, false, false, lock, stderr)
+}
+
+// runGUI starts the desktop shell: the Settings window plus the Tray. A second
+// visible launch forwards the settings command to the running Client, while a
+// second hidden launch (autostart) exits quietly. When the build has no
+// desktop adapter or the window/Tray cannot be created, the runtime keeps
+// dictating headlessly.
+func runGUI(args []string, hidden bool, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client gui [--hidden]")
+		return 2
+	}
+	lock, code := acquireLock(true, hidden, stderr)
+	if lock == nil {
+		return code
+	}
+	defer func() { _ = lock.Release() }()
+	return serve(cfg, verbose, true, hidden, lock, stderr)
+}
+
+// runSettings asks the running desktop shell to show the Settings window.
+func runSettings(args []string, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client settings")
+		return 2
+	}
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
+	if err := control.Send(paths.ControlSocket(), string(control.Settings)); err != nil {
+		logger.Error("settings: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// acquireLock takes the single-instance lock or forwards a duplicate launch.
+// It returns a nil lock with the process exit code when another Client already
+// owns the session.
+func acquireLock(gui, hidden bool, stderr io.Writer) (*instance.Lock, int) {
+	lock, err := instance.Acquire(paths.InstanceLock())
+	if err == nil {
+		return lock, 0
+	}
+	if !errors.Is(err, instance.ErrAlreadyRunning) {
+		fmt.Fprintf(stderr, "kitsune-client: %v\n", err)
+		return nil, 1
+	}
+	if gui && !hidden {
+		if err := control.Send(paths.ControlSocket(), string(control.Settings)); err != nil {
+			fmt.Fprintf(stderr, "kitsune-client: already running; Settings window unavailable: %v\n", err)
+			return nil, 1
+		}
+		return nil, 0
+	}
+	fmt.Fprintln(stderr, "kitsune-client: already running")
+	return nil, 0
+}
+
+// serve builds the real adapters, starts the runtime, and either waits
+// headlessly or hands control to the desktop shell.
+func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lock, stderr io.Writer) int {
 	logger := newLogger(cfg, verbose, stderr)
 	defer func() { _ = logger.Close() }()
 
@@ -303,6 +382,7 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	var sh *shell.Shell
 	rt := runtime.New(runtime.Options{
 		Config:      cfg,
 		Hotkey:      source,
@@ -320,12 +400,51 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 			return nil
 		},
 		ControlPath: paths.ControlSocket(),
-		Logger:      logger,
+		OnSettings: func() {
+			if sh != nil {
+				sh.ShowSettings()
+			}
+		},
+		Logger: logger,
 	})
+
+	if gui {
+		server, _ := cfg.ActiveProfile()
+		sh = shell.New(shell.Options{
+			Runtime: rt,
+			Desktop: wails.New(wails.Options{Version: Version, Logger: logger}),
+			Send:    rt.Trigger,
+			Version: Version,
+			Server:  server.Name,
+			Logger:  logger,
+		})
+	}
+
 	if err := rt.Start(ctx); err != nil {
 		_ = recorder.Close()
 		logger.Error("%v", err)
 		return 1
+	}
+
+	if sh != nil {
+		err := sh.Run(ctx, hidden)
+		// Restart must release the single-instance lock before the new process
+		// tries to acquire it.
+		if releaseErr := lock.Release(); releaseErr != nil {
+			logger.Warning("%v", releaseErr)
+		}
+		if errors.Is(err, shell.ErrRestart) {
+			if restartErr := restart.Exec(); restartErr != nil {
+				logger.Error("%v", restartErr)
+				return 1
+			}
+			return 0
+		}
+		if err != nil {
+			logger.Error("%v", err)
+			return 1
+		}
+		return 0
 	}
 
 	fmt.Fprintf(stderr, "kitsune-client: %s trigger on %s, cancel on %s\n", cfg.Trigger, cfg.Hotkey, cfg.CancelHotkey)
@@ -561,6 +680,8 @@ func usage() string {
 
 Commands:
   run                          run the hotkey-driven dictation client (default)
+  gui [--hidden]               run the desktop shell with the Settings window and Tray
+  settings                     ask the running Client to open the Settings window
   toggle                       trigger the running client via its control socket
   transcribe-file <path.wav>   transcribe a WAV file and print the text
   record                       capture from the microphone and print the text
@@ -572,6 +693,7 @@ Flags:
   --check-config    print the effective config and exit
   --device NAME     audio input device override
   --seconds N       record: capture length in seconds (default 5)
+  --hidden          gui: start in the Tray without a window
   --verbose         shorthand for log_level=debug, also echoed to stderr
   --version         print the version and exit
 `

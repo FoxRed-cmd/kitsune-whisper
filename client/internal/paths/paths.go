@@ -33,3 +33,12 @@ func ControlSocket() string {
 	}
 	return filepath.Join(CacheDir(), "control.sock")
 }
+
+// InstanceLock is the default path of the Client's single-instance advisory
+// lock. Like the control socket it prefers the per-session runtime directory.
+func InstanceLock() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "kitsune-whisper.lock")
+	}
+	return filepath.Join(CacheDir(), "instance.lock")
+}

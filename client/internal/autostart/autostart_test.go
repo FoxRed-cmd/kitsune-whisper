@@ -119,7 +119,7 @@ func TestInstallLinuxWritesUnitDesktopAndEnables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read unit: %v", err)
 	}
-	for _, want := range []string{"graphical-session.target", "Restart=on-failure", "ExecStart=" + binary + " run"} {
+	for _, want := range []string{"graphical-session.target", "Restart=on-failure", "ExecStart=" + binary + " gui --hidden"} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("unit missing %q:\n%s", want, data)
 		}
@@ -151,7 +151,7 @@ func TestInstallLinuxPinsExplicitConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read unit: %v", err)
 	}
-	if !strings.Contains(string(data), "--config /home/u/kitsune.yaml run") {
+	if !strings.Contains(string(data), "--config /home/u/kitsune.yaml gui --hidden") {
 		t.Fatalf("unit did not pin the config:\n%s", data)
 	}
 }
@@ -228,7 +228,7 @@ func TestInstallWindowsFallsBackToRunKey(t *testing.T) {
 	if !ok {
 		t.Fatalf("Run key %q not written", autostart.RunValueName)
 	}
-	if !strings.Contains(command, binary) || !strings.HasSuffix(command, " run") {
+	if !strings.Contains(command, binary) || !strings.HasSuffix(command, " gui --hidden") {
 		t.Fatalf("Run key command = %q", command)
 	}
 }
@@ -245,7 +245,7 @@ func TestInstallWindowsReportsBothFailures(t *testing.T) {
 
 func TestUninstallWindowsDeletesTaskAndRunKey(t *testing.T) {
 	f := newFake(t, "windows")
-	f.runKeys[autostart.RunValueName] = `C:\kw\kitsune-client.exe run`
+	f.runKeys[autostart.RunValueName] = `C:\kw\kitsune-client.exe gui --hidden`
 	if err := autostart.Uninstall(f.env); err != nil {
 		t.Fatalf("Uninstall: %v", err)
 	}

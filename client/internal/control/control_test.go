@@ -2,6 +2,7 @@ package control_test
 
 import (
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -42,6 +43,81 @@ func TestParseCommand(t *testing.T) {
 			t.Fatalf("ParseCommand(%q) = %v, want %v", tc.in, got, tc.want)
 		}
 	}
+}
+
+func TestParseRecognizesSettings(t *testing.T) {
+	command, err := control.Parse(" Settings\n")
+	if err != nil {
+		t.Fatalf("Parse(settings): %v", err)
+	}
+	if command != control.Settings {
+		t.Fatalf("command = %q, want settings", command)
+	}
+	if _, ok := command.Trigger(); ok {
+		t.Fatal("settings must not be treated as a Dictation trigger")
+	}
+	if _, err := control.ParseCommand("settings"); err == nil {
+		t.Fatal("ParseCommand should reject settings")
+	}
+}
+
+func TestCommandServerDeliversSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.sock")
+	ln, err := control.Listen(path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	commands := make(chan control.Command, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server := control.NewCommandServer(ln, func(command control.Command) error {
+			commands <- command
+			return nil
+		})
+		_ = server.ServeCommands(ctx)
+	}()
+
+	if err := control.Send(path, string(control.Settings)); err != nil {
+		t.Fatalf("send settings: %v", err)
+	}
+	select {
+	case got := <-commands:
+		if got != control.Settings {
+			t.Fatalf("delivered %q, want settings", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("settings was not delivered")
+	}
+
+	cancel()
+	<-done
+}
+
+func TestCommandServerReportsHandlerErrors(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "control.sock")
+	ln, err := control.Listen(path)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server := control.NewCommandServer(ln, func(control.Command) error {
+			return errors.New("no Settings window")
+		})
+		_ = server.ServeCommands(ctx)
+	}()
+
+	err = control.Send(path, string(control.Settings))
+	if err == nil || !strings.Contains(err.Error(), "no Settings window") {
+		t.Fatalf("Send error = %v, want the handler error", err)
+	}
+	cancel()
+	<-done
 }
 
 func newTestServer(t *testing.T) (addr string, delivered <-chan cycle.Trigger, shutdown func()) {

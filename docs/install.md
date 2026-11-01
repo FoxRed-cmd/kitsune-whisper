@@ -9,6 +9,8 @@ Both read the same `kitsune.yaml` (each process reads only its own section).
 
 - **Windows 10/11 (x64)** or **Linux (x64)** with a working microphone.
 - A reachable Server, named by the active Server profile in `client.servers`.
+- **Desktop shell**: GTK4 and WebKitGTK 6.0 on Linux, WebView2 on Windows. The
+  headless `run` role does not need either.
 - **Linux**: a systemd user session for autostart. X11 is first-class; Wayland is
   best-effort (see `docs/adr/0002-wayland-v1-stance.md`).
 
@@ -34,9 +36,14 @@ with `KITSUNE_VERSION=vX.Y.Z`, or pass `-Version vX.Y.Z` on Windows.
 From source (requires a C toolchain — `malgo` uses cgo):
 
 ```sh
-cd client && go build -o kitsune-client ./cmd/kitsune-client
+cd client && go build -tags "desktop purego" -o kitsune-client ./cmd/kitsune-client
 ./kitsune-client install-autostart   # optional
 ```
+
+The `desktop` tag adds the Wails Settings window and Tray; on Linux `purego`
+loads GTK4 and WebKitGTK 6.0 at runtime instead of linking their development
+headers. Leave both tags off to build the headless Client, which keeps the
+`run` role and every one-shot command but has no window or Tray.
 
 ### Wayland: synthetic paste needs a helper
 
@@ -124,16 +131,27 @@ kitsune-client --version
 Once a Server is reachable at the active profile (`client.active_server`), start the Client:
 
 ```sh
-kitsune-client run          # run is also the default command
+kitsune-client gui              # Settings window plus the Tray
+kitsune-client gui --hidden     # start in the Tray without a window
+kitsune-client run              # headless: hotkeys and the control socket only
 ```
 
 Press **Ctrl+Shift+Space** to start and stop recording; **Esc** cancels without
-injecting. See [The hotkey](../README.md#the-hotkey) for push-to-talk and
-changing the keys.
+injecting. Closing the Settings window hides it to the Tray; **Quit** in the
+Tray stops the Client and releases its hotkeys, microphone, control socket, and
+single-instance lock. **Restart** re-executes the Client.
+
+The desktop entry, the systemd unit, and the Windows logon task all launch
+`gui --hidden`, so dictation is available from login without a window. Only one
+long-lived Client may run per user session: a second visible `gui` launch asks
+the running instance to show Settings and exits, and a second `run` exits
+quietly. The Tray is best-effort — on a desktop without AppIndicator support,
+`kitsune-client settings` still opens the window on a running desktop Client.
 
 Handy subcommands:
 
 ```sh
+kitsune-client settings             # open Settings on the running Client
 kitsune-client record --seconds 5   # capture once and print the text
 kitsune-client transcribe-file f.wav  # transcribe an existing WAV
 kitsune-client toggle               # external trigger (Wayland compositor bind)
@@ -154,6 +172,9 @@ kitsune-client install-autostart      # optional --config PATH pins a config
 kitsune-client uninstall-autostart
 ```
 
+The generated unit, task, and desktop entry run `gui --hidden`: the Client starts
+in the Tray with no window, and the hotkey is available immediately.
+
 - **Linux** — a systemd **user** unit at
   `~/.config/systemd/user/kitsune-client.service`, `WantedBy`/`After`
   `graphical-session.target`, `Restart=on-failure`. No linger (linger would start
@@ -167,9 +188,10 @@ kitsune-client uninstall-autostart
 
 ### Managing the running client
 
-`kitsune-client run` is a long-lived foreground process: started from a terminal
-it holds the terminal until you stop it, so prefer the installed autostart. On
-Linux that is a systemd **user** unit:
+`kitsune-client gui --hidden` (or the headless `kitsune-client run`) is a
+long-lived foreground process: started from a terminal it holds the terminal
+until you stop it, so prefer the installed autostart. On Linux that is a systemd
+**user** unit:
 
 ```sh
 systemctl --user status kitsune-client.service          # running? last log lines
