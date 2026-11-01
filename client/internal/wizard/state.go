@@ -346,12 +346,13 @@ func (s *Service) Complete() error {
 }
 
 // AutoOpen decides whether the wizard should open itself and, when it should,
-// marks it active and prompted. The shell calls it at most once per process
-// while no model is active so a closed wizard is respected.
+// marks it active and prompted. A completed wizard still opens when the Client
+// knows no model is active (ADR 0011); the shell calls it at most once per
+// process, so a closed wizard is respected.
 func (s *Service) AutoOpen(data Data) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.state.Completed || s.state.SkippedAll || s.state.Active {
+	if s.state.SkippedAll || s.state.Active {
 		return false
 	}
 	presence := ModelPresence(data)

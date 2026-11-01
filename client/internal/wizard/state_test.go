@@ -331,7 +331,13 @@ func TestAutoOpenRules(t *testing.T) {
 			for range wizard.AllSteps {
 				_ = s.Next()
 			}
-		}, data: none},
+		}, data: none, wantOpen: true},
+		{name: "completed with an active model", prepare: func(s *wizard.Service) {
+			_ = s.Open()
+			for range wizard.AllSteps {
+				_ = s.Next()
+			}
+		}, data: active},
 		{name: "skipped all", prepare: func(s *wizard.Service) { _ = s.Open(); _ = s.SkipAll() }, data: none},
 		{name: "already active", prepare: func(s *wizard.Service) { _ = s.Open() }, data: active},
 	}
