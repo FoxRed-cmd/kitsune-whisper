@@ -310,7 +310,7 @@ sets `KITSUNE_SERVER_PORT=8765` and the healthcheck reads it.
 
 | Store | Container | Contents | Survives |
 | --- | --- | --- | --- |
-| `./config/` (bind) | `/config` | `kitsune.yaml`, including Admin API writes | `down`, recreation; not a checkout wipe |
+| `./config/` (bind) | `/config` | `kitsune.yaml`, including Admin API writes | `down` and recreation; removed only with the host directory |
 | `kitsune-state` volume | `/state` | `tls/server.crt` + `server.key`, `devices.json`, `pairing.json`, `kitsune-whisper/lifecycle.json`, `kitsune-whisper/server.log` | `down`, recreation, image upgrade |
 | `kitsune-models` volume | `/models` | downloaded Whisper models and the llama.cpp GGUF | `down`, recreation, image upgrade |
 | host port | `8765/tcp` | HTTPS API and `/health` | n/a |

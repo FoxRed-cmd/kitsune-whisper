@@ -104,8 +104,9 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 
 ### Docker: paths and env-locked fields
 
-The image sets these in its `ENV`, and the compose services repeat them so a
-`docker exec` sees the same values even with an older image:
+The image sets these in its `ENV`; compose repeats the config, state, and
+TLS/Device paths so a `docker exec` sees the same values even with an older
+image:
 
 | Variable | Value | Why |
 | --- | --- | --- |

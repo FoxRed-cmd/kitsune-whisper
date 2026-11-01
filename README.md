@@ -169,7 +169,7 @@ read-only file mount would break config writes. The image sets
 `KITSUNE_CONFIG=/config/kitsune.yaml`, which `docker exec` also inherits, so
 pairing inside the container reads the same file as the Server.
 
-Turn the feature on in `kitsune.yaml` — the Server master switch
+Turn the feature on in `config/kitsune.yaml` — the Server master switch
 (`server.processing.enabled` is `false` by default). A request then opts in with
 its `refine` / `summarize` form fields; the Client does not send them, so this is
 for direct API users:

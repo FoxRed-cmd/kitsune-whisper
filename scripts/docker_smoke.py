@@ -68,13 +68,28 @@ def require(condition: object, message: str) -> None:
 
 
 def docker(*args: str, timeout: float = 120.0) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
+    """Run a Docker command without raising.
+
+    ``FileNotFoundError`` and timeouts become ordinary failed results so the
+    ``finally`` cleanup cannot mask the harness's own exit code on a host with
+    no Docker.
+    """
+
+    command = ["docker", *args]
+    try:
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(command, 127, "", "docker: command not found")
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            command, 124, "", f"docker {' '.join(args)} timed out after {timeout:.0f}s"
+        )
 
 
 def docker_ok(*args: str, timeout: float = 120.0) -> str:
@@ -246,7 +261,6 @@ def wait_for_health(
     timeout: float,
     *,
     container: str | None = None,
-    tolerate_restart: bool = False,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     last = "no response"
@@ -263,7 +277,7 @@ def wait_for_health(
                 last = f"status={body.get('status')!r}"
         elif response is not None:
             last = f"HTTP {response.status}"
-        if container is not None and not container_running(container) and not tolerate_restart:
+        if container is not None and not container_running(container):
             raise SmokeError(
                 f"container {container} exited before becoming healthy:\n"
                 f"{container_logs(container)}"
@@ -271,6 +285,35 @@ def wait_for_health(
         time.sleep(2)
     hint = f"\ncontainer logs:\n{container_logs(container)}" if container else ""
     raise SmokeError(f"Server did not become healthy within {timeout:.0f}s ({last}){hint}")
+
+
+def wait_for_new_start(
+    name: str,
+    before_started: str,
+    before_count: int,
+    timeout: float = 180.0,
+) -> None:
+    """Wait until the *container* restarted, not just until /health answers.
+
+    Right after ``POST /admin/restart`` returns 202, the old process can still
+    answer one health probe before the background exit runs. Comparing
+    ``StartedAt``/``RestartCount`` is the only proof the policy fired.
+    """
+
+    deadline = time.monotonic() + timeout
+    last = "no new start"
+    while time.monotonic() < deadline:
+        result = docker("inspect", "--format", "{{.State.StartedAt}}", name)
+        if result.returncode == 0 and result.stdout.strip() != before_started:
+            return
+        counted = docker("inspect", "--format", "{{.RestartCount}}", name)
+        if counted.returncode == 0 and int(counted.stdout.strip() or "0") > before_count:
+            return
+        last = (result.stderr or counted.stderr or "still the old process").strip()
+        time.sleep(1)
+    raise SmokeError(
+        f"container {name} did not restart within {timeout:.0f}s ({last}):\n{container_logs(name)}"
+    )
 
 
 # -- Fixtures --------------------------------------------------------------
@@ -444,12 +487,11 @@ def check_restart(api: Api, token: str, name: str) -> None:
     restarted = api.post_json("/admin/restart", {}, token=token)
     require(restarted is not None and restarted.status == 202, "/admin/restart must return 202")
     require(restarted.json().get("restarting") is True, "the 202 body must say restarting")
-    wait_for_health(api, 180, container=name, tolerate_restart=True)
+    # Wait for the container itself to restart: the old process may still answer
+    # one health probe before its background exit runs.
+    wait_for_new_start(name, before, before_count)
+    wait_for_health(api, 180, container=name)
     require(container_running(name), "the restart policy must bring the same container back")
-    require(
-        started_at(name) != before or restart_count(name) > before_count,
-        "the container must actually restart (StartedAt/RestartCount)",
-    )
     after = api.get("/status", token=token)
     require(after is not None and after.status == 200, "the Device token must survive a restart")
 
