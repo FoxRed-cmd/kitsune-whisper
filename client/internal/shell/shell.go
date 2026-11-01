@@ -66,7 +66,7 @@ type Desktop interface {
 	// NewWindow creates the Settings window, initially hidden when hidden is
 	// true.
 	NewWindow(initial Snapshot, hidden bool) (Window, error)
-	// NewTray creates the Tray icon and menu.
+	// NewTray creates the Tray image and menu.
 	NewTray(initial Snapshot) (Tray, error)
 	// Run runs the platform event loop until Quit.
 	Run() error
@@ -106,7 +106,7 @@ const (
 // Snapshot is the one immutable status the window and the Tray render.
 type Snapshot struct {
 	Version string        `json:"version"`
-	Server  string        `json:"server,omitempty"`
+	Profile string        `json:"profile,omitempty"`
 	Running bool          `json:"running"`
 	Phase   runtime.Phase `json:"phase"`
 	State   State         `json:"state"`
@@ -127,7 +127,7 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 	}
 	return Snapshot{
 		Version: version,
-		Server:  server,
+		Profile: server,
 		Running: status.Running,
 		Phase:   status.Phase,
 		State:   state,
@@ -160,8 +160,8 @@ type Options struct {
 	Send func(cycle.Trigger)
 	// Version is shown in the window and the Tray tooltip.
 	Version string
-	// Server is the active Server profile's name.
-	Server string
+	// Profile is the active Server profile's name.
+	Profile string
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
 }
@@ -194,7 +194,7 @@ func New(opts Options) *Shell {
 		log:       log,
 		quitCh:    make(chan struct{}),
 		restartCh: make(chan struct{}),
-		snapshot:  NewSnapshot(runtime.Status{}, opts.Version, opts.Server),
+		snapshot:  NewSnapshot(runtime.Status{}, opts.Version, opts.Profile),
 	}
 }
 
@@ -223,10 +223,17 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	go s.watch(ctx, runtimeDone, watchDone)
 
 	if s.desktopVisible() {
-		if err := s.opts.Desktop.Run(); err != nil {
-			// The event loop failed after the window or Tray was created. Keep
-			// the runtime alive: dictation is the product, the shell is not.
-			s.log.Warning("desktop shell stopped: %v", err)
+		select {
+		case <-watchDone:
+			// The runtime or ctx ended before the event loop started; skip a
+			// Run that nobody would quit.
+		default:
+			if err := s.opts.Desktop.Run(); err != nil {
+				// The event loop failed after the window or Tray was created.
+				// Keep the runtime alive: dictation is the product, the shell is
+				// not.
+				s.log.Warning("desktop shell stopped: %v", err)
+			}
 		}
 	}
 
@@ -308,7 +315,7 @@ func (s *Shell) consume(updates <-chan runtime.Status) {
 }
 
 func (s *Shell) update(status runtime.Status) {
-	snapshot := NewSnapshot(status, s.opts.Version, s.opts.Server)
+	snapshot := NewSnapshot(status, s.opts.Version, s.opts.Profile)
 	s.mu.Lock()
 	s.snapshot = snapshot
 	window, tray := s.window, s.tray
@@ -329,16 +336,17 @@ func (s *Shell) Snapshot() Snapshot {
 }
 
 // ShowSettings reveals the Settings window. It is the target of both the Tray
-// item and the control socket's settings command.
-func (s *Shell) ShowSettings() {
+// item and the control socket's settings command. A missing window is an
+// error, so the caller does not report success for a window it cannot show.
+func (s *Shell) ShowSettings() error {
 	s.mu.Lock()
 	window := s.window
 	s.mu.Unlock()
 	if window == nil {
-		s.log.Warning("settings window is not available")
-		return
+		return errors.New("settings window is not available")
 	}
 	window.Show()
+	return nil
 }
 
 // handleAction maps one Tray menu action.
@@ -349,7 +357,9 @@ func (s *Shell) handleAction(action Action) {
 			s.opts.Send(cycle.Toggle)
 		}
 	case ActionSettings:
-		s.ShowSettings()
+		if err := s.ShowSettings(); err != nil {
+			s.log.Warning("%v", err)
+		}
 	case ActionRestart:
 		s.requestRestart()
 	case ActionQuit:
@@ -364,10 +374,6 @@ func (s *Shell) requestQuit() {
 func (s *Shell) requestRestart() {
 	s.quitOnce.Do(func() { close(s.restartCh) })
 }
-
-// Trigger is the control-socket settings hook: it reveals the window without
-// stopping the Client.
-func (s *Shell) Trigger() { s.ShowSettings() }
 
 type nopLogger struct{}
 

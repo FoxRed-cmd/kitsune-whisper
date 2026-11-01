@@ -64,6 +64,7 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
 
       - run: golangci-lint run --config ../.golangci.yml
+      - run: golangci-lint run --config ../.golangci.yml --build-tags "desktop purego"
       - run: go test ./...
 
       - name: Build the desktop shell (purego, no GTK dev headers)

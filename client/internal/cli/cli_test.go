@@ -529,6 +529,18 @@ func TestSecondHiddenLaunchExitsQuietly(t *testing.T) {
 	}
 }
 
+func TestHiddenIsOnlyValidForGUI(t *testing.T) {
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "run", "--hidden"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "--hidden") {
+		t.Fatalf("stderr = %q, want the flag explanation", stderr.String())
+	}
+}
+
 func TestRecordRejectsNonPositiveSeconds(t *testing.T) {
 	configPath := writeConfigFile(t, map[string]any{})
 	var stdout, stderr bytes.Buffer

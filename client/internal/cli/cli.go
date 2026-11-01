@@ -91,6 +91,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "kitsune-client %s\n", Version)
 		return 0
 	}
+	if *hidden && (len(rest) == 0 || rest[0] != "gui") {
+		fmt.Fprintln(stderr, "--hidden is only valid with the gui command")
+		return 2
+	}
 	// Autostart registration does not need the rest of the config; pinning an
 	// explicit --config only affects the command line written into the unit or
 	// task.
@@ -302,11 +306,16 @@ func runSettings(args []string, cfg config.ClientConfig, verbose bool, stderr io
 	logger := newLogger(cfg, verbose, stderr)
 	defer func() { _ = logger.Close() }()
 
-	if err := control.Send(paths.ControlSocket(), string(control.Settings)); err != nil {
+	if err := requestSettings(); err != nil {
 		logger.Error("settings: %v", err)
 		return 1
 	}
 	return 0
+}
+
+// requestSettings asks the running Client to show its Settings window.
+func requestSettings() error {
+	return control.Send(paths.ControlSocket(), string(control.Settings))
 }
 
 // acquireLock takes the single-instance lock or forwards a duplicate launch.
@@ -322,7 +331,7 @@ func acquireLock(gui, hidden bool, stderr io.Writer) (*instance.Lock, int) {
 		return nil, 1
 	}
 	if gui && !hidden {
-		if err := control.Send(paths.ControlSocket(), string(control.Settings)); err != nil {
+		if err := requestSettings(); err != nil {
 			fmt.Fprintf(stderr, "kitsune-client: already running; Settings window unavailable: %v\n", err)
 			return nil, 1
 		}
@@ -383,7 +392,7 @@ func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lo
 	defer stop()
 
 	var sh *shell.Shell
-	rt := runtime.New(runtime.Options{
+	opts := runtime.Options{
 		Config:      cfg,
 		Hotkey:      source,
 		Recorder:    recorder,
@@ -400,13 +409,17 @@ func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lo
 			return nil
 		},
 		ControlPath: paths.ControlSocket(),
-		OnSettings: func() {
-			if sh != nil {
-				sh.ShowSettings()
+		Logger:      logger,
+	}
+	if gui {
+		opts.OnSettings = func() error {
+			if sh == nil {
+				return errors.New("the Settings window is still starting")
 			}
-		},
-		Logger: logger,
-	})
+			return sh.ShowSettings()
+		}
+	}
+	rt := runtime.New(opts)
 
 	if gui {
 		server, _ := cfg.ActiveProfile()
@@ -415,7 +428,7 @@ func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lo
 			Desktop: wails.New(wails.Options{Version: Version, Logger: logger}),
 			Send:    rt.Trigger,
 			Version: Version,
-			Server:  server.Name,
+			Profile: server.Name,
 			Logger:  logger,
 		})
 	}

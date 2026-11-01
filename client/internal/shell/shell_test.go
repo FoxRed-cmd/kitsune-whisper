@@ -280,7 +280,7 @@ func newShell(rt *fakeRuntime, desktop shell.Desktop, log *fakeLogger, sent chan
 			}
 		},
 		Version: "test",
-		Server:  "Local Server",
+		Profile: "Local Server",
 		Logger:  log,
 	})
 }
@@ -512,7 +512,9 @@ func TestTrayFailureLogsOneWarningAndKeepsTheWindow(t *testing.T) {
 	}
 
 	// The window is still reachable and the runtime keeps running.
-	sh.ShowSettings()
+	if err := sh.ShowSettings(); err != nil {
+		t.Fatalf("show settings: %v", err)
+	}
 	waitFor(t, "window to show", func() bool {
 		shows, _ := desktop.getWindow().counts()
 		return shows == 1
@@ -596,8 +598,8 @@ func TestNewSnapshotMapsPhasesAndErrors(t *testing.T) {
 		if got.State != tc.want {
 			t.Errorf("phase %q error %q => state %q, want %q", tc.status.Phase, tc.status.Error, got.State, tc.want)
 		}
-		if got.Version != "v1" || got.Server != "Local Server" {
-			t.Errorf("snapshot lost version/server: %+v", got)
+		if got.Version != "v1" || got.Profile != "Local Server" {
+			t.Errorf("snapshot lost version/profile: %+v", got)
 		}
 	}
 }

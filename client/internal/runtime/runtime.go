@@ -101,8 +101,9 @@ type Options struct {
 	ControlPath string
 	// OnSettings receives the control socket's settings command. The desktop
 	// shell sets it to show the Settings window; a headless runtime leaves it
-	// nil and answers the command with a clear error.
-	OnSettings func()
+	// nil and answers the command with a clear error. A shell that cannot reach
+	// its window returns an error, which the caller sees.
+	OnSettings func() error
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
 }
@@ -396,8 +397,7 @@ func (r *Runtime) handleCommand(command control.Command) error {
 	if r.opts.OnSettings == nil {
 		return errors.New("no Settings window is available while running headless; launch the gui role")
 	}
-	r.opts.OnSettings()
-	return nil
+	return r.opts.OnSettings()
 }
 
 // recordError publishes a handled Dictation failure for the Tray's error

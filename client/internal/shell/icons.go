@@ -13,7 +13,7 @@ var (
 	icons     map[State][]byte
 )
 
-// Icon returns the Tray icon for a state as PNG bytes. The four icons are
+// Icon returns the Tray image for a state as PNG bytes. The four images are
 // generated in-process so the Client ships no binary image assets and every
 // platform sees the same shape.
 func Icon(state State) []byte {

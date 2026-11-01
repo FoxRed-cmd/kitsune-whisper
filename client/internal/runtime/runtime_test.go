@@ -206,7 +206,7 @@ func newHarness(t *testing.T, transcriber *fakeTranscriber) *harness {
 		Injector:    h.injector,
 		Spool:       h.spool,
 		ControlPath: h.sock,
-		OnSettings:  func() { h.settings.Add(1) },
+		OnSettings:  func() error { h.settings.Add(1); return nil },
 		Indicator:   func(send func(cycle.Trigger)) cycle.Feedback { h.ind.send = send; return h.ind },
 		Clock:       nil,
 		Logger:      nil,
