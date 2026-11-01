@@ -607,6 +607,11 @@ func TestClassify(t *testing.T) {
 		"client.wayland_tool",
 		"client.server_url",
 		"client.log_file",
+		// refine and summarize are still forwarded to the Server by the
+		// current runtime, which builds its transcriber at startup. Ignoring
+		// them with a warning is a later migration, so they need a restart.
+		"client.refine",
+		"client.summarize",
 		"client.unknown_future_field",
 	}
 	for _, path := range restart {

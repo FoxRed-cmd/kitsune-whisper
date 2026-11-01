@@ -44,22 +44,23 @@ def test_states_report_value_and_source_per_field(tmp_path: Path) -> None:
 
     states = store.states()
 
-    assert states["port"] == FieldState(9100, "file", False, None)
-    assert states["decode.beam_size"].value == 3
-    assert states["model"].value == "base"
-    assert states["model"].source == "env"
-    assert states["model"].locked is True
-    assert "KITSUNE_SERVER_MODEL" in (states["model"].reason or "")
-    assert states["device"].source == "cli"
-    assert states["device"].locked is True
-    assert states["decode.language"].source == "default"
-    assert states["decode.language"].locked is False
-    assert states["tls.enabled"].source == "default"
-    assert states["tls.enabled"].value is True
-    assert states["idle_unload_seconds"].value == 600
-    assert states["idle_unload_seconds"].mode == "hot"
-    assert states["port"].mode == "restart"
-    assert store.state("port") == FieldState(9100, "file")
+    assert all(path.startswith("server.") for path in states)
+    assert states["server.port"] == FieldState(9100, "file", False, None)
+    assert states["server.decode.beam_size"].value == 3
+    assert states["server.model"].value == "base"
+    assert states["server.model"].source == "env"
+    assert states["server.model"].locked is True
+    assert "KITSUNE_SERVER_MODEL" in (states["server.model"].reason or "")
+    assert states["server.device"].source == "cli"
+    assert states["server.device"].locked is True
+    assert states["server.decode.language"].source == "default"
+    assert states["server.decode.language"].locked is False
+    assert states["server.tls.enabled"].source == "default"
+    assert states["server.tls.enabled"].value is True
+    assert states["server.idle_unload_seconds"].value == 600
+    assert states["server.idle_unload_seconds"].mode == "hot"
+    assert states["server.port"].mode == "restart"
+    assert store.state("server.port") == FieldState(9100, "file")
 
 
 def test_patch_updates_file_and_preserves_comments_and_client(tmp_path: Path) -> None:
@@ -69,9 +70,9 @@ def test_patch_updates_file_and_preserves_comments_and_client(tmp_path: Path) ->
     result = store.patch({"port": 9100, "decode": {"beam_size": 3}})
 
     assert result.written is True
-    assert result.changed == ("port", "decode.beam_size")
-    assert result.restart_required == ("port",)
-    assert result.hot_applied == ("decode.beam_size",)
+    assert result.changed == ("server.port", "server.decode.beam_size")
+    assert result.restart_required == ("server.port",)
+    assert result.hot_applied == ("server.decode.beam_size",)
     text = path.read_text(encoding="utf-8")
     assert "# kitsune configuration" in text
     assert "# the listener port" in text
@@ -228,6 +229,34 @@ def test_unrepresentable_edit_keeps_a_backup(tmp_path: Path) -> None:
     }
 
 
+def test_non_mapping_intermediate_is_rewritten_with_a_backup(tmp_path: Path) -> None:
+    original = (
+        "# kitsune configuration\n"
+        "server:\n"
+        "  port: 9000\n"
+        "  decode: oops\n"
+        "client:\n"
+        "  # keep this client comment\n"
+        "  hotkey: Ctrl+Shift+Space\n"
+    )
+    path = write_yaml(tmp_path, original)
+
+    result = ConfigStore(path, env={}).patch({"decode": {"beam_size": 3}})
+
+    backup = tmp_path / "kitsune.yaml.bak"
+    assert result.backup_path == backup
+    assert backup.read_text(encoding="utf-8") == original
+    assert result.changed == ("server.decode.beam_size",)
+    assert result.hot_applied == ("server.decode.beam_size",)
+    assert result.config.decode.beam_size == 3
+    text = path.read_text(encoding="utf-8")
+    assert "# keep this client comment" in text
+    assert yaml.safe_load(text) == {
+        "server": {"port": 9000, "decode": {"beam_size": 3}},
+        "client": {"hotkey": "Ctrl+Shift+Space"},
+    }
+
+
 def test_patch_adds_server_section_to_client_only_file(tmp_path: Path) -> None:
     path = write_yaml(tmp_path, "client:\n  hotkey: Ctrl+Shift+Space\n")
 
@@ -241,28 +270,29 @@ def test_patch_adds_server_section_to_client_only_file(tmp_path: Path) -> None:
 
 def test_restart_classification() -> None:
     restart = [
-        "host",
-        "port",
-        "expose_to_network",
-        "device",
-        "compute_type",
-        "workers",
-        "download_root",
-        "catalog_file",
-        "offline",
-        "devices_file",
-        "tls.enabled",
-        "tls.cert_file",
-        "allow_anonymous",
+        "server.host",
+        "server.port",
+        "server.expose_to_network",
+        "server.device",
+        "server.compute_type",
+        "server.workers",
+        "server.download_root",
+        "server.catalog_file",
+        "server.offline",
+        "server.devices_file",
+        "server.tls.enabled",
+        "server.tls.cert_file",
+        "server.allow_anonymous",
+        "server.unknown_future_field",
     ]
     hot = [
-        "model",
-        "idle_unload_seconds",
-        "max_audio_seconds",
-        "max_upload_mb",
-        "decode.beam_size",
-        "processing.enabled",
-        "log_level",
+        "server.model",
+        "server.idle_unload_seconds",
+        "server.max_audio_seconds",
+        "server.max_upload_mb",
+        "server.decode.beam_size",
+        "server.processing.enabled",
+        "server.log_level",
     ]
     assert {path: ConfigStore.impact(path) for path in restart} == dict.fromkeys(restart, "restart")
     assert {path: ConfigStore.impact(path) for path in hot} == dict.fromkeys(hot, "hot")
@@ -293,7 +323,7 @@ def test_states_report_nested_env_source(tmp_path: Path) -> None:
         env={"KITSUNE_SERVER_TLS__ENABLED": "false"},
     )
 
-    state = store.state("tls.enabled")
+    state = store.state("server.tls.enabled")
 
     assert state.value is False
     assert state.source == "env"

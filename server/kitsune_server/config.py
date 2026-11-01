@@ -8,6 +8,7 @@ is strict and fails fast, naming the offending field path.
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import sys
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -20,10 +21,10 @@ from pydantic import (
     ConfigDict,
     Field,
     ValidationError,
-    ValidationInfo,
-    field_validator,
     model_validator,
 )
+
+logger = logging.getLogger(__name__)
 
 ENV_PREFIX = "KITSUNE_SERVER_"
 CONFIG_ENV = "KITSUNE_CONFIG"
@@ -89,12 +90,12 @@ def is_loopback_host(host: str) -> bool:
 
 
 class TlsConfig(_StrictModel):
-    """TLS placeholders for the HTTPS listener (setup lands in a later ticket).
+    """TLS settings for the future HTTPS listener (setup lands in a later ticket).
 
-    TLS is on by default. ``cert_file``/``key_file`` are optional: when both are
-    unset the Server generates and persists a self-signed certificate in its data
-    directory at first start. Setting ``enabled: false`` is the explicit
-    insecure-HTTP opt-out for advanced setups.
+    TLS is on by default. ``cert_file``/``key_file`` are optional overrides and
+    must be set together; the listener, self-signed certificate generation, and
+    Client pinning land with the desktop install. Setting ``enabled: false`` is
+    the explicit insecure-HTTP opt-out for advanced setups.
     """
 
     enabled: bool = True
@@ -140,26 +141,39 @@ class ServerConfig(_StrictModel):
     processing: ProcessingConfig = ProcessingConfig()
     log_level: LogLevel = "info"
 
-    @field_validator("host")
-    @classmethod
-    def _loopback_unless_exposed(cls, value: str, info: ValidationInfo) -> str:
-        if info.data.get("expose_to_network", False):
-            return value
-        if not is_loopback_host(value):
-            raise ValueError("must be a loopback address unless server.expose_to_network is true")
-        return value
+    @model_validator(mode="after")
+    def _legacy_host_is_explicit_exposure(self) -> ServerConfig:
+        """Accept a configured non-loopback ``host`` as legacy LAN exposure.
+
+        ``host: 0.0.0.0`` was the documented default before
+        ``expose_to_network`` existed, so existing files must keep working.
+        Warn once per validation so operators can migrate.
+        """
+        if (
+            "host" in self.model_fields_set
+            and not self.expose_to_network
+            and not is_loopback_host(self.host)
+        ):
+            logger.warning(
+                "server.host is set to %s without server.expose_to_network; "
+                "binding it as given. Prefer expose_to_network: true.",
+                self.host,
+            )
+        return self
 
     @property
     def bind_host(self) -> str:
         """Address the HTTP listener binds to.
 
-        LAN exposure is the explicit ``expose_to_network`` switch: when it is on
-        the Server binds all interfaces (or an explicitly pinned non-loopback
-        ``host``); when it is off the listener stays on loopback.
+        An explicitly configured ``host`` always wins, including the legacy
+        ``0.0.0.0``. Otherwise the ``expose_to_network`` switch decides: on
+        binds all interfaces, off stays on loopback.
         """
-        if not self.expose_to_network:
+        if "host" in self.model_fields_set:
             return self.host
-        return "0.0.0.0" if is_loopback_host(self.host) else self.host
+        if self.expose_to_network:
+            return "0.0.0.0"
+        return self.host
 
 
 def user_config_dir(env: Mapping[str, str] | None = None) -> Path:

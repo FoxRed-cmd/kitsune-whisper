@@ -7,8 +7,12 @@
 
 server:
   # The Server binds loopback by default. Set expose_to_network: true to accept
-  # Devices from the LAN; it then binds 0.0.0.0 (needs a restart). The Docker
-  # image sets this via KITSUNE_SERVER_EXPOSE_TO_NETWORK=true.
+  # Devices from the LAN; it then binds 0.0.0.0 when host is left at its default
+  # (needs a restart). The Docker image sets this via
+  # KITSUNE_SERVER_EXPOSE_TO_NETWORK=true.
+  #
+  # Migration: an explicit host: 0.0.0.0 (the old way to expose the Server)
+  # still works and logs a warning; prefer expose_to_network: true.
   expose_to_network: false
   host: 127.0.0.1
   port: 8765
@@ -31,8 +35,9 @@ server:
   max_upload_mb: 30
   # Unload the model after this many idle seconds; 0 keeps it resident.
   idle_unload_seconds: 600
-  # TLS is on by default (a self-signed certificate is generated on first
-  # start). Set enabled: false only for an explicit insecure-HTTP setup.
+  # TLS is on by default. The HTTPS listener, self-signed certificate, and
+  # pinning land with the desktop install; this release records the setting.
+  # Set enabled: false only for an explicit insecure-HTTP setup.
   # cert_file/key_file are optional overrides and must be set together.
   tls:
     enabled: true

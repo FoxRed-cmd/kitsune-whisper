@@ -43,21 +43,41 @@ from .config import (
 Source = Literal["default", "file", "env", "cli"]
 ChangeImpact = Literal["hot", "restart"]
 
-# Fields the running Server can apply without a restart. Everything else needs
+# Fields the running Server can apply without a restart, spelled as absolute
+# field paths like the Admin API and ``server.*`` errors. Everything else needs
 # one: the listener (host/port/exposure), the engine (device/compute_type,
 # workers, download_root, offline), TLS/auth, store locations, and the bundled
-# catalog.
-_HOT_PREFIXES = frozenset(
+# catalog. The list is explicit rather than prefix-based so a new decode or
+# processing knob is restart-required until someone deliberately makes it hot.
+#
+# Classification is advisory until the Admin API wires live apply: today every
+# change still takes effect on the next Server start.
+_HOT_FIELDS = frozenset(
     {
-        "model",
-        "idle_unload_seconds",
-        "max_audio_seconds",
-        "max_upload_mb",
-        "decode",
-        "processing",
-        "log_level",
+        "server.model",
+        "server.idle_unload_seconds",
+        "server.max_audio_seconds",
+        "server.max_upload_mb",
+        "server.decode.task",
+        "server.decode.language",
+        "server.decode.beam_size",
+        "server.decode.temperature",
+        "server.decode.vad_filter",
+        "server.decode.initial_prompt",
+        "server.processing.enabled",
+        "server.processing.base_url",
+        "server.processing.api_key",
+        "server.processing.model",
+        "server.processing.extra_body",
+        "server.processing.max_output_tokens",
+        "server.processing.stage_timeout_seconds",
+        "server.log_level",
     }
 )
+
+
+class _UnrepresentableError(Exception):
+    """The document cannot express an edit without replacing a non-mapping node."""
 
 
 @dataclass(frozen=True)
@@ -90,8 +110,13 @@ class _Document:
     representable: bool
 
 
-def _leaf_items(value: BaseModel, prefix: str = "") -> list[tuple[str, Any]]:
-    """Flatten a pydantic model into ``dotted.path`` leaf values."""
+def _relative(path: str) -> str:
+    """Strip the absolute ``server.`` prefix for the nested section maps."""
+    return path.removeprefix("server.")
+
+
+def _leaf_items(value: BaseModel, prefix: str = "server.") -> list[tuple[str, Any]]:
+    """Flatten a pydantic model into absolute ``server.dotted.path`` leaves."""
     items: list[tuple[str, Any]] = []
     for name in type(value).model_fields:
         child = getattr(value, name)
@@ -103,9 +128,24 @@ def _leaf_items(value: BaseModel, prefix: str = "") -> list[tuple[str, Any]]:
     return items
 
 
+def _flat_values(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Flatten a nested section into absolute paths, keeping non-mapping leaves."""
+    flat: dict[str, Any] = {}
+
+    def walk(value: Any, path: str) -> None:
+        if isinstance(value, Mapping):
+            for key, child in value.items():
+                walk(child, f"{path}.{key}")
+            return
+        flat[path] = value
+
+    walk(values, "server")
+    return flat
+
+
 def _lookup(values: Mapping[str, Any], path: str) -> tuple[bool, Any]:
     cursor: Any = values
-    for part in path.split("."):
+    for part in _relative(path).split("."):
         if not isinstance(cursor, Mapping) or part not in cursor:
             return False, None
         cursor = cursor[part]
@@ -121,9 +161,9 @@ def _nested_model(annotation: Any) -> type[BaseModel] | None:
 def _flatten_patch(
     changes: Mapping[str, Any],
     model: type[BaseModel] = ServerConfig,
-    prefix: str = "",
+    prefix: str = "server.",
 ) -> list[tuple[str, Any]]:
-    """Expand nested patch values into ``dotted.path`` leaves."""
+    """Expand nested section-relative patch values into absolute leaf paths."""
     leaves: list[tuple[str, Any]] = []
     for name, value in changes.items():
         field_info = model.model_fields.get(name)
@@ -151,8 +191,32 @@ def _yaml_value(value: Any) -> Any:
 
 
 def _set_path(root: CommentedMap, path: str, value: Any) -> None:
-    """Set one dotted path, creating missing mappings without touching others."""
-    parts = path.split(".")
+    """Set one absolute path, creating missing mappings without touching others.
+
+    Raises :class:`_UnrepresentableError` instead of replacing an existing node that
+    is not a mapping: that edit would silently drop the user's value.
+    """
+    parts = _relative(path).split(".")
+    cursor: CommentedMap = root
+    for part in parts[:-1]:
+        if part not in cursor:
+            child: Any = CommentedMap()
+            cursor[part] = child
+        else:
+            child = cursor[part]
+            if not isinstance(child, CommentedMap):
+                raise _UnrepresentableError(path)
+        cursor = child
+    cursor[parts[-1]] = _yaml_value(value)
+
+
+def _repair_path(root: CommentedMap, path: str, value: Any) -> None:
+    """Set one absolute path, replacing non-mapping intermediates.
+
+    Only used on the fallback path, after :func:`_set_path` has reported that
+    the document cannot express the edit in place.
+    """
+    parts = _relative(path).split(".")
     cursor: CommentedMap = root
     for part in parts[:-1]:
         child = cursor.get(part)
@@ -275,7 +339,7 @@ class ConfigStore:
         return self._resolve()
 
     def states(self) -> dict[str, FieldState]:
-        """Every leaf setting with its value, source, and lock state."""
+        """Every leaf setting keyed by its absolute ``server.*`` field path."""
         config = self.effective()
         file_values = self._file_values()
         env_values = self._env_values()
@@ -289,7 +353,7 @@ class ConfigStore:
             if in_cli:
                 states[path] = FieldState(value, "cli", True, "set by command line", mode)
             elif in_env:
-                env_name = f"{ENV_PREFIX}{path.upper().replace('.', '__')}"
+                env_name = f"{ENV_PREFIX}{_relative(path).upper().replace('.', '__')}"
                 states[path] = FieldState(value, "env", True, f"set by {env_name}", mode)
             elif in_file:
                 states[path] = FieldState(value, "file", mode=mode)
@@ -298,59 +362,91 @@ class ConfigStore:
         return states
 
     def state(self, path: str) -> FieldState:
-        """One leaf setting; raises ``KeyError`` for unknown paths."""
+        """One leaf setting by absolute path; raises ``KeyError`` when unknown."""
         return self.states()[path]
 
     @staticmethod
     def impact(path: str) -> ChangeImpact:
-        """Whether a change to ``path`` applies hot or needs a restart."""
-        top = path.split(".", 1)[0]
-        return "hot" if top in _HOT_PREFIXES else "restart"
+        """Whether a change to ``path`` applies hot or needs a restart.
+
+        ``path`` is absolute (``server.decode.beam_size``); classification is
+        advisory until live apply lands.
+        """
+        return "hot" if path in _HOT_FIELDS else "restart"
 
     # -- patching ----------------------------------------------------------
 
     def patch(self, changes: Mapping[str, Any]) -> SaveResult:
         """Validate and write a set of Server settings atomically.
 
-        ``changes`` nests like the schema (``{"decode": {"beam_size": 3}}``).
-        The whole effective configuration is validated first; on any error
+        ``changes`` nests like the schema and uses section-relative keys
+        (``{"decode": {"beam_size": 3}}``); every reported field path is instead
+        absolute (``server.decode.beam_size``). The whole effective
+        configuration is validated after applying the patch; on any error
         nothing is written. Fields forced by an environment variable or a CLI
         flag cannot be changed through the file.
+
+        A patch may repair a file whose current values are temporarily invalid
+        as long as the patched result validates. When the YAML cannot express
+        an edit in place (for example a scalar where a mapping used to be), the
+        edit rewrites that branch and keeps the original bytes as
+        ``kitsune.yaml.bak``.
         """
         if not isinstance(changes, Mapping):
             raise ConfigError("server: patch must be a mapping of field names to values")
-        current = self.effective()
+        file_values = self._file_values()
+        env_values = self._env_values()
+        effective = deep_merge(deep_merge(file_values, env_values), self._cli_overrides)
+        try:
+            current: ServerConfig | None = self._resolve(effective)
+            current_error: ConfigError | None = None
+        except ConfigError as exc:
+            # The patch may fix the invalid values; validate the result below.
+            current = None
+            current_error = exc
         candidate = self._resolve(
             deep_merge(
-                deep_merge(
-                    deep_merge(self._file_values(), changes),
-                    self._env_values(),
-                ),
+                deep_merge(deep_merge(file_values, changes), env_values),
                 self._cli_overrides,
             )
         )
         requested = _flatten_patch(changes)
-        before = dict(_leaf_items(current))
+        before = dict(_leaf_items(current)) if current is not None else _flat_values(effective)
         after = dict(_leaf_items(candidate))
-        states = self.states()
-        # The effective values the patch asks for, ignoring env/CLI overrides,
-        # so a locked field can be compared with what is being written.
-        requested_values = dict(
-            _leaf_items(self._resolve(deep_merge(current.model_dump(), changes)))
-        )
 
-        for path, _ in requested:
-            state = states[path]
-            if state.locked and requested_values[path] != state.value:
-                raise ConfigError(
-                    f"server.{path}: the effective value is {state.value!r} "
-                    f"({state.reason}); change the overriding source instead"
-                )
+        if current is not None:
+            states = self.states()
+            # The effective values the patch asks for, ignoring env/CLI
+            # overrides, so a locked field can be compared with the write.
+            requested_values = dict(
+                _leaf_items(self._resolve(deep_merge(current.model_dump(), changes)))
+            )
+            for path, _ in requested:
+                state = states[path]
+                if state.locked and requested_values[path] != state.value:
+                    raise ConfigError(
+                        f"{path}: the effective value is {state.value!r} "
+                        f"({state.reason}); change the overriding source instead"
+                    )
+        else:
+            # Without a valid current config we cannot resolve the effective
+            # locked value; refuse rather than silently rewrite a field that an
+            # override controls.
+            for path, _ in requested:
+                if _lookup(env_values, path)[0] or _lookup(self._cli_overrides, path)[0]:
+                    raise ConfigError(
+                        f"{path} is set by an environment variable or command "
+                        "line; change the overriding source instead"
+                    ) from current_error
 
         changed = tuple(
             dict.fromkeys(path for path, _ in requested if before.get(path) != after.get(path))
         )
         if not changed:
+            if current_error is not None:
+                raise current_error
+            if current is None:
+                raise ConfigError("server: the patch changes no values")
             return SaveResult(config=current, written=False)
 
         document = self._load_document()
@@ -359,12 +455,20 @@ class ConfigStore:
         if not isinstance(server, CommentedMap):
             server = CommentedMap()
             root["server"] = server
-        for path in changed:
-            _set_path(server, path, _yaml_value(after[path]))
+        representable = document.representable
+        if representable:
+            try:
+                for path in changed:
+                    _set_path(server, path, _yaml_value(after[path]))
+            except _UnrepresentableError:
+                representable = False
+        if not representable:
+            for path in changed:
+                _repair_path(server, path, _yaml_value(after[path]))
 
         target = self.target_path
         backup_path: Path | None = None
-        if document.text and not document.representable:
+        if document.text and not representable:
             backup_path = target.with_name(f"{target.name}.bak")
             shutil.copyfile(target, backup_path)
         _atomic_write(target, _dump(root))

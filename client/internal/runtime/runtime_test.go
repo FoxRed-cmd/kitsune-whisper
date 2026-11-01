@@ -239,6 +239,21 @@ func TestStartTwiceReturnsAClearError(t *testing.T) {
 	if !strings.Contains(err.Error(), "already running") {
 		t.Fatalf("error = %q, want a clear message", err)
 	}
+	if !strings.HasPrefix(err.Error(), "runtime: ") {
+		t.Fatalf("error = %q, want the runtime: prefix", err)
+	}
+}
+
+func TestStartValidationErrorUsesRuntimePrefix(t *testing.T) {
+	rt := runtime.New(runtime.Options{})
+	err := rt.Start(context.Background())
+	if err == nil {
+		_ = rt.Stop()
+		t.Fatal("start without adapters succeeded")
+	}
+	if !strings.HasPrefix(err.Error(), "runtime: ") {
+		t.Fatalf("error = %q, want the runtime: prefix", err)
+	}
 }
 
 func TestStopIsIdempotentAndReleasesAdapters(t *testing.T) {

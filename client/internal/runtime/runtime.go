@@ -40,10 +40,10 @@ const (
 
 var (
 	// ErrAlreadyRunning is returned by Start when the runtime is already running.
-	ErrAlreadyRunning = errors.New("client runtime: already running")
+	ErrAlreadyRunning = errors.New("runtime: already running")
 	// ErrStopped is returned by Start after Stop: Stop releases the adapters, so
 	// a stopped runtime cannot be started again. Create a new Runtime instead.
-	ErrStopped = errors.New("client runtime: already stopped; create a new runtime")
+	ErrStopped = errors.New("runtime: already stopped; create a new runtime")
 )
 
 // Status is the immutable snapshot a shell renders. Running reports the
@@ -407,11 +407,11 @@ func (r *Runtime) fatalError() error {
 func validate(opts Options) error {
 	switch {
 	case opts.Recorder == nil:
-		return errors.New("client.runtime: recorder is required")
+		return errors.New("runtime: recorder is required")
 	case opts.Transcriber == nil:
-		return errors.New("client.runtime: transcriber is required")
+		return errors.New("runtime: transcriber is required")
 	case opts.Injector == nil:
-		return errors.New("client.runtime: injector is required")
+		return errors.New("runtime: injector is required")
 	}
 	return nil
 }

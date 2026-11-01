@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pytest
@@ -149,12 +150,33 @@ def test_unknown_processing_key_names_field_path(tmp_path: Path) -> None:
     assert "server.processing.bogus" in str(excinfo.value)
 
 
-def test_non_loopback_host_requires_explicit_exposure(tmp_path: Path) -> None:
+def test_legacy_wildcard_host_is_accepted_and_warns(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
     write_config(tmp_path, {"host": "0.0.0.0"})
-    with pytest.raises(ConfigError) as excinfo:
-        load_config(env={}, cwd=tmp_path)
-    assert "server.host" in str(excinfo.value)
-    assert "expose_to_network" in str(excinfo.value)
+
+    with caplog.at_level(logging.WARNING, logger="kitsune_server.config"):
+        config = load_config(env={}, cwd=tmp_path)
+
+    assert config.host == "0.0.0.0"
+    assert config.expose_to_network is False
+    assert config.bind_host == "0.0.0.0"
+    assert any("expose_to_network" in record.message for record in caplog.records)
+
+
+def test_legacy_lan_host_is_accepted(tmp_path: Path) -> None:
+    write_config(tmp_path, {"host": "192.168.1.10"})
+
+    config = load_config(env={}, cwd=tmp_path)
+
+    assert config.host == "192.168.1.10"
+    assert config.bind_host == "192.168.1.10"
+
+
+def test_explicit_loopback_host_wins_over_exposure(tmp_path: Path) -> None:
+    write_config(tmp_path, {"host": "127.0.0.1", "expose_to_network": True})
+
+    assert load_config(env={}, cwd=tmp_path).bind_host == "127.0.0.1"
 
 
 def test_expose_to_network_binds_all_interfaces(tmp_path: Path) -> None:
