@@ -839,6 +839,12 @@ const pageHTML = `<!doctype html>
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
     }
+    var actions = document.getElementById("actions");
+    if (actions) {
+      var wizardActive = Boolean(v && v.wizard && v.wizard.enabled && v.wizard.active);
+      var noSections = Boolean(v && (!v.sections || v.sections.length === 0));
+      actions.style.display = (wizardActive || noSections) ? "none" : "flex";
+    }
     var wizardOutput = document.getElementById("wizard-try-output");
     if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
   }

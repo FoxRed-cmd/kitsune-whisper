@@ -144,6 +144,29 @@ func (e *wizardEnv) navigate(t *testing.T, target wizard.Step) {
 	}
 }
 
+func TestWizardActiveHidesTheSettingsFooter(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	view := shell.SettingsView{
+		View:   dictation.View{Sections: []dictation.Section{{ID: "general"}}},
+		Wizard: wiz.View(wizard.Data{Catalog: i18n.For(i18n.English)}),
+	}
+	page := shell.Page(shell.Snapshot{}, view)
+	if !strings.Contains(page, `id="actions" style="display:none"`) {
+		t.Fatal("the wizard did not hide the Settings footer")
+	}
+	if !strings.Contains(page, "wizard-steps") {
+		t.Fatal("the first paint does not contain the wizard")
+	}
+
+	_ = wiz.Close()
+	view.Wizard = wiz.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	page = shell.Page(shell.Snapshot{}, view)
+	if strings.Contains(page, `id="actions" style="display:none"`) {
+		t.Fatal("the Settings footer stayed hidden after the wizard closed")
+	}
+}
+
 func TestFirstRunOpensTheWizard(t *testing.T) {
 	wiz, _ := newWizardService(t)
 	env := newWizardEnv(t, wiz)
