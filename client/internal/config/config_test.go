@@ -341,6 +341,35 @@ func TestInvalidEnumValue(t *testing.T) {
 	assertErrorContains(t, err, "client.trigger")
 }
 
+func TestUILanguageDefaultsToTheSystemLocale(t *testing.T) {
+	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.UILanguage != "auto" {
+		t.Fatalf("ui_language = %q, want auto", cfg.UILanguage)
+	}
+}
+
+func TestUILanguageAcceptsSupportedLanguages(t *testing.T) {
+	for _, language := range []string{"auto", "en", "ru"} {
+		path := writeConfig(t, map[string]any{"ui_language": language})
+		cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+		if err != nil {
+			t.Fatalf("ui_language %q: %v", language, err)
+		}
+		if cfg.UILanguage != language {
+			t.Fatalf("ui_language = %q, want %q", cfg.UILanguage, language)
+		}
+	}
+}
+
+func TestUILanguageRejectsUnsupportedLanguages(t *testing.T) {
+	path := writeConfig(t, map[string]any{"ui_language": "de"})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.ui_language")
+}
+
 func TestWaylandDefaults(t *testing.T) {
 	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
 	if err != nil {

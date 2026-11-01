@@ -149,6 +149,7 @@ sidecar.
 | `min_recording_seconds` | number | `0.3` | Utterances shorter than this are discarded as accidental taps. |
 | `timeout_seconds` | number | `0` | Request timeout. `0` = `max(30 s, 2 × audio length)`. |
 | `language` | string | `auto` | Sent per request only when not `auto`. |
+| `ui_language` | `auto`\|`en`\|`ru` | `auto` | Language of the Settings window and Tray. `auto` follows the OS locale (`LC_ALL`/`LANGUAGE`/`LANG` on Linux, the user locale on Windows) and falls back to English. |
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
 | `refine` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Refine per request; use the Server API directly if needed. |
 | `summarize` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Summarize per request. |

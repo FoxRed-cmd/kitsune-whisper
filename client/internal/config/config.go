@@ -73,16 +73,19 @@ type ClientConfig struct {
 	MinRecordingSeconds float64         `yaml:"min_recording_seconds"`
 	TimeoutSeconds      float64         `yaml:"timeout_seconds"`
 	Language            string          `yaml:"language"`
-	InitialPrompt       string          `yaml:"initial_prompt"`
-	Audio               AudioConfig     `yaml:"audio"`
-	Paste               bool            `yaml:"paste"`
-	PasteShortcut       string          `yaml:"paste_shortcut"`
-	ClipboardRestore    string          `yaml:"clipboard_restore"`
-	WaylandTool         string          `yaml:"wayland_tool"`
-	Feedback            FeedbackConfig  `yaml:"feedback"`
-	SpoolDir            string          `yaml:"spool_dir"`
-	LogLevel            string          `yaml:"log_level"`
-	LogFile             string          `yaml:"log_file"`
+	// UILanguage selects the Settings window and Tray language: "auto"
+	// follows the operating system, "en" and "ru" pin it.
+	UILanguage       string         `yaml:"ui_language"`
+	InitialPrompt    string         `yaml:"initial_prompt"`
+	Audio            AudioConfig    `yaml:"audio"`
+	Paste            bool           `yaml:"paste"`
+	PasteShortcut    string         `yaml:"paste_shortcut"`
+	ClipboardRestore string         `yaml:"clipboard_restore"`
+	WaylandTool      string         `yaml:"wayland_tool"`
+	Feedback         FeedbackConfig `yaml:"feedback"`
+	SpoolDir         string         `yaml:"spool_dir"`
+	LogLevel         string         `yaml:"log_level"`
+	LogFile          string         `yaml:"log_file"`
 }
 
 // ActiveProfile returns the Server profile the Client routes Utterances to.
@@ -109,6 +112,7 @@ func Default() ClientConfig {
 		MinRecordingSeconds: 0.3,
 		TimeoutSeconds:      0,
 		Language:            "auto",
+		UILanguage:          "auto",
 		InitialPrompt:       "",
 		Audio:               AudioConfig{Device: ""},
 		Paste:               true,
@@ -332,6 +336,7 @@ var schema = map[string]any{
 	"min_recording_seconds": nil,
 	"timeout_seconds":       nil,
 	"language":              nil,
+	"ui_language":           nil,
 	"initial_prompt":        nil,
 	// refine and summarize are accepted for one release, warned about, and
 	// never read into ClientConfig or sent to a Server.
@@ -514,6 +519,12 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	}
 
 	if cfg.Language, err = asString(m["language"], "client.language"); err != nil {
+		return cfg, err
+	}
+	if cfg.UILanguage, err = asString(m["ui_language"], "client.ui_language"); err != nil {
+		return cfg, err
+	}
+	if err = oneOf(cfg.UILanguage, "client.ui_language", "auto", "en", "ru"); err != nil {
 		return cfg, err
 	}
 	if cfg.InitialPrompt, err = asString(m["initial_prompt"], "client.initial_prompt"); err != nil {
