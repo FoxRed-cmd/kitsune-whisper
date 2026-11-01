@@ -194,6 +194,11 @@ func TestHardwarePlan(t *testing.T) {
 			known: true, available: true, recommend: "auto",
 		},
 		{
+			name:  "fallback to the status device",
+			data:  wizard.Data{Server: trust.Status{State: trust.StateOnline, Device: "cuda"}},
+			known: true, available: true, recommend: "auto",
+		},
+		{
 			name:      "unknown server",
 			data:      wizard.Data{},
 			recommend: "auto",
@@ -298,6 +303,16 @@ func TestTryReadinessExplainsEachMissingPrerequisite(t *testing.T) {
 				return data
 			},
 			key:  "wizard.try.missing.server",
+			step: wizard.StepServer,
+		},
+		{
+			name: "server unauthenticated",
+			data: func() wizard.Data {
+				data := ready
+				data.Server.State = trust.StateUnauthenticated
+				return data
+			},
+			key:  "wizard.try.missing.unauthenticated",
 			step: wizard.StepServer,
 		},
 		{

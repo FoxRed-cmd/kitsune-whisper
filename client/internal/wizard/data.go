@@ -132,6 +132,10 @@ func PlanHardware(data Data) HardwarePlan {
 		plan.Known = true
 		plan.Resolved = models.Device
 	}
+	if plan.Resolved == "" && data.Server.Device != "" {
+		plan.Known = true
+		plan.Resolved = data.Server.Device
+	}
 	if gpu := data.Server.GPU; gpu != nil {
 		plan.Known = true
 		plan.Available = gpu.Available
@@ -207,8 +211,17 @@ func TryReadiness(data Data) []Reason {
 	case data.Servers.ActiveID == "":
 		reasons = append(reasons, Reason{Key: "wizard.try.missing.profile", Step: StepServer})
 	case data.Server.State != trust.StateOnline:
+		key := "wizard.try.missing.server"
+		switch data.Server.State {
+		case trust.StateUnauthenticated:
+			key = "wizard.try.missing.unauthenticated"
+		case trust.StateUnpinned:
+			key = "wizard.try.missing.unpinned"
+		case trust.StateMismatch:
+			key = "wizard.try.missing.mismatch"
+		}
 		reasons = append(reasons, Reason{
-			Key:  "wizard.try.missing.server",
+			Key:  key,
 			Args: []any{name},
 			Step: StepServer,
 		})
