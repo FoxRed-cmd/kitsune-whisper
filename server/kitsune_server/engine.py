@@ -138,9 +138,22 @@ class WhisperTranscriber:
         if config.offline:
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+        # The Model catalog downloads into ``download_root/<name>``; prefer that
+        # directory over the Hugging Face cache so a model downloaded through the
+        # UI is used after a Server restart.
+        model_ref = config.model
+        local_model = Path(download_root) / config.model
+        if (
+            "/" not in config.model
+            and "\\" not in config.model
+            and (local_model / "model.bin").is_file()
+            and (local_model / "config.json").is_file()
+        ):
+            model_ref = str(local_model)
+
         try:
             model = model_factory(
-                config.model,
+                model_ref,
                 device=info.device,
                 compute_type=info.compute_type,
                 download_root=download_root,
