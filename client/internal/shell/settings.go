@@ -13,6 +13,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
 
 // Settings is the Dictation settings service the window renders and edits.
@@ -31,6 +32,9 @@ type Servers interface {
 	View() servers.View
 	Config() config.ClientConfig
 	AddRemote(ctx context.Context, address, code, name string) (servers.Profile, error)
+	// EnsureLocal creates or selects the Local Server profile and auto-pairs
+	// it over loopback when it has no token.
+	EnsureLocal(ctx context.Context, address string) (servers.Profile, error)
 	SetActive(profileID string) (servers.Profile, error)
 	CheckHealth(ctx context.Context, profileID string) trust.Status
 	LoadDevices(ctx context.Context, profileID string) ([]servers.Device, error)
@@ -186,6 +190,8 @@ type SettingsView struct {
 	Labels      ServerLabels `json:"serverLabels"`
 	ModelLabels ModelLabels  `json:"modelLabels"`
 	Spool       SpoolView    `json:"spool"`
+	// Wizard is the Setup wizard view; Enabled is false in a build without it.
+	Wizard wizard.View `json:"wizard"`
 }
 
 func (s *Shell) serversView() servers.View {
@@ -356,33 +362,7 @@ func (s *Shell) catalog() i18n.Catalog {
 // settingsView renders the Settings screens, or a translated empty view when
 // no settings service is wired.
 func (s *Shell) settingsView() SettingsView {
-	serverView := s.serversView()
-	s.mu.Lock()
-	live := s.server
-	s.mu.Unlock()
-	if live.ModelState != "" {
-		// Prefer the live /status body over a cached lifecycle result, so the
-		// page, the Tray, and Diagnostics all show the same model state.
-		lifecycle := servers.ServerLifecycle{}
-		if serverView.Lifecycle != nil {
-			lifecycle = *serverView.Lifecycle
-		}
-		lifecycle.Model = live.Model
-		lifecycle.ModelPath = live.ModelPath
-		lifecycle.IdleUnloadSeconds = live.IdleUnloadSeconds
-		lifecycle.ModelState = live.ModelState
-		lifecycle.Stopped = live.Stopped
-		lifecycle.Loaded = live.Loaded
-		serverView.Lifecycle = &lifecycle
-		if serverView.Models != nil {
-			// The Models screen is another consumer of the same payload: keep
-			// its state in step with the live /status body until the next
-			// catalog refresh.
-			models := *serverView.Models
-			models.State = live.ModelState
-			serverView.Models = &models
-		}
-	}
+	serverView := s.liveServersView()
 	modelState := ""
 	if serverView.Lifecycle != nil {
 		modelState = modelLifecycleLabel(s.catalog(), serverView.Lifecycle.ModelState)
@@ -395,8 +375,39 @@ func (s *Shell) settingsView() SettingsView {
 		Labels:      s.serverLabels(),
 		ModelLabels: s.modelLabels(),
 		Spool:       s.spoolView(),
+		Wizard:      s.wizardView(),
 	}
 	return view
+}
+
+// liveServersView merges the live /status body into the cached Servers view,
+// so the page, the Tray, Diagnostics, and the wizard all show the same model
+// state. The cache stays untouched; the returned copy is what renders.
+func (s *Shell) liveServersView() servers.View {
+	serverView := s.serversView()
+	s.mu.Lock()
+	live := s.server
+	s.mu.Unlock()
+	if live.ModelState == "" {
+		return serverView
+	}
+	lifecycle := servers.ServerLifecycle{}
+	if serverView.Lifecycle != nil {
+		lifecycle = *serverView.Lifecycle
+	}
+	lifecycle.Model = live.Model
+	lifecycle.ModelPath = live.ModelPath
+	lifecycle.IdleUnloadSeconds = live.IdleUnloadSeconds
+	lifecycle.ModelState = live.ModelState
+	lifecycle.Stopped = live.Stopped
+	lifecycle.Loaded = live.Loaded
+	serverView.Lifecycle = &lifecycle
+	if serverView.Models != nil {
+		models := *serverView.Models
+		models.State = live.ModelState
+		serverView.Models = &models
+	}
+	return serverView
 }
 
 func (s *Shell) dictationView() dictation.View {
@@ -440,6 +451,13 @@ type Intent struct {
 	Seconds int `json:"seconds,omitempty"`
 	// Tail is the number of log lines for ActionLoadLogs; 0 uses 200.
 	Tail int `json:"tail,omitempty"`
+	// Hotkey and Trigger carry the wizard's hotkey step values.
+	Hotkey  string `json:"hotkey,omitempty"`
+	Trigger string `json:"trigger,omitempty"`
+	// Choice is the wizard's hardware choice: auto, cpu, or cuda.
+	Choice string `json:"choice,omitempty"`
+	// Step is the wizard step a navigation action targets.
+	Step string `json:"step,omitempty"`
 }
 
 // Intent actions.
@@ -474,13 +492,38 @@ const (
 	IntentServerRestart      = "server-restart"
 	IntentServerStop         = "server-stop"
 	IntentServerStart        = "server-start"
+
+	IntentWizardOpen           = "wizard-open"
+	IntentWizardClose          = "wizard-close"
+	IntentWizardNext           = "wizard-next"
+	IntentWizardBack           = "wizard-back"
+	IntentWizardSkip           = "wizard-skip"
+	IntentWizardSkipAll        = "wizard-skip-all"
+	IntentWizardRestart        = "wizard-restart"
+	IntentWizardFinish         = "wizard-finish"
+	IntentWizardGoTo           = "wizard-goto"
+	IntentWizardRefresh        = "wizard-refresh"
+	IntentWizardMicStart       = "wizard-mic-start"
+	IntentWizardMicStop        = "wizard-mic-stop"
+	IntentWizardValidate       = "wizard-validate-hotkey"
+	IntentWizardModelDownload  = "wizard-model-download"
+	IntentWizardModelCancel    = "wizard-model-cancel"
+	IntentWizardModelActivate  = "wizard-model-activate"
+	IntentWizardModelDefer     = "wizard-model-defer"
+	IntentWizardLocal          = "wizard-local"
+	IntentWizardPairRemote     = "wizard-pair-remote"
+	IntentWizardTryStart       = "wizard-try-start"
+	IntentWizardTryStop        = "wizard-try-stop"
+	IntentWizardTryStartServer = "wizard-try-start-server"
+	IntentWizardTryConfirm     = "wizard-try-confirm"
+	IntentWizardTryFail        = "wizard-try-fail"
 )
 
 // HandleIntent applies one page intent. Validation failures are shown in the
 // window rather than returned as errors; an error means the intent itself was
 // malformed or no settings service is available.
 func (s *Shell) HandleIntent(payload []byte) error {
-	if s.opts.Settings == nil && s.opts.Servers == nil && s.opts.Spool == nil {
+	if s.opts.Settings == nil && s.opts.Servers == nil && s.opts.Spool == nil && s.opts.Wizard == nil {
 		return errors.New("settings are not available in this build")
 	}
 	var intent Intent
@@ -606,6 +649,18 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentServerStart:
 		s.runServerAction(actionServerStart)
+		return nil
+	case IntentWizardOpen, IntentWizardClose, IntentWizardNext, IntentWizardBack,
+		IntentWizardSkip, IntentWizardSkipAll, IntentWizardRestart, IntentWizardFinish,
+		IntentWizardGoTo, IntentWizardRefresh, IntentWizardMicStart, IntentWizardMicStop,
+		IntentWizardValidate, IntentWizardModelDownload, IntentWizardModelCancel,
+		IntentWizardModelActivate, IntentWizardModelDefer, IntentWizardLocal,
+		IntentWizardPairRemote, IntentWizardTryStart, IntentWizardTryStop,
+		IntentWizardTryStartServer, IntentWizardTryConfirm, IntentWizardTryFail:
+		if s.opts.Wizard == nil {
+			return errors.New("the setup wizard is not available in this build")
+		}
+		s.handleWizardIntent(intent)
 		return nil
 	default:
 		return fmt.Errorf("settings intent: unknown action %q", intent.Action)
@@ -992,6 +1047,9 @@ func (s *Shell) pushMessages(notices, failures []string) {
 // startLevelTest opens a microphone level test and streams its levels to the
 // window.
 func (s *Shell) startLevelTest(device string) {
+	if s.opts.Settings == nil {
+		return
+	}
 	s.stopLevelTest()
 	test, err := s.opts.Settings.StartLevelTest(device)
 	if err != nil {

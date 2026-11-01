@@ -35,6 +35,20 @@ func TokenDir() string {
 // LogFile is the default path for the Client's log file.
 func LogFile() string { return filepath.Join(CacheDir(), "client.log") }
 
+// WizardState is where the first-run Setup wizard keeps its progress. It sits
+// next to the effective kitsune.yaml so a custom --config keeps its own state;
+// it is UI state, not configuration, and is never read by the Server.
+func WizardState(configPath string) string {
+	if configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "wizard.json")
+	}
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = CacheDir()
+	}
+	return filepath.Join(base, "kitsune-whisper", "wizard.json")
+}
+
 // ControlSocket is the default path of the Client's local control socket, the
 // carrier of the External trigger. It prefers the per-session runtime
 // directory, which is private and short enough for a unix socket path.

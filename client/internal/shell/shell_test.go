@@ -14,6 +14,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
 
 // fakeLogger records warning counts.
@@ -135,6 +136,7 @@ type fakeWindow struct {
 	updates  []shell.Snapshot
 	settings []shell.SettingsView
 	spools   []shell.SpoolView
+	wizards  []wizard.View
 	messages []messageUpdate
 	levels   []float64
 	onClose  func()
@@ -184,6 +186,27 @@ func (w *fakeWindow) UpdateSpool(view shell.SpoolView) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.spools = append(w.spools, view)
+}
+
+func (w *fakeWindow) UpdateWizard(view wizard.View) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.wizards = append(w.wizards, view)
+}
+
+func (w *fakeWindow) lastWizard() (wizard.View, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.wizards) == 0 {
+		return wizard.View{}, false
+	}
+	return w.wizards[len(w.wizards)-1], true
+}
+
+func (w *fakeWindow) wizardCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.wizards)
 }
 
 func (w *fakeWindow) lastSpool() (shell.SpoolView, bool) {

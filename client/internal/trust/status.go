@@ -51,6 +51,22 @@ type Status struct {
 	Stopped bool `json:"stopped,omitempty"`
 	// Loaded reports whether the model is resident.
 	Loaded bool `json:"loaded,omitempty"`
+	// Device is the resolved compute device: cuda or cpu.
+	Device string `json:"device,omitempty"`
+	// ComputeType is the resolved CTranslate2 compute type.
+	ComputeType string `json:"compute_type,omitempty"`
+	// GPU is the CUDA availability the Server reports. A nil pointer means an
+	// older Server did not report it, which is different from "no CUDA".
+	GPU *GPUStatus `json:"gpu,omitempty"`
+}
+
+// GPUStatus is the Server's CUDA availability from the authenticated /status
+// body. Available is true when at least one CUDA device was detected, even if
+// the Server is configured to use CPU.
+type GPUStatus struct {
+	Available   bool   `json:"available"`
+	DeviceCount int    `json:"device_count"`
+	Device      string `json:"device"`
 }
 
 // CheckServer probes one Server profile: /health for liveness and the version,
@@ -107,10 +123,13 @@ func CheckServer(
 // Diagnostics render. Older Servers omit these keys; the zero values keep the
 // reachability report intact.
 type statusBody struct {
-	Model             string `json:"model"`
-	ModelState        string `json:"model_state"`
-	ModelPath         string `json:"model_path"`
-	IdleUnloadSeconds int    `json:"idle_unload_seconds"`
+	Model             string     `json:"model"`
+	ModelState        string     `json:"model_state"`
+	ModelPath         string     `json:"model_path"`
+	IdleUnloadSeconds int        `json:"idle_unload_seconds"`
+	Device            string     `json:"device"`
+	ComputeType       string     `json:"compute_type"`
+	GPU               *GPUStatus `json:"gpu"`
 	Lifecycle         struct {
 		Stopped bool `json:"stopped"`
 		Loaded  bool `json:"loaded"`
@@ -129,6 +148,9 @@ func applyStatus(status *Status, body []byte) {
 	status.ModelState = parsed.ModelState
 	status.ModelPath = parsed.ModelPath
 	status.IdleUnloadSeconds = parsed.IdleUnloadSeconds
+	status.Device = parsed.Device
+	status.ComputeType = parsed.ComputeType
+	status.GPU = parsed.GPU
 	status.Stopped = parsed.Lifecycle.Stopped
 	status.Loaded = parsed.Lifecycle.Loaded
 }

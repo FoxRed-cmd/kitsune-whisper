@@ -73,6 +73,10 @@ _Avoid_: systray, tray icon, applet
 The Client's embedded window in which the user views and changes Client and Server settings.
 _Avoid_: preferences, config UI, admin panel
 
+**Setup wizard**:
+The Client's skippable first-run flow that configures the microphone, hotkey, hardware, model, and Server profile, and ends with one real Dictation cycle.
+_Avoid_: onboarding, tutorial, tour
+
 ## Flow
 
 **Utterance**:

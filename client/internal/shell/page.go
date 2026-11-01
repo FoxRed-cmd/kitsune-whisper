@@ -30,8 +30,9 @@ func Page(initial Snapshot, settings SettingsView) string {
 		language = string(settings.Language)
 	}
 	actionsStyle := ""
-	if len(settings.Sections) == 0 {
-		// A build without a settings store has nothing to save or restart.
+	if len(settings.Sections) == 0 || (settings.Wizard.Enabled && settings.Wizard.Active) {
+		// A build without a settings store has nothing to save, and the wizard
+		// has its own Back/Next footer.
 		actionsStyle = ` style="display:none"`
 	}
 	return strings.NewReplacer(
@@ -52,6 +53,9 @@ func Page(initial Snapshot, settings SettingsView) string {
 // into an HTML fragment. Every string is escaped; the fragment is inserted
 // into the page and also pushed verbatim after a save or a language switch.
 func SettingsHTML(view SettingsView) string {
+	if view.Wizard.Enabled && view.Wizard.Active {
+		return wizardHTML(view.Wizard)
+	}
 	var out strings.Builder
 	for _, section := range view.Sections {
 		out.WriteString(`<section class="group" data-section="` + escape(section.ID) + `">`)
@@ -71,6 +75,7 @@ func SettingsHTML(view SettingsView) string {
 	if view.ConfigPath != "" {
 		out.WriteString(`<p class="config-path">` + escape(view.ConfigTitle) + `: <code>` + escape(view.ConfigPath) + `</code></p>`)
 	}
+	out.WriteString(wizardLauncherHTML(view.Wizard))
 	return out.String()
 }
 
@@ -735,12 +740,26 @@ const pageHTML = `<!doctype html>
   .messages { margin-bottom:18px; }
   .notice { color:#2f9e44; margin:0 0 6px; }
   .failure { color:#d6409f; margin:0 0 6px; }
+  .failure:empty { display:none; }
   .error { margin-top:20px; padding:12px 14px; border:1px solid #d6409f55; border-radius:8px; color:#d6409f; display:none; }
   .error.visible { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .health { font-size: 12px; color: var(--muted); }
   .health[data-health="online"] { color:#2f9e44; }
   .health[data-health="offline"], .health[data-health="unauthenticated"], .health[data-health="mismatch"] { color:#d6409f; }
   .spool-text { white-space: pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .wizard-steps { list-style:none; display:flex; flex-wrap:wrap; gap:6px 10px; padding:0; margin:0 0 16px; }
+  .wizard-steps li { display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
+  .wizard-steps li[data-status="current"] { color:var(--accent); font-weight:600; }
+  .wizard-steps li[data-status="skipped"] { text-decoration:line-through; }
+  .wizard-step-number { display:inline-flex; align-items:center; justify-content:center; width:20px; height:20px; border-radius:999px; border:1px solid var(--line); font-size:11px; }
+  .wizard-steps li[data-status="done"] .wizard-step-number { background:#2f9e4433; color:#2f9e44; border-color:transparent; }
+  .wizard-steps li[data-status="current"] .wizard-step-number { background:var(--accent); color:white; border-color:transparent; }
+  .wizard-progress { color:var(--muted); font-size:13px; margin:0 0 4px; }
+  .wizard-summary { margin:10px 0; }
+  .wizard-missing { margin:8px 0; padding-left:20px; }
+  .wizard-footer { display:flex; gap:8px; flex-wrap:wrap; margin-top:18px; padding-top:14px; border-top:1px solid var(--line); }
+  .wizard textarea { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); font: inherit; resize:vertical; }
+  .wizard h4 { font-size:14px; margin:16px 0 6px; }
   footer { display:flex; gap:10px; align-items:center; margin-top: 20px; }
   button { font: inherit; padding: 8px 14px; border-radius: 8px; border:1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: white; }
@@ -796,6 +815,12 @@ const pageHTML = `<!doctype html>
     if (error) error.classList.toggle("visible", Boolean(s.error));
     var errorSettings = document.getElementById("error-settings");
     if (errorSettings) errorSettings.hidden = !s.errorAction;
+    var wizardPhase = document.querySelector("[data-wizard-phase]");
+    if (wizardPhase) wizardPhase.textContent = labels.phaseValue || "";
+    var wizardState = document.querySelector("[data-wizard-try-state]");
+    if (wizardState) wizardState.textContent = labels.state || "";
+    var wizardError = document.querySelector("[data-wizard-error]");
+    if (wizardError) wizardError.textContent = s.error || "";
   }
   function renderSettings(v) {
     var host = document.getElementById("settings");
@@ -814,6 +839,14 @@ const pageHTML = `<!doctype html>
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
     }
+    var actions = document.getElementById("actions");
+    if (actions) {
+      var wizardActive = Boolean(v && v.wizard && v.wizard.enabled && v.wizard.active);
+      var noSections = Boolean(v && (!v.sections || v.sections.length === 0));
+      actions.style.display = (wizardActive || noSections) ? "none" : "flex";
+    }
+    var wizardOutput = document.getElementById("wizard-try-output");
+    if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
   }
   function renderSpool(v) {
     var host = document.getElementById("settings");
@@ -824,6 +857,19 @@ const pageHTML = `<!doctype html>
     if (current && next) current.replaceWith(next);
     else if (current) current.remove();
     else if (next && host) host.appendChild(next);
+  }
+  function renderWizard(v) {
+    var host = document.getElementById("settings");
+    if (!host) return;
+    var current = host.querySelector("[data-section='wizard']");
+    var holder = document.createElement("div");
+    holder.innerHTML = (v && v.html) || "";
+    var next = holder.firstElementChild;
+    if (current && next) current.replaceWith(next);
+    else if (current) current.remove();
+    else if (next) host.insertBefore(next, host.firstChild);
+    var output = document.getElementById("wizard-try-output");
+    if (output && output.focus) output.focus();
   }
   function renderMessages(m) {
     var host = document.getElementById("messages");
@@ -929,6 +975,10 @@ const pageHTML = `<!doctype html>
       name: value("server-name")
     });
   }
+  function wizardValue(id) {
+    var el = document.getElementById(id);
+    return el ? el.value : "";
+  }
   function revokeDevice(button) {
     var message = button.dataset.confirm || "";
     if (message && window.confirm && !window.confirm(message)) return;
@@ -1010,6 +1060,66 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "server-stop" });
     } else if (action === "server-start") {
       sendIntent({ action: "server-start" });
+    } else if (action === "wizard-open") {
+      sendIntent({ action: "wizard-open" });
+    } else if (action === "wizard-close") {
+      sendIntent({ action: "wizard-close" });
+    } else if (action === "wizard-next") {
+      sendIntent({
+        action: "wizard-next",
+        device: wizardValue("wizard-device"),
+        hotkey: wizardValue("wizard-hotkey"),
+        trigger: wizardValue("wizard-trigger"),
+        choice: wizardValue("wizard-hardware")
+      });
+    } else if (action === "wizard-back") {
+      sendIntent({ action: "wizard-back" });
+    } else if (action === "wizard-skip") {
+      sendIntent({ action: "wizard-skip" });
+    } else if (action === "wizard-skip-all") {
+      sendIntent({ action: "wizard-skip-all" });
+    } else if (action === "wizard-restart") {
+      sendIntent({ action: "wizard-restart" });
+    } else if (action === "wizard-finish") {
+      sendIntent({ action: "wizard-finish" });
+    } else if (action === "wizard-refresh") {
+      sendIntent({ action: "wizard-refresh" });
+    } else if (action === "wizard-goto") {
+      sendIntent({ action: "wizard-goto", step: button.dataset.step || "" });
+    } else if (action === "wizard-mic-start") {
+      sendIntent({ action: "wizard-mic-start", device: wizardValue("wizard-device") });
+    } else if (action === "wizard-mic-stop") {
+      setLevel(0);
+      sendIntent({ action: "wizard-mic-stop" });
+    } else if (action === "wizard-model-download") {
+      sendIntent({ action: "wizard-model-download", model: button.dataset.model || "" });
+    } else if (action === "wizard-model-cancel") {
+      sendIntent({ action: "wizard-model-cancel", model: button.dataset.model || "" });
+    } else if (action === "wizard-model-activate") {
+      sendIntent({ action: "wizard-model-activate", model: button.dataset.model || "" });
+    } else if (action === "wizard-model-defer") {
+      sendIntent({ action: "wizard-model-defer" });
+    } else if (action === "wizard-local") {
+      sendIntent({ action: "wizard-local", address: wizardValue("wizard-local-address") });
+    } else if (action === "wizard-pair-remote") {
+      sendIntent({
+        action: "wizard-pair-remote",
+        address: wizardValue("wizard-server-address"),
+        code: wizardValue("wizard-server-code"),
+        name: wizardValue("wizard-server-name")
+      });
+    } else if (action === "wizard-try-start") {
+      var wizardOutput = document.getElementById("wizard-try-output");
+      if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
+      sendIntent({ action: "wizard-try-start" });
+    } else if (action === "wizard-try-start-server") {
+      sendIntent({ action: "wizard-try-start-server" });
+    } else if (action === "wizard-try-stop") {
+      sendIntent({ action: "wizard-try-stop" });
+    } else if (action === "wizard-try-confirm") {
+      sendIntent({ action: "wizard-try-confirm" });
+    } else if (action === "wizard-try-fail") {
+      sendIntent({ action: "wizard-try-fail" });
     }
   });
   document.addEventListener("change", function (event) {
@@ -1020,14 +1130,18 @@ const pageHTML = `<!doctype html>
     }
   });
   document.addEventListener("keydown", function (event) {
-    var el = event.target.closest ? event.target.closest("[data-hotkey]") : null;
+    var el = event.target.closest ? event.target.closest("[data-hotkey], [data-wizard-hotkey]") : null;
     if (!el) return;
     if (event.key === "Tab") return;
     event.preventDefault();
     var spec = hotkeySpec(event);
     if (!spec) return;
     el.value = spec;
-    sendIntent({ action: "validate", path: el.dataset.path, value: spec });
+    if (el.dataset.wizardHotkey) {
+      sendIntent({ action: "wizard-validate-hotkey", value: spec });
+    } else {
+      sendIntent({ action: "validate", path: el.dataset.path, value: spec });
+    }
   });
   renderStatus(__INITIAL__);
 </script>

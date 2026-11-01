@@ -22,6 +22,7 @@ type fakeServers struct {
 	cfg  config.ClientConfig
 
 	addCalls     []string
+	ensureCalls  []string
 	devicesCalls []string
 	revokeCalls  []string
 	codeCalls    []string
@@ -30,6 +31,7 @@ type fakeServers struct {
 	modelCalls   []string
 
 	pairErr    error
+	ensureErr  error
 	devicesErr error
 	revokeErr  error
 	codeErr    error
@@ -72,7 +74,10 @@ func newFakeServers() *fakeServers {
 func (f *fakeServers) View() servers.View {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.view
+	view := f.view
+	view.Profiles = append([]servers.Profile(nil), f.view.Profiles...)
+	view.Devices = append([]servers.Device(nil), f.view.Devices...)
+	return view
 }
 
 func (f *fakeServers) Config() config.ClientConfig {
@@ -92,6 +97,39 @@ func (f *fakeServers) AddRemote(_ context.Context, address, code, name string) (
 	}
 	f.mu.Unlock()
 	return profile, err
+}
+
+func (f *fakeServers) EnsureLocal(_ context.Context, address string) (servers.Profile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensureCalls = append(f.ensureCalls, address)
+	if f.ensureErr != nil {
+		// The real service returns the saved profile alongside a pairing
+		// error; the fake mirrors that when it already has a profile.
+		return f.profile, f.ensureErr
+	}
+	profile := f.profile
+	if profile.ID == "" {
+		profile = servers.Profile{ID: "local", Name: "Local Server", URL: "https://localhost:8765", AutoPair: true}
+		if address != "" {
+			profile.URL = address
+		}
+	}
+	profile.Active = true
+	f.profile = profile
+	f.view.ActiveID = profile.ID
+	f.cfg.ActiveServer = profile.ID
+	found := false
+	for i := range f.view.Profiles {
+		if f.view.Profiles[i].ID == profile.ID {
+			f.view.Profiles[i] = profile
+			found = true
+		}
+	}
+	if !found {
+		f.view.Profiles = append(f.view.Profiles, profile)
+	}
+	return profile, nil
 }
 
 func (f *fakeServers) SetActive(profileID string) (servers.Profile, error) {
@@ -211,7 +249,7 @@ func (f *fakeServers) LoadModels(_ context.Context, profileID string) (servers.M
 
 func (f *fakeServers) DownloadModel(_ context.Context, profileID, model string) (servers.ModelsView, error) {
 	return f.modelAction("download|"+profileID+"|"+model, func(view *servers.ModelsView) {
-		view.Models[0].Download = &servers.ModelDownload{Model: model, State: "downloading", ReceivedBytes: 5, TotalBytes: 10}
+		view.Models[0].Download = &servers.ModelDownload{Model: model, State: "downloading", ReceivedBytes: 5_000_000, TotalBytes: 10_000_000}
 	})
 }
 
@@ -862,10 +900,14 @@ func (f *fakeServers) PatchConfig(
 	config := f.config
 	config.Config = map[string]any{"port": patch["port"], "processing": config.Config["processing"]}
 	f.view.Config = &config
+	restart := []string{"server.port"}
+	if _, ok := patch["device"]; ok {
+		restart = []string{"server.device"}
+	}
 	return servers.ServerConfigPatch{
 		ServerConfig:    config,
 		Changed:         []string{"server.port"},
-		RestartRequired: []string{"server.port"},
+		RestartRequired: restart,
 		Written:         true,
 	}, nil
 }
