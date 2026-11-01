@@ -15,6 +15,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
@@ -268,6 +269,15 @@ func (w *window) UpdateSpool(view shell.SpoolView) {
 
 func (w *window) UpdateLevel(level float64) {
 	w.win.ExecJS("window.setLevel(" + strconv.FormatFloat(level, 'f', 4, 64) + ")")
+}
+
+// UpdateWizard re-renders only the Setup wizard section.
+func (w *window) UpdateWizard(view wizard.View) {
+	payload, err := json.Marshal(map[string]string{"html": shell.WizardHTML(view)})
+	if err != nil {
+		return
+	}
+	w.win.ExecJS("window.renderWizard(" + string(payload) + ")")
 }
 
 func (w *window) OnClose(handler func()) {

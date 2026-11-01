@@ -24,6 +24,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
 
 // ErrRestart is returned by Run when the user asked to restart the Client. The
@@ -74,6 +75,9 @@ type Window interface {
 	UpdateSpool(SpoolView)
 	// UpdateLevel renders the live microphone Input level in [0,1].
 	UpdateLevel(level float64)
+	// UpdateWizard re-renders only the Setup wizard section, so a live
+	// Dictation phase does not rebuild a step with typed inputs.
+	UpdateWizard(wizard.View)
 	// OnClose installs the handler called when the user closes the window. The
 	// handler runs off the UI thread.
 	OnClose(func())
@@ -330,6 +334,11 @@ type Options struct {
 	Servers Servers
 	// Spool is the Spool screen's service. Nil renders no Spool screen.
 	Spool Spool
+	// Wizard is the first-run Setup wizard. Nil disables the wizard screens.
+	Wizard *wizard.Service
+	// ModelPollInterval refreshes a running model download while the wizard's
+	// model step is open; 0 uses 2 seconds. Tests shorten it.
+	ModelPollInterval time.Duration
 	// ApplyConfig applies a newly saved profile list to the running runtime.
 	// Nil leaves the change for the next Client start.
 	ApplyConfig func(config.ClientConfig) error
@@ -374,6 +383,11 @@ type Shell struct {
 	healthState   string
 	modelsLoaded  string
 
+	// wizardOffered is true once the shell auto-opened the wizard or the user
+	// closed it, so a close is respected until the next process.
+	wizardOffered bool
+	wizardPoll    chan struct{}
+
 	quitCh    chan struct{}
 	restartCh chan struct{}
 	quitOnce  sync.Once
@@ -407,6 +421,7 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	defer unsubscribe()
 
 	s.update(s.opts.Runtime.Status())
+	s.maybeAutoOpenWizard()
 
 	if s.opts.Desktop == nil {
 		s.log.Warning("desktop shell is not available in this build; running headless")
@@ -548,6 +563,9 @@ func (s *Shell) update(status runtime.Status) {
 			s.opts.Notifier.Notify(*notification)
 		}
 	}
+	if s.wizardActiveStep() == wizard.StepModel {
+		s.pushWizard()
+	}
 }
 
 // pushSpool re-renders the Spool screen only. It is used when a failed
@@ -687,6 +705,7 @@ func (s *Shell) checkServer(ctx context.Context) {
 		go s.loadDevices(ctx)
 		go s.loadModelsForCheck(ctx)
 	}
+	s.maybeAutoOpenWizard()
 }
 
 // probeActiveServer is the one health probe for the active Server profile. It
@@ -736,6 +755,7 @@ func (s *Shell) checkProfiles(ctx context.Context) {
 	}
 	s.updateServer(active)
 	s.pushSettingsIfHealthChanged()
+	s.maybeAutoOpenWizard()
 	if active.State == trust.StateOnline {
 		// The Models and Devices screens follow the active profile's health:
 		// the catalog is loaded once per profile, and a running download keeps
@@ -821,6 +841,7 @@ func (s *Shell) loadModelsForCheck(ctx context.Context) {
 	s.modelsLoaded = view.ActiveID
 	s.mu.Unlock()
 	s.pushSettings()
+	s.maybeAutoOpenWizard()
 }
 
 // resetDevices forgets the cached Device list so the next check or refresh

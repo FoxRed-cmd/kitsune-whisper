@@ -57,7 +57,9 @@ type Profile struct {
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	Fingerprint string `json:"fingerprint"`
-	Active      bool   `json:"active"`
+	// AutoPair marks the Local Server profile, which pairs without a code.
+	AutoPair bool `json:"auto_pair"`
+	Active   bool `json:"active"`
 	// Health is the advisory reachability and authentication state of this
 	// profile. It is refreshed on demand and in the background, and never
 	// changes routing.
@@ -122,6 +124,10 @@ type View struct {
 // trust.CheckServer; tests inject a fake so no network peer is needed.
 type CheckFunc func(context.Context, config.ServerProfile, string, time.Duration) trust.Status
 
+// PairLocalFunc auto-pairs the Local Server profile over loopback. Production
+// uses trust.PairLocal; tests inject a fake so no network peer is needed.
+type PairLocalFunc func(context.Context, string, string, string) (trust.Pairing, error)
+
 // Options wires the service to the settings and token stores.
 type Options struct {
 	// Store is the settings store. It is required.
@@ -132,6 +138,9 @@ type Options struct {
 	Timeout time.Duration
 	// Check probes one profile's health. Nil uses trust.CheckServer.
 	Check CheckFunc
+	// PairLocal auto-pairs a loopback Local Server profile. Nil uses
+	// trust.PairLocal.
+	PairLocal PairLocalFunc
 }
 
 // Service is the Server-profile and Device-management service.
@@ -167,6 +176,9 @@ func New(opts Options) *Service {
 	}
 	if opts.Check == nil {
 		opts.Check = trust.CheckServer
+	}
+	if opts.PairLocal == nil {
+		opts.PairLocal = trust.PairLocal
 	}
 	return &Service{opts: opts, health: map[string]trust.Status{}}
 }
@@ -481,6 +493,7 @@ func profileView(cfg config.ClientConfig, profile config.ServerProfile) Profile 
 		Name:        profile.Name,
 		URL:         profile.URL,
 		Fingerprint: profile.Fingerprint,
+		AutoPair:    profile.AutoPair,
 		Active:      profile.ID == cfg.ActiveServer,
 	}
 }

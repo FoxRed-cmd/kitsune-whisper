@@ -45,6 +45,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -591,11 +592,23 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			// Server for the status card.
 			healthCheck = serverCheck(cfg, bootstrap.manager, nil)
 		}
+		// The Setup wizard keeps its resumable progress in a sibling
+		// wizard.json, never in the shared configuration file.
+		var wizardService *wizard.Service
+		if bootstrap.store != nil {
+			statePath := paths.WizardState(bootstrap.store.Snapshot().Path)
+			stateStore := wizard.NewFileStore(statePath)
+			stateStore.OnLog = func(message string) { logger.Warning("wizard: %s", message) }
+			wizardService = wizard.Open(stateStore, wizard.Options{
+				OnLog: func(message string) { logger.Warning("wizard: %s", message) },
+			})
+		}
 		sh = shell.New(shell.Options{
 			Runtime:     rt,
 			Desktop:     wails.New(wails.Options{Version: Version, Logger: logger}),
 			Settings:    settingsService,
 			Servers:     serverService,
+			Wizard:      wizardService,
 			Spool:       newSpoolService(bootstrap.store, cfg, rt),
 			ApplyConfig: rt.Apply,
 			Send:        rt.Trigger,

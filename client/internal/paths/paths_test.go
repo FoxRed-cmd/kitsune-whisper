@@ -36,3 +36,20 @@ func TestControlSocketFallsBackToCacheDir(t *testing.T) {
 		t.Fatalf("control socket = %q, want %q", got, filepath.Join(paths.CacheDir(), "control.sock"))
 	}
 }
+
+func TestWizardStateSitsNextToTheEffectiveConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "custom", "kitsune.yaml")
+	if got, want := paths.WizardState(configPath), filepath.Join(filepath.Dir(configPath), "wizard.json"); got != want {
+		t.Fatalf("WizardState(%q) = %q, want %q", configPath, got, want)
+	}
+}
+
+func TestWizardStateFallsBackToTheUserConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	got := paths.WizardState("")
+	want := filepath.Join(dir, "kitsune-whisper", "wizard.json")
+	if got != want {
+		t.Fatalf("WizardState(\"\") = %q, want %q", got, want)
+	}
+}
