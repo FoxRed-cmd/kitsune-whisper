@@ -316,6 +316,162 @@ def test_pair_cli_prints_a_code_fingerprint_and_exposure_hint(
     assert store.count() == 1
 
 
+def test_pair_reads_the_config_named_by_the_config_env_like_docker_exec(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``docker exec`` inherits env but not the image CMD, so the file must come
+    from ``KITSUNE_CONFIG``. The output names the file, which is what makes a
+    mismatched container/CLI config diagnosable."""
+
+    config = tmp_path / "config" / "kitsune.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "server": {
+                    "workers": 1,
+                    "expose_to_network": True,
+                    "devices_file": str(tmp_path / "state" / "devices.json"),
+                    "tls": {
+                        "cert_file": str(tmp_path / "state" / "tls" / "server.crt"),
+                        "key_file": str(tmp_path / "state" / "tls" / "server.key"),
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("KITSUNE_SERVER_DEVICES_FILE", raising=False)
+    monkeypatch.setenv("KITSUNE_CONFIG", str(config))
+
+    assert cli.main(["pair"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"config:      {config}" in output
+    code = output.split("code:", 1)[1].splitlines()[0].strip()
+    fingerprint = output.split("fingerprint:", 1)[1].splitlines()[0].strip()
+    assert len(code) == 8
+    assert len(fingerprint) == 64
+    assert PairingCodeStore(tmp_path / "state" / "pairing.json").count() == 1
+    key = tmp_path / "state" / "tls" / "server.key"
+    assert key.is_file()
+    assert key.stat().st_mode & 0o777 == 0o600
+    assert not (elsewhere / "kitsune.yaml").exists()
+
+
+def test_pair_uses_env_state_paths_without_a_config_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The image's env-only state redirect is enough for ``docker exec pair``."""
+
+    state = tmp_path / "state"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KITSUNE_CONFIG", raising=False)
+    monkeypatch.setenv("KITSUNE_SERVER_DEVICES_FILE", str(state / "devices.json"))
+    monkeypatch.setenv("KITSUNE_SERVER_TLS__CERT_FILE", str(state / "tls" / "server.crt"))
+    monkeypatch.setenv("KITSUNE_SERVER_TLS__KEY_FILE", str(state / "tls" / "server.key"))
+    monkeypatch.setenv("KITSUNE_SERVER_EXPOSE_TO_NETWORK", "true")
+
+    assert cli.main(["pair"]) == 0
+
+    output = capsys.readouterr().out
+    assert "config:      (built-in defaults)" in output
+    assert PairingCodeStore(state / "pairing.json").count() == 1
+    assert (state / "tls" / "server.crt").is_file()
+    assert (state / "tls" / "server.key").stat().st_mode & 0o777 == 0o600
+    assert (state / "pairing.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_pair_does_not_modify_a_read_only_config(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A read-only config is enough to generate a code; only /state must be writable."""
+
+    config = tmp_path / "config" / "kitsune.yaml"
+    config.parent.mkdir()
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "server": {
+                    "workers": 1,
+                    "expose_to_network": True,
+                    "devices_file": str(tmp_path / "state" / "devices.json"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    original = config.read_bytes()
+    config.chmod(0o444)
+    try:
+        assert cli.main(["--config", str(config), "pair"]) == 0
+    finally:
+        config.chmod(0o644)
+
+    assert config.read_bytes() == original
+    assert PairingCodeStore(tmp_path / "state" / "pairing.json").count() == 1
+    assert "code:" in capsys.readouterr().out
+
+
+def test_pair_reports_tls_disabled(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    config = tmp_path / "kitsune.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "server": {
+                    "workers": 1,
+                    "expose_to_network": True,
+                    "devices_file": str(tmp_path / "state" / "devices.json"),
+                    "tls": {"enabled": False},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert cli.main(["--config", str(config), "pair"]) == 0
+
+    output = capsys.readouterr().out
+    assert "fingerprint: (TLS is disabled)" in output
+    assert not (tmp_path / "state" / "tls").exists()
+    assert PairingCodeStore(tmp_path / "state" / "pairing.json").count() == 1
+
+
+def test_pair_reports_an_unwritable_state_directory_as_one_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A mis-mounted /state fails with one actionable line, not a traceback."""
+
+    config = tmp_path / "kitsune.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "server": {
+                    "workers": 1,
+                    "expose_to_network": True,
+                    "devices_file": str(tmp_path / "state" / "devices.json"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def refuse(path: Path, data: bytes) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("kitsune_server.pairing.write_private", refuse)
+
+    assert cli.main(["--config", str(config), "pair"]) == 1
+    error = capsys.readouterr().err
+    assert error.startswith("error:")
+    assert "read-only" in error
+
+
 def test_expose_cli_requires_an_explicit_confirmation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

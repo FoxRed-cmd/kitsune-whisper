@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 import yaml
-from kitsune_server import cli, server
+from kitsune_server import cli, lifecycle, server
 from kitsune_server.config import ServerConfig
 from kitsune_server.engine import EngineLoadError
 from kitsune_server.models import CatalogError
@@ -270,6 +270,31 @@ def test_default_log_file_lives_under_the_user_state_directory(
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
     assert server.default_log_file() == tmp_path / "state" / "kitsune-whisper" / "server.log"
+
+
+def test_lifecycle_state_and_log_share_the_xdg_state_home(tmp_path: Path) -> None:
+    """The Docker image sets XDG_STATE_HOME=/state instead of adding a schema field."""
+
+    env = {"XDG_STATE_HOME": str(tmp_path / "state")}
+    state = tmp_path / "state" / "kitsune-whisper"
+
+    assert lifecycle.lifecycle_state_path(env) == state / "lifecycle.json"
+    assert server.default_log_file(env) == state / "server.log"
+
+
+def test_exit_for_restart_uses_the_supervisor_restart_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0007: the supervisor restarts on this exit, Docker via its policy."""
+
+    exits: list[int] = []
+    monkeypatch.setattr(server.os, "_exit", exits.append)
+    monkeypatch.setattr(server.logging, "shutdown", lambda: None)
+
+    server.exit_for_restart()
+
+    assert exits == [lifecycle.RESTART_EXIT_CODE]
+    assert lifecycle.RESTART_EXIT_CODE == 75
 
 
 def test_run_server_survives_an_unwritable_log_path(
