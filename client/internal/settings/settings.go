@@ -51,6 +51,9 @@ type Field struct {
 	Locked bool
 	// Reason explains a lock, e.g. the environment variable name.
 	Reason string
+	// Mode says whether a change to this field is hot-applied or needs a
+	// restart.
+	Mode ApplyMode
 }
 
 // Snapshot is the effective Client configuration and its per-field origin.
@@ -144,8 +147,12 @@ func (s *Store) load() error {
 	if err != nil {
 		return err
 	}
+	snapshot, err := buildSnapshot(s.path, s.exists, section, s.env, s.cli, cfg)
+	if err != nil {
+		return fmt.Errorf("settings: %w", err)
+	}
 	s.section = section
-	s.snapshot = buildSnapshot(s.path, s.exists, section, s.env, s.cli, cfg)
+	s.snapshot = snapshot
 	return nil
 }
 
@@ -154,11 +161,10 @@ func (s *Store) Snapshot() Snapshot {
 	return s.snapshot
 }
 
-func buildSnapshot(path string, exists bool, section map[string]any, env map[string]string, cli map[string]any, cfg config.ClientConfig) Snapshot {
+func buildSnapshot(path string, exists bool, section map[string]any, env map[string]string, cli map[string]any, cfg config.ClientConfig) (Snapshot, error) {
 	values, err := canonicalValues(cfg)
 	if err != nil {
-		// config.ClientConfig is always marshallable, so this is unreachable.
-		panic("settings: encode effective config: " + err.Error())
+		return Snapshot{}, err
 	}
 	file := map[string]any{}
 	flatten("client", section, file)
@@ -168,7 +174,7 @@ func buildSnapshot(path string, exists bool, section map[string]any, env map[str
 	paths := config.FieldPaths()
 	fields := make([]Field, 0, len(paths))
 	for _, p := range paths {
-		f := Field{Path: p, Value: values[p], Source: SourceDefault}
+		f := Field{Path: p, Value: values[p], Source: SourceDefault, Mode: Classify(p)}
 		if _, ok := file[p]; ok {
 			f.Source = SourceFile
 		}
@@ -185,7 +191,7 @@ func buildSnapshot(path string, exists bool, section map[string]any, env map[str
 		}
 		fields = append(fields, f)
 	}
-	return Snapshot{Path: path, Exists: exists, Config: cfg, Fields: fields}
+	return Snapshot{Path: path, Exists: exists, Config: cfg, Fields: fields}, nil
 }
 
 // envName maps a field path to the environment variable that overrides it.
