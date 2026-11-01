@@ -267,6 +267,18 @@ def test_default_log_file_lives_under_the_user_state_directory(
     assert server.default_log_file() == tmp_path / "state" / "kitsune-whisper" / "server.log"
 
 
+def test_run_server_survives_an_unwritable_log_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("", encoding="utf-8")
+
+    server.run_server(ServerConfig(), port_check=allow_port, log_file=blocker / "server.log")
+
+
 def test_main_reports_engine_load_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

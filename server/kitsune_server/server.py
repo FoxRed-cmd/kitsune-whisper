@@ -51,12 +51,20 @@ def configure_logging(
         handler.close()
     formatter = logging.Formatter(LOG_FORMAT)
     handlers: list[logging.Handler] = [logging.StreamHandler(stream)]
+    log_failed = False
     if log_file is not None:
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        except OSError:
+            # An unwritable state directory must not stop the Server; the
+            # stderr handler still carries every message.
+            log_failed = True
     for handler in handlers:
         handler.setFormatter(formatter)
         root.addHandler(handler)
+    if log_failed:
+        logger.warning("cannot write the Server log to %s; logging to stderr only", log_file)
 
 
 def record_failure(log_file: Path | None, message: str) -> None:
