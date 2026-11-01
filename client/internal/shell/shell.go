@@ -119,6 +119,8 @@ const (
 	ActionServerRestart Action = "server-restart"
 	// ActionServerStop soft-stops the active Server profile.
 	ActionServerStop Action = "server-stop"
+	// ActionServerStart clears a soft-stop on the active Server profile.
+	ActionServerStart Action = "server-start"
 	// ActionQuit stops the Client.
 	ActionQuit Action = "quit"
 )
@@ -610,7 +612,11 @@ func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 		snapshot.ErrorAction = ActionSettings
 	}
 	snapshot.Profiles = s.profileStatesLocked()
-	if s.opts.Servers != nil {
+	// The live /status body is authoritative; the cached lifecycle result is a
+	// fallback for a Server that has not answered a health probe yet.
+	if s.server.ModelState != "" {
+		snapshot.ModelState = s.server.ModelState
+	} else if s.opts.Servers != nil {
 		if lifecycle := s.opts.Servers.View().Lifecycle; lifecycle != nil {
 			snapshot.ModelState = lifecycle.ModelState
 		}
@@ -675,17 +681,45 @@ func (s *Shell) checkServer(ctx context.Context) {
 		s.checkProfiles(ctx)
 		return
 	}
-	if s.opts.CheckServer == nil {
-		return
-	}
-	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	status := s.opts.CheckServer(checkCtx)
+	status := s.probeActiveServer(ctx)
 	s.updateServer(status)
 	if status.State == trust.StateOnline {
 		go s.loadDevices(ctx)
 		go s.loadModelsForCheck(ctx)
 	}
+}
+
+// probeActiveServer is the one health probe for the active Server profile. It
+// uses the Servers service (profile-scoped, cached for the Tray) whenever the
+// desktop build has one; the injected CheckServer is only the fallback for a
+// build without a settings store. awaitServer, refreshDiagnostics, and the
+// background monitor all go through here, so a normal store never leaves the
+// restart poll with a nil probe.
+func (s *Shell) probeActiveServer(ctx context.Context) trust.Status {
+	if s.opts.Servers != nil {
+		return s.probeProfile(ctx, s.activeServerID())
+	}
+	if s.opts.CheckServer == nil {
+		return trust.Status{State: trust.StateUnknown}
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return s.opts.CheckServer(checkCtx)
+}
+
+// probeProfile probes one profile with the same bounded context and the same
+// Servers.CheckHealth path. It never changes the active profile and never
+// applies a configuration.
+func (s *Shell) probeProfile(ctx context.Context, profileID string) trust.Status {
+	if s.opts.Servers == nil {
+		return trust.Status{State: trust.StateUnknown}
+	}
+	if profileID == "" {
+		return trust.Status{State: trust.StateUnknown}
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return s.opts.Servers.CheckHealth(checkCtx, profileID)
 }
 
 // checkProfiles refreshes the advisory health of every Server profile. It never
@@ -695,9 +729,7 @@ func (s *Shell) checkProfiles(ctx context.Context) {
 	view := s.opts.Servers.View()
 	active := trust.Status{State: trust.StateUnknown}
 	for _, profile := range view.Profiles {
-		checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		status := s.opts.Servers.CheckHealth(checkCtx, profile.ID)
-		cancel()
+		status := s.probeProfile(ctx, profile.ID)
 		if profile.Active {
 			active = status
 		}
@@ -842,6 +874,8 @@ func (s *Shell) handleAction(action Action) {
 		s.runServerAction(actionServerRestart)
 	case ActionServerStop:
 		s.runServerAction(actionServerStop)
+	case ActionServerStart:
+		s.runServerAction(actionServerStart)
 	case ActionQuit:
 		s.requestQuit()
 	}

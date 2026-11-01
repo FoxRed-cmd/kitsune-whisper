@@ -213,7 +213,14 @@ func TestCheckServerReportsOnlineAndVersion(t *testing.T) {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status":              "ok",
+				"model":               "small",
+				"model_state":         "stopped",
+				"model_path":          "/models/small",
+				"idle_unload_seconds": 600,
+				"lifecycle":           map[string]bool{"stopped": true, "loaded": false},
+			})
 		default:
 			http.NotFound(w, r)
 		}
@@ -225,10 +232,19 @@ func TestCheckServerReportsOnlineAndVersion(t *testing.T) {
 	if status.State != trust.StateOnline || status.Version != "1.2.3" {
 		t.Fatalf("status = %+v", status)
 	}
+	if status.Model != "small" || status.ModelState != "stopped" || status.ModelPath != "/models/small" {
+		t.Fatalf("model status = %+v", status)
+	}
+	if status.IdleUnloadSeconds != 600 || !status.Stopped || status.Loaded {
+		t.Fatalf("lifecycle fields = %+v", status)
+	}
 
 	status = trust.CheckServer(context.Background(), profile, "ktn_bad", time.Second)
 	if status.State != trust.StateUnauthenticated {
 		t.Fatalf("status = %+v", status)
+	}
+	if status.Model != "" || status.ModelState != "" {
+		t.Fatalf("an unauthorized status leaked model fields: %+v", status)
 	}
 }
 

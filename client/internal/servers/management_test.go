@@ -119,6 +119,8 @@ func TestLifecycleCallsReachTheAdminAPIAndUpdateTheView(t *testing.T) {
 
 	if result, err := service.Restart(context.Background(), profileID); err != nil || !result.Restarting {
 		t.Fatalf("restart = %+v, %v", result, err)
+	} else if result.Model != "small" || result.IdleUnloadSeconds != 600 {
+		t.Fatalf("restart payload = %+v", result)
 	}
 	if result, err := service.Stop(context.Background(), profileID); err != nil || !result.Stopped {
 		t.Fatalf("stop = %+v, %v", result, err)
@@ -135,5 +137,28 @@ func TestLifecycleCallsReachTheAdminAPIAndUpdateTheView(t *testing.T) {
 	}
 	if view.LifecycleError != "" {
 		t.Fatalf("lifecycle error = %q", view.LifecycleError)
+	}
+}
+
+func TestALegacyRestartReplyKeepsTheCachedLifecycleState(t *testing.T) {
+	service, fake, profileID := pairedService(t)
+	fake.legacyRestart = true
+
+	if _, err := service.Stop(context.Background(), profileID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	result, err := service.Restart(context.Background(), profileID)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if !result.Restarting {
+		t.Fatalf("restart result = %+v", result)
+	}
+	if !result.Stopped || result.ModelState != "stopped" || result.Model != "small" {
+		t.Fatalf("an empty restart reply blanked the model state: %+v", result)
+	}
+	view := service.View()
+	if view.Lifecycle == nil || view.Lifecycle.ModelState != "stopped" || !view.Lifecycle.Restarting {
+		t.Fatalf("view = %+v", view.Lifecycle)
 	}
 }

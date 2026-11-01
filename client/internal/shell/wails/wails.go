@@ -317,7 +317,11 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 		serverStateItem.SetEnabled(false)
 	}
 	if labels.ModelState != "" {
-		modelItem := menu.Add(labels.ModelState)
+		label := labels.ModelState
+		if snapshot.Server.Model != "" {
+			label += ": " + snapshot.Server.Model
+		}
+		modelItem := menu.Add(label)
 		modelItem.SetEnabled(false)
 	}
 	// The profile submenu is the manual Server switch. Health labels are
@@ -355,6 +359,9 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	}
 	if labels.ServerStop != "" {
 		menu.Add(labels.ServerStop).OnClick(func(*application.Context) { t.do(shell.ActionServerStop) })
+	}
+	if labels.ServerStart != "" && snapshot.ModelState == "stopped" {
+		menu.Add(labels.ServerStart).OnClick(func(*application.Context) { t.do(shell.ActionServerStart) })
 	}
 	menu.Add(labels.Restart).OnClick(func(*application.Context) { t.do(shell.ActionRestart) })
 	menu.AddSeparator()

@@ -33,11 +33,24 @@ const (
 	StateMismatch ServerState = "mismatch"
 )
 
-// Status is one Server health check result.
+// Status is one Server health check result. Model fields come from the
+// authenticated /status body and are advisory like the rest of the snapshot.
 type Status struct {
 	State   ServerState `json:"state"`
 	Version string      `json:"version,omitempty"`
 	Error   string      `json:"error,omitempty"`
+	// Model is the active model's name, when the Server reports one.
+	Model string `json:"model,omitempty"`
+	// ModelState is loaded, cold, loading, failed, or stopped.
+	ModelState string `json:"model_state,omitempty"`
+	// ModelPath is the local CTranslate2 directory, or "" for a catalog model.
+	ModelPath string `json:"model_path,omitempty"`
+	// IdleUnloadSeconds is the Server's idle unload timeout.
+	IdleUnloadSeconds int `json:"idle_unload_seconds,omitempty"`
+	// Stopped reports a soft-stopped Server.
+	Stopped bool `json:"stopped,omitempty"`
+	// Loaded reports whether the model is resident.
+	Loaded bool `json:"loaded,omitempty"`
 }
 
 // CheckServer probes one Server profile: /health for liveness and the version,
@@ -73,7 +86,8 @@ func CheckServer(
 	}
 	status := Status{State: StateUnauthenticated, Version: healthBody.Version}
 
-	if _, err := request(ctx, client, base+"/status", token); err != nil {
+	body, err := request(ctx, client, base+"/status", token)
+	if err != nil {
 		var mismatch *FingerprintMismatchError
 		if errors.As(err, &mismatch) {
 			return statusForError(err)
@@ -85,7 +99,38 @@ func CheckServer(
 		return Status{State: StateOffline, Error: err.Error()}
 	}
 	status.State = StateOnline
+	applyStatus(&status, body)
 	return status
+}
+
+// statusBody is the part of the authenticated /status response the Tray and
+// Diagnostics render. Older Servers omit these keys; the zero values keep the
+// reachability report intact.
+type statusBody struct {
+	Model             string `json:"model"`
+	ModelState        string `json:"model_state"`
+	ModelPath         string `json:"model_path"`
+	IdleUnloadSeconds int    `json:"idle_unload_seconds"`
+	Lifecycle         struct {
+		Stopped bool `json:"stopped"`
+		Loaded  bool `json:"loaded"`
+	} `json:"lifecycle"`
+}
+
+// applyStatus copies the model state from /status into the health result. The
+// body is already authenticated; an unreadable body only loses the advisory
+// fields, not the online state.
+func applyStatus(status *Status, body []byte) {
+	var parsed statusBody
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return
+	}
+	status.Model = parsed.Model
+	status.ModelState = parsed.ModelState
+	status.ModelPath = parsed.ModelPath
+	status.IdleUnloadSeconds = parsed.IdleUnloadSeconds
+	status.Stopped = parsed.Lifecycle.Stopped
+	status.Loaded = parsed.Lifecycle.Loaded
 }
 
 func clientFor(profile config.ServerProfile, timeout time.Duration) (*http.Client, error) {

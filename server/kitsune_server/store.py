@@ -46,34 +46,42 @@ ChangeImpact = Literal["hot", "restart"]
 # Fields the running Server can apply without a restart, spelled as absolute
 # field paths like the Admin API and ``server.*`` errors. Everything else needs
 # one: the listener (host/port/exposure), the engine (device/compute_type,
-# workers, download_root, offline), TLS/auth, store locations, and the bundled
-# catalog. The list is explicit rather than prefix-based so a new decode or
-# processing knob is restart-required until someone deliberately makes it hot.
+# workers, download_root, offline, model), TLS/auth, the store locations, the
+# bundled catalog, and every processing knob (the processor is built once).
 #
-# Classification is advisory until the Admin API wires live apply: today every
-# change still takes effect on the next Server start.
+# This is exactly the set ``app._APPLIED_HOT_FIELDS`` applies, plus
+# ``server.idle_unload_seconds``: the model manager owns the idle timer, so the
+# Admin API applies it live only when a manager is present and otherwise reports
+# it as restart-required. Keep the two lists in step; ``server.model`` is not
+# hot because changing it goes through ``/admin/models/activate``.
 _HOT_FIELDS = frozenset(
     {
-        "server.model",
         "server.idle_unload_seconds",
         "server.max_audio_seconds",
         "server.max_upload_mb",
-        "server.decode.task",
         "server.decode.language",
-        "server.decode.beam_size",
-        "server.decode.temperature",
-        "server.decode.vad_filter",
         "server.decode.initial_prompt",
-        "server.processing.enabled",
-        "server.processing.base_url",
-        "server.processing.api_key",
-        "server.processing.model",
-        "server.processing.extra_body",
-        "server.processing.max_output_tokens",
-        "server.processing.stage_timeout_seconds",
         "server.log_level",
     }
 )
+
+# Fields the generic ``PATCH /admin/config`` refuses. LAN exposure and
+# anonymous access bypass the Device token boundary, so they have a dedicated
+# confirmed route (``/admin/exposure``) or a host-side edit (ADR 0008). The
+# Admin API's configuration view marks them read-only; the Client cannot submit
+# them and the Server refuses a hand-written patch.
+GUARDED_CONFIG_FIELDS = ("expose_to_network", "allow_anonymous")
+
+GUARDED_CONFIG_MESSAGES: Mapping[str, str] = {
+    "expose_to_network": (
+        "security change: use POST /admin/exposure with confirm: true, or edit "
+        "server.expose_to_network on the Server host"
+    ),
+    "allow_anonymous": (
+        "security change: set server.allow_anonymous in kitsune.yaml on the "
+        "Server host and restart the Server"
+    ),
+}
 
 
 class _UnrepresentableError(Exception):
@@ -369,8 +377,9 @@ class ConfigStore:
     def impact(path: str) -> ChangeImpact:
         """Whether a change to ``path`` applies hot or needs a restart.
 
-        ``path`` is absolute (``server.decode.beam_size``); classification is
-        advisory until live apply lands.
+        ``path`` is absolute (``server.decode.beam_size``). The classification
+        is the contract for ``PATCH /admin/config``: a hot field is one the
+        running process really applies (see ``_HOT_FIELDS``).
         """
         return "hot" if path in _HOT_FIELDS else "restart"
 

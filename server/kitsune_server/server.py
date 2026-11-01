@@ -17,8 +17,8 @@ import uvicorn
 from .app import create_app
 from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
 from .engine import WhisperTranscriber
-from .gpu import detect_cuda_devices, resolve_engine
-from .lifecycle import RESTART_EXIT_CODE, Lifecycle, LifecycleError, lifecycle_state_path
+from .gpu import detect_cuda_devices
+from .lifecycle import RESTART_EXIT_CODE, Lifecycle, lifecycle_state_path
 from .llm import OpenAITextProcessor
 from .models import (
     FileModelStorage,
@@ -30,7 +30,7 @@ from .models import (
 from .pairing import PairingCodeStore, pairing_store_path
 from .processor import DisabledTextProcessor, TextProcessor
 from .store import ConfigStore
-from .transcriber import EngineInfo, Transcriber
+from .transcriber import Transcriber
 from .trust import (
     CERT_FILENAME,
     KEY_FILENAME,
@@ -183,24 +183,6 @@ def build_transcriber(
     return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
 
 
-def build_soft_stop(
-    config: ServerConfig,
-    *,
-    info: EngineInfo,
-    state_path: Path | str | None = None,
-) -> Lifecycle:
-    """The persisted soft-stop flag; the ModelManager owns the model itself."""
-    return Lifecycle(
-        _no_model_load,
-        info=info,
-        state_path=state_path if state_path is not None else lifecycle_state_path(),
-    )
-
-
-def _no_model_load() -> Transcriber:
-    raise LifecycleError("the model lifecycle is managed by the model manager")
-
-
 def exit_for_restart() -> None:
     """Exit with the supervisor-visible restart code (ADR 0007)."""
     logger.warning(
@@ -216,6 +198,7 @@ def build_model_manager(
     *,
     transcriber: Transcriber | None,
     cuda_device_count: int = 0,
+    soft_stop: Lifecycle | None = None,
 ) -> ModelManager:
     """Wire the model lifecycle to the real loader, downloader, and model directory."""
     return ModelManager(
@@ -226,6 +209,7 @@ def build_model_manager(
         storage=FileModelStorage(config.download_root),
         clock=time.monotonic,
         cuda_device_count=cuda_device_count,
+        soft_stop=soft_stop,
     )
 
 
@@ -264,18 +248,24 @@ def run_server(
     # Validate the override catalog before downloading or loading a model, so a
     # bad catalog fails with a config error instead of after a costly load.
     ModelCatalog.load(config)
-    resolved_info = resolve_engine(config, cuda_device_count=cuda_devices)
-    lifecycle = build_soft_stop(config, info=resolved_info)
-    if lifecycle.stopped:
+    soft_stop = Lifecycle(state_path=lifecycle_state_path())
+    transcriber: Transcriber | None = None
+    if soft_stop.stopped:
         logger.warning(
             "Server is soft-stopped: the model is not loaded and /transcribe returns 503 "
             "until POST /admin/start"
         )
-        transcriber: Transcriber | None = None
-        info = resolved_info
     else:
         transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
-        info = transcriber.info
+    # The manager is the one model owner; the positional Transcriber stays None
+    # when the persisted flag means no model may load at startup.
+    models = build_model_manager(
+        config,
+        transcriber=transcriber,
+        cuda_device_count=cuda_devices,
+        soft_stop=soft_stop,
+    )
+    info = models.info()
     resolved_note = (
         " (resolved from auto)" if "auto" in (config.device, config.compute_type) else ""
     )
@@ -289,10 +279,9 @@ def run_server(
     if info.device == "cpu":
         logger.warning(CPU_ESCAPE_HATCH)
     processor = build_processor(config)
-    models = build_model_manager(config, transcriber=transcriber, cuda_device_count=cuda_devices)
     app = create_app(
         config,
-        transcriber if transcriber is not None else lifecycle,
+        transcriber,
         processor,
         cuda_device_count=cuda_devices,
         devices=devices,
@@ -300,10 +289,12 @@ def run_server(
         pairing_codes=pairing_codes,
         config_store=config_store if config_store is not None else ConfigStore(),
         models=models,
-        lifecycle=lifecycle,
         log_file=log_file if log_file is not None else default_log_file(),
         restart=exit_for_restart,
     )
+    # The manager is the only owner: dropping this local reference lets an
+    # unload actually release the model while uvicorn keeps serving.
+    transcriber = None
     if config.expose_to_network:
         logger.warning(
             "server.expose_to_network is on: listening on %s:%s and reachable from the LAN",

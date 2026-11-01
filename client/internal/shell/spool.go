@@ -14,7 +14,7 @@ import (
 
 // ErrSpoolRetryFirst reports that Copy or Insert was asked for an entry whose
 // Transcription has not been produced yet. The Spool screen retries first.
-var ErrSpoolRetryFirst = errors.New("spool: retry the recording before copying or inserting its text")
+var ErrSpoolRetryFirst = errors.New("spool: retry the Utterance before copying or inserting its text")
 
 // Spool is the Spool screen's service. *SpoolService implements it, and the
 // Settings window only ever calls this interface.

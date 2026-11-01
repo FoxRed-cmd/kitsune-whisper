@@ -42,7 +42,7 @@ func Page(initial Snapshot, settings SettingsView) string {
 		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
-		"__OPEN_SETTINGS__", html.EscapeString(settings.Labels.OpenSettings),
+		"__OPEN_SETTINGS__", html.EscapeString(initial.Labels.OpenSettings),
 		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
@@ -327,7 +327,7 @@ func savedAt(seconds float64) string {
 
 // modelActions renders the one control a catalog row offers.
 func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLabels) string {
-	if downloadInProgress(model.Download) {
+	if model.Download.InProgress() {
 		return `<button type="button" data-action="cancel-download" data-model="` + escape(model.Name) + `">` + escape(labels.Cancel) + `</button>`
 	}
 	if !model.Installed {
@@ -340,11 +340,6 @@ func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLab
 	out.WriteString(`<button type="button" data-action="activate-model" data-model="` + escape(model.Name) + `">` + escape(labels.Activate) + `</button>`)
 	out.WriteString(` <button type="button" data-action="delete-model" data-model="` + escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `">` + escape(labels.Delete) + `</button>`)
 	return out.String()
-}
-
-// downloadInProgress reports a download the user can still cancel.
-func downloadInProgress(download *servers.ModelDownload) bool {
-	return download.InProgress()
 }
 
 // humanBytes matches the Server's catalog sizes without shipping translations
@@ -366,6 +361,13 @@ func humanBytes(value int64) string {
 	return strconv.FormatFloat(size, 'f', 1, 64) + " " + units[unit]
 }
 
+func idleSecondsLabel(seconds int) string {
+	if seconds <= 0 {
+		return ""
+	}
+	return strconv.Itoa(seconds) + " s"
+}
+
 func modelStateLabel(labels ModelLabels, state string) string {
 	switch state {
 	case "loaded":
@@ -376,6 +378,8 @@ func modelStateLabel(labels ModelLabels, state string) string {
 		return labels.StateLoading
 	case "failed":
 		return labels.StateFailed
+	case "stopped":
+		return labels.StateStopped
 	}
 	return state
 }
@@ -430,7 +434,6 @@ func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
 	return state
 }
 
-// lastSeen renders a Device's last use in local time.
 // serverSettingsHTML renders the active Server's effective configuration as an
 // editable form. Every field carries its absolute “server.*“ path; Go sends
 // the collected patch to the Admin API, which validates it and leaves the file
@@ -505,12 +508,19 @@ func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
 	out.WriteString(`<h2>` + escape(labels.DiagnosticsTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.DiagnosticsHelp) + `</p>`)
 	out.WriteString(`<dl class="diagnostics-versions">`)
+	idle := idleSecondsLabel(view.IdleUnloadSeconds)
+	if view.IdleUnloadSeconds == 0 {
+		idle = labels.Never
+	}
 	for _, row := range [][2]string{
 		{labels.ClientVersion, view.ClientVersion},
 		{labels.ServerVersion, view.ServerVersion},
 		{labels.DiagnosticsFor, view.Profile},
 		{labels.ServerState, view.ServerState},
+		{labels.ModelName, view.ModelName},
 		{labels.ModelState, view.ModelState},
+		{labels.ModelPath, view.ModelPath},
+		{labels.IdleUnload, idle},
 		{labels.ConfigPath, view.ConfigPath},
 	} {
 		out.WriteString(`<dt>` + escape(row[0]) + `</dt><dd>` + escape(valueOr(row[1], labels.Unavailable)) + `</dd>`)
@@ -573,6 +583,7 @@ func scalarValue(value any) bool {
 	}
 }
 
+// lastSeen renders a Device's last use in local time.
 func lastSeen(value *float64, never string) string {
 	if value == nil {
 		return never
@@ -780,6 +791,7 @@ const pageHTML = `<!doctype html>
     text("label-server-status", labels.server);
     text("label-version", labels.version);
     text("error-text", s.error);
+    if (labels.openSettings) text("error-settings", labels.openSettings);
     var error = document.getElementById("error");
     if (error) error.classList.toggle("visible", Boolean(s.error));
     var errorSettings = document.getElementById("error-settings");
@@ -794,7 +806,6 @@ const pageHTML = `<!doctype html>
       text("page-title", v.title);
     }
     if (v) text("page-subtitle", v.subtitle);
-    if (v && v.serverLabels) text("error-settings", v.serverLabels.openSettings);
     if (v && v.actions) {
       var save = document.getElementById("save-button");
       if (save && v.actions.save) save.textContent = v.actions.save;
@@ -875,21 +886,6 @@ const pageHTML = `<!doctype html>
     }
     return patch;
   }
-  function copyText(id) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    var value = el.textContent || "";
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(value).catch(function () {});
-      return;
-    }
-    var area = document.createElement("textarea");
-    area.value = value;
-    document.body.appendChild(area);
-    area.select();
-    try { document.execCommand("copy"); } catch (error) {}
-    document.body.removeChild(area);
-  }
   function sendIntent(intent) {
     fetch("/kitsune/intent", {
       method: "POST",
@@ -934,8 +930,8 @@ const pageHTML = `<!doctype html>
     });
   }
   function revokeDevice(button) {
-    var message = button.dataset.confirm || "Revoke this Device?";
-    if (window.confirm && !window.confirm(message)) return;
+    var message = button.dataset.confirm || "";
+    if (message && window.confirm && !window.confirm(message)) return;
     sendIntent({ action: "revoke-device", device_id: button.dataset.deviceId || "" });
   }
   document.addEventListener("click", function (event) {
@@ -969,8 +965,8 @@ const pageHTML = `<!doctype html>
     } else if (action === "spool-insert") {
       sendIntent({ action: "spool-insert", entry_id: button.dataset.entryId || "" });
     } else if (action === "spool-delete") {
-      var deleteMessage = button.dataset.confirm || "Delete this saved recording?";
-      if (window.confirm && !window.confirm(deleteMessage)) return;
+      var deleteMessage = button.dataset.confirm || "";
+      if (deleteMessage && window.confirm && !window.confirm(deleteMessage)) return;
       sendIntent({ action: "spool-delete", entry_id: button.dataset.entryId || "" });
     } else if (action === "settings") {
       var host = document.getElementById("settings");
@@ -992,8 +988,8 @@ const pageHTML = `<!doctype html>
       var localPath = document.getElementById("model-local-path");
       sendIntent({ action: "activate-model", path: localPath ? localPath.value : "" });
     } else if (action === "delete-model") {
-      var deleteMessage = button.dataset.confirm || "Delete this model?";
-      if (window.confirm && !window.confirm(deleteMessage)) return;
+      var deleteMessage = button.dataset.confirm || "";
+      if (deleteMessage && window.confirm && !window.confirm(deleteMessage)) return;
       sendIntent({ action: "delete-model", model: button.dataset.model || "" });
     } else if (action === "idle-timeout") {
       var idle = document.getElementById("model-idle-seconds");
@@ -1005,9 +1001,9 @@ const pageHTML = `<!doctype html>
     } else if (action === "load-logs") {
       sendIntent({ action: "load-logs" });
     } else if (action === "copy-diagnostics") {
-      copyText("diagnostics-copy");
+      sendIntent({ action: "copy-diagnostics" });
     } else if (action === "copy-logs") {
-      copyText("diagnostics-logs");
+      sendIntent({ action: "copy-logs" });
     } else if (action === "server-restart") {
       sendIntent({ action: "server-restart" });
     } else if (action === "server-stop") {

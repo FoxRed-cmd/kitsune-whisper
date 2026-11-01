@@ -2,6 +2,7 @@ package shell_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,14 @@ func newManagementShell(
 	t *testing.T, service shell.Servers, check func(context.Context) trust.Status,
 ) (*shell.Shell, *fakeDesktop) {
 	t.Helper()
+	sh, desktop, _ := newManagementShellWithRuntime(t, service, check)
+	return sh, desktop
+}
+
+func newManagementShellWithRuntime(
+	t *testing.T, service shell.Servers, check func(context.Context) trust.Status,
+) (*shell.Shell, *fakeDesktop, *fakeRuntime) {
+	t.Helper()
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
 	settings := newFakeSettings(i18n.English)
@@ -60,7 +69,7 @@ func newManagementShell(
 		RestartPollAttempts: 3,
 		Logger:              &fakeLogger{},
 	})
-	return sh, desktop
+	return sh, desktop, rt
 }
 
 func TestRefreshDiagnosticsLoadsConfigAndLogs(t *testing.T) {
@@ -313,4 +322,209 @@ func windowMessages(desktop *fakeDesktop) messageUpdate {
 	}
 	messages, _ := window.lastMessages()
 	return messages
+}
+
+func TestRestartPollsTheServersServiceWhenCheckServerIsNil(t *testing.T) {
+	service := managementService()
+	service.mu.Lock()
+	service.health["local"] = trust.Status{State: trust.StateOnline, Version: "0.9.0"}
+	service.mu.Unlock()
+	sh, desktop := newManagementShell(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	service.mu.Lock()
+	before := len(service.healthCalls)
+	service.mu.Unlock()
+	desktop.getTray().do(shell.ActionServerRestart)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		service.mu.Lock()
+		checks := len(service.healthCalls)
+		service.mu.Unlock()
+		messages := windowMessages(desktop)
+		ready := false
+		for _, notice := range messages.notices {
+			if strings.Contains(notice, "ready again") {
+				ready = true
+			}
+		}
+		snapshot := sh.Snapshot()
+		if ready && checks > before && snapshot.Server.State == trust.StateOnline {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("restart did not poll the Servers service: checks=%d before=%d snapshot=%+v messages=%+v",
+				checks, before, snapshot.Server, messages)
+		case <-time.After(time.Millisecond):
+		}
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestTrayStartServerAppearsWhenTheModelIsSoftStopped(t *testing.T) {
+	service := managementService()
+	sh, desktop := newManagementShell(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	desktop.getTray().do(shell.ActionServerStop)
+
+	deadline := time.After(2 * time.Second)
+	for sh.Snapshot().ModelState != "stopped" {
+		select {
+		case <-deadline:
+			t.Fatalf("snapshot model state = %q, want stopped", sh.Snapshot().ModelState)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if sh.Snapshot().Labels.ServerStart == "" {
+		t.Fatalf("snapshot has no Start Server label")
+	}
+
+	desktop.getTray().do(shell.ActionServerStart)
+	if len(service.startCalls) != 1 || service.startCalls[0] != "local" {
+		t.Fatalf("start calls = %v", service.startCalls)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestCopyDiagnosticsIntentUsesTheRuntimeClipboard(t *testing.T) {
+	service := managementService()
+	sh, desktop, rt := newManagementShellWithRuntime(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRefreshDiagnostics}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	view, _ := window.lastSettings()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentCopyDiagnostics}); err != nil {
+		t.Fatalf("copy intent: %v", err)
+	}
+	rt.mu.Lock()
+	copied := append([]string(nil), rt.copied...)
+	rt.mu.Unlock()
+	if len(copied) != 1 || copied[0] != view.Diagnostics.CopyText {
+		t.Fatalf("copied = %q, want the diagnostics block", copied)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestCopyLogsIntentUsesTheRuntimeClipboard(t *testing.T) {
+	service := managementService()
+	sh, desktop, rt := newManagementShellWithRuntime(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRefreshDiagnostics}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentCopyLogs}); err != nil {
+		t.Fatalf("copy intent: %v", err)
+	}
+	rt.mu.Lock()
+	copied := append([]string(nil), rt.copied...)
+	rt.mu.Unlock()
+	if len(copied) != 1 || !strings.Contains(copied[0], "line 5") {
+		t.Fatalf("copied = %q, want the log tail", copied)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestCopyDiagnosticsReportsAClipboardFailure(t *testing.T) {
+	service := managementService()
+	sh, desktop, rt := newManagementShellWithRuntime(t, service, nil)
+	rt.mu.Lock()
+	rt.copyErr = errors.New("no clipboard")
+	rt.mu.Unlock()
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRefreshDiagnostics}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentCopyDiagnostics}); err != nil {
+		t.Fatalf("copy intent: %v", err)
+	}
+	messages := windowMessages(desktop)
+	if len(messages.failures) != 1 || !strings.Contains(messages.failures[0], "clipboard") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestLiveStatusModelStateReachesTheSnapshotAndDiagnostics(t *testing.T) {
+	service := managementService()
+	service.mu.Lock()
+	service.health["local"] = trust.Status{
+		State:             trust.StateOnline,
+		Version:           "0.9.0",
+		Model:             "small",
+		ModelState:        "stopped",
+		ModelPath:         "/models/small",
+		IdleUnloadSeconds: 600,
+		Stopped:           true,
+	}
+	// The catalog cache still says loaded; the live status must win.
+	service.view.Models = &servers.ModelsView{State: "loaded", ActiveModel: "small"}
+	service.mu.Unlock()
+	sh, desktop := newManagementShell(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	deadline := time.After(2 * time.Second)
+	for sh.Snapshot().ModelState != "stopped" {
+		select {
+		case <-deadline:
+			t.Fatalf("snapshot model state = %q, want the live /status state", sh.Snapshot().ModelState)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	if sh.Snapshot().Labels.ModelState == "" {
+		t.Fatalf("snapshot has no translated model state label")
+	}
+	if sh.Snapshot().Server.Model != "small" || sh.Snapshot().Server.ModelPath != "/models/small" ||
+		sh.Snapshot().Server.IdleUnloadSeconds != 600 {
+		t.Fatalf("snapshot model data = %+v", sh.Snapshot().Server)
+	}
+
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRefreshDiagnostics}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	view, _ := window.lastSettings()
+	if view.Diagnostics.ModelName != "small" ||
+		view.Diagnostics.ModelPath != "/models/small" ||
+		view.Diagnostics.IdleUnloadSeconds != 600 ||
+		view.Diagnostics.ModelState != "Model stopped" {
+		t.Fatalf("diagnostics = %+v", view.Diagnostics)
+	}
+	if view.Servers.Models == nil || view.Servers.Models.State != "stopped" {
+		t.Fatalf("the Models screen disagrees with the live status: %+v", view.Servers.Models)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
 }

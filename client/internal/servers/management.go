@@ -41,12 +41,16 @@ type ServerLog struct {
 }
 
 // ServerLifecycle is a Server's model state after a start, stop, or restart.
+// It mirrors the flat model keys of GET /status, so the Client can consume one
+// payload from either source.
 type ServerLifecycle struct {
-	Stopped    bool   `json:"stopped"`
-	Loaded     bool   `json:"loaded"`
-	Model      string `json:"model"`
-	ModelState string `json:"model_state"`
-	Restarting bool   `json:"restarting,omitempty"`
+	Stopped           bool   `json:"stopped"`
+	Loaded            bool   `json:"loaded"`
+	Model             string `json:"model"`
+	ModelPath         string `json:"model_path,omitempty"`
+	ModelState        string `json:"model_state"`
+	IdleUnloadSeconds int    `json:"idle_unload_seconds,omitempty"`
+	Restarting        bool   `json:"restarting,omitempty"`
 }
 
 // LoadConfig reads the active profile's effective Server configuration. The
@@ -131,6 +135,17 @@ func (s *Service) runLifecycle(
 	if err != nil {
 		s.cacheLifecycle(profileID, nil, err)
 		return ServerLifecycle{}, err
+	}
+	if action == "restart" && result.ModelState == "" {
+		// An older Server returns only {"restarting": true}. Keep the last
+		// known model state instead of blanking the Tray with an empty reply.
+		s.mu.Lock()
+		if s.lifecycleFor == profileID && s.lifecycle != nil {
+			merged := *s.lifecycle
+			merged.Restarting = true
+			result = merged
+		}
+		s.mu.Unlock()
 	}
 	s.cacheLifecycle(profileID, &result, nil)
 	return result, nil

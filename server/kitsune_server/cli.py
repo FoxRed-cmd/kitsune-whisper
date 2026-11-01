@@ -323,7 +323,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _start(args: argparse.Namespace) -> int:
     from . import server as server_module
     from .engine import EngineLoadError
-    from .lifecycle import LifecycleError
 
     log_file = server_module.default_log_file()
     try:
@@ -343,7 +342,7 @@ def _start(args: argparse.Namespace) -> int:
         message = f"trust error: {exc}"
         server_module.record_failure(log_file, message)
         return _fail(message)
-    except (EngineLoadError, LifecycleError) as exc:
+    except EngineLoadError as exc:
         message = f"engine error: {exc}"
         server_module.record_failure(log_file, message)
         return _fail(message)

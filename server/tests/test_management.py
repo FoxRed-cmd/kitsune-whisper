@@ -14,10 +14,10 @@ from conftest import make_client, make_wav
 from fastapi import FastAPI
 from kitsune_server.app import create_app
 from kitsune_server.config import ServerConfig
-from kitsune_server.lifecycle import Lifecycle, LifecycleError, lifecycle_state_path
+from kitsune_server.lifecycle import Lifecycle, lifecycle_state_path
 from kitsune_server.processor import FakeTextProcessor
 from kitsune_server.store import ConfigStore
-from kitsune_server.transcriber import EngineInfo, FakeTranscriber, Transcriber
+from kitsune_server.transcriber import EngineInfo, FakeTranscriber
 
 
 def config_file(tmp_path: Path, text: str | None = None) -> Path:
@@ -49,8 +49,6 @@ def build(
     config_store: ConfigStore | None = None,
 ) -> FastAPI:
     transcriber = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    if lifecycle is None:
-        lifecycle = Lifecycle(lambda: transcriber, info=transcriber.info)
     app = create_app(
         ServerConfig(workers=1),
         transcriber,
@@ -127,20 +125,37 @@ async def test_admin_config_does_not_redact_an_unset_key(tmp_path: Path) -> None
     assert response.json()["config"]["processing"]["api_key"] is None
 
 
-async def test_a_restart_required_auth_change_does_not_apply_live(tmp_path: Path) -> None:
+async def test_generic_config_patch_refuses_anonymous_access(tmp_path: Path) -> None:
     path = config_file(tmp_path)
+    original = path.read_bytes()
     app = build(tmp_path=tmp_path, config_store=ConfigStore(path, env={}))
 
     async with make_client(app) as client:
         patched = await client.patch("/admin/config", json={"patch": {"allow_anonymous": True}})
-    assert patched.status_code == 200
-    assert patched.json()["restart_required"] == ["server.allow_anonymous"]
 
-    async with make_client(app, token="") as anonymous:
-        response = await anonymous.get("/status")
+    assert patched.status_code == 400
+    assert patched.json()["error"]["code"] == "confirmation_required"
+    assert "allow_anonymous" in patched.json()["error"]["message"]
+    assert path.read_bytes() == original
 
-    assert response.status_code == 401
-    assert response.json()["error"]["code"] == "unauthorized"
+
+async def test_generic_config_patch_refuses_lan_exposure(tmp_path: Path) -> None:
+    path = config_file(tmp_path)
+    original = path.read_bytes()
+    app = build(tmp_path=tmp_path, config_store=ConfigStore(path, env={}))
+
+    async with make_client(app) as client:
+        patched = await client.patch("/admin/config", json={"patch": {"expose_to_network": True}})
+        read = await client.get("/admin/config")
+
+    assert patched.status_code == 400
+    assert patched.json()["error"]["code"] == "confirmation_required"
+    assert "/admin/exposure" in patched.json()["error"]["message"]
+    assert path.read_bytes() == original
+    fields = read.json()["fields"]
+    assert fields["server.expose_to_network"]["locked"] is True
+    assert fields["server.expose_to_network"]["reason"]
+    assert fields["server.allow_anonymous"]["locked"] is True
 
 
 async def test_admin_config_patch_rejects_invalid_values_and_leaves_the_file(
@@ -252,7 +267,12 @@ async def test_restart_returns_accepted_and_signals_the_exit(tmp_path: Path) -> 
         response = await client.post("/admin/restart")
 
     assert response.status_code == 202
-    assert response.json() == {"restarting": True}
+    body = response.json()
+    assert body["restarting"] is True
+    assert body["stopped"] is False
+    assert body["loaded"] is True
+    assert body["model_state"] == "loaded"
+    assert body["model"] == "small"
     assert calls == ["restart"]
 
 
@@ -266,20 +286,10 @@ async def test_restart_is_unavailable_without_an_exit_action(tmp_path: Path) -> 
     assert response.json()["error"]["code"] == "restart_unavailable"
 
 
-async def test_soft_stop_unloads_the_model_and_transcribe_returns_503(tmp_path: Path) -> None:
-    unloaded: list[Transcriber] = []
-    current = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-
-    def record(transcriber: Transcriber | None) -> None:
-        assert transcriber is not None
-        unloaded.append(transcriber)
-
-    lifecycle = Lifecycle(
-        lambda: FakeTranscriber(info=EngineInfo("small", "cpu", "int8")),
-        unload=record,
-        info=current.info,
-    )
-    lifecycle.start()
+async def test_soft_stop_with_a_fixed_runtime_refuses_transcription(tmp_path: Path) -> None:
+    # The fixed adapter is the test/no-manager path: it keeps the process's
+    # model but must still honour the soft-stop contract on the HTTP seam.
+    lifecycle = Lifecycle()
     app = build(tmp_path=tmp_path, lifecycle=lifecycle)
 
     async with make_client(app) as client:
@@ -290,7 +300,8 @@ async def test_soft_stop_unloads_the_model_and_transcribe_returns_503(tmp_path: 
     assert stopped.status_code == 200
     assert stopped.json()["stopped"] is True
     assert stopped.json()["loaded"] is False
-    assert len(unloaded) == 1
+    assert stopped.json()["model_state"] == "stopped"
+    assert lifecycle.stopped is True
     assert transcription.status_code == 503
     assert transcription.json()["error"]["code"] == "stopped"
     assert status.json()["lifecycle"] == {"stopped": True, "loaded": False}
@@ -299,17 +310,25 @@ async def test_soft_stop_unloads_the_model_and_transcribe_returns_503(tmp_path: 
 
 
 async def test_start_reloads_the_model_and_clears_the_stopped_state(tmp_path: Path) -> None:
+    from kitsune_server.models import ModelManager
+
     state_path = lifecycle_state_path({"XDG_STATE_HOME": str(tmp_path / "state")})
-    loaded: list[FakeTranscriber] = []
-
-    def load() -> FakeTranscriber:
-        transcriber = FakeTranscriber(text="back again", info=EngineInfo("small", "cpu", "int8"))
-        loaded.append(transcriber)
-        return transcriber
-
-    lifecycle = Lifecycle(load, info=EngineInfo("small", "cpu", "int8"), state_path=state_path)
-    lifecycle.start()
-    app = build(tmp_path=tmp_path, lifecycle=lifecycle)
+    loader = _ManagerLoader()
+    soft_stop = Lifecycle(state_path=state_path)
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small"),
+        loader=loader,
+        storage=_ManagerStorage(),
+        soft_stop=soft_stop,
+    )
+    manager.start()
+    app = create_app(
+        manager.config,
+        None,
+        FakeTextProcessor(),
+        cuda_device_count=0,
+        models=manager,
+    )
 
     async with make_client(app) as client:
         await client.post("/admin/stop")
@@ -320,42 +339,47 @@ async def test_start_reloads_the_model_and_clears_the_stopped_state(tmp_path: Pa
     assert started.status_code == 200
     assert started.json()["stopped"] is False
     assert started.json()["loaded"] is True
-    assert len(loaded) == 2
+    assert started.json()["model_state"] == "loaded"
+    assert len(loader.calls) == 2
     assert transcription.status_code == 200
-    assert transcription.json()["text"] == "back again"
+    assert transcription.json()["text"] == "loaded again"
     assert json.loads(state_path.read_text(encoding="utf-8"))["stopped"] is False
 
 
 def test_a_soft_stop_survives_a_process_restart(tmp_path: Path) -> None:
     state_path = lifecycle_state_path({"XDG_STATE_HOME": str(tmp_path / "state")})
-    first = Lifecycle(
-        lambda: FakeTranscriber(),
-        info=EngineInfo("small", "cpu", "int8"),
-        state_path=state_path,
-    )
-    first.start()
-    first.stop()
+    first = Lifecycle(state_path=state_path)
+    first.mark_stopped()
 
-    restarted = Lifecycle(
-        lambda: FakeTranscriber(),
-        info=EngineInfo("small", "cpu", "int8"),
-        state_path=state_path,
-    )
+    restarted = Lifecycle(state_path=state_path)
 
     assert restarted.stopped is True
-    assert restarted.loaded is False
-    with pytest.raises(LifecycleError):
-        _ = restarted.transcriber
-    restarted.start()
-    assert restarted.loaded is True
+    restarted.clear()
+    assert restarted.stopped is False
+    assert Lifecycle(state_path=state_path).stopped is False
 
 
 async def test_start_reports_a_load_failure_as_unavailable(tmp_path: Path) -> None:
-    def broken() -> FakeTranscriber:
-        raise RuntimeError("model is gone")
+    from kitsune_server.models import ModelManager
 
-    lifecycle = Lifecycle(broken, info=EngineInfo("small", "cpu", "int8"), stopped=True)
-    app = build(tmp_path=tmp_path, lifecycle=lifecycle)
+    class BrokenLoader:
+        def load(self, config: ServerConfig) -> FakeTranscriber:
+            raise RuntimeError("model is gone")
+
+    soft_stop = Lifecycle(stopped=True)
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small"),
+        loader=BrokenLoader(),
+        storage=_ManagerStorage(),
+        soft_stop=soft_stop,
+    )
+    app = create_app(
+        manager.config,
+        None,
+        FakeTextProcessor(),
+        cuda_device_count=0,
+        models=manager,
+    )
 
     async with make_client(app) as client:
         response = await client.post("/admin/start")
@@ -363,7 +387,7 @@ async def test_start_reports_a_load_failure_as_unavailable(tmp_path: Path) -> No
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "engine_load_failed"
     assert "model is gone" in response.json()["error"]["message"]
-    assert lifecycle.stopped is True
+    assert soft_stop.stopped is True
 
 
 class _ManagerLoader:
@@ -408,7 +432,7 @@ async def test_soft_stop_defers_to_the_model_manager(tmp_path: Path) -> None:
     assert manager.current_transcriber() is not None
     app = create_app(
         manager.config,
-        manager.current_transcriber() or FakeTranscriber(),
+        None,
         FakeTextProcessor(),
         cuda_device_count=0,
         models=manager,
@@ -452,7 +476,7 @@ async def test_idle_unload_still_reports_cold_and_reloads_lazily(tmp_path: Path)
     )
     app = create_app(
         manager.config,
-        manager.current_transcriber() or FakeTranscriber(),
+        None,
         FakeTextProcessor(),
         cuda_device_count=0,
         models=manager,
@@ -468,3 +492,108 @@ async def test_idle_unload_still_reports_cold_and_reloads_lazily(tmp_path: Path)
     assert status.json()["ready"] is True
     assert transcribe.status_code == 200
     assert manager.state == "loaded"
+
+
+async def test_stop_start_restart_and_status_share_one_model_payload(tmp_path: Path) -> None:
+    from kitsune_server.models import ModelManager
+
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small", idle_unload_seconds=600),
+        transcriber=FakeTranscriber(text="again", info=EngineInfo("small", "cpu", "int8")),
+        loader=_ManagerLoader(),
+        storage=_ManagerStorage(),
+    )
+    app = create_app(
+        manager.config,
+        None,
+        FakeTextProcessor(),
+        cuda_device_count=0,
+        models=manager,
+        restart=lambda: None,
+    )
+
+    async with make_client(app) as client:
+        initial = (await client.get("/status")).json()
+        stopped = (await client.post("/admin/stop")).json()
+        models_after_stop = (await client.get("/admin/models")).json()
+        after_stop = (await client.get("/status")).json()
+        started = (await client.post("/admin/start")).json()
+        after_start = (await client.get("/status")).json()
+        restarted = (await client.post("/admin/restart")).json()
+
+    keys = ("model", "model_state", "model_path", "idle_unload_seconds", "stopped", "loaded")
+    for key in keys:
+        assert stopped[key] == after_stop[key]
+        assert started[key] == after_start[key]
+        assert restarted[key] == after_start[key]
+    assert stopped["model_state"] == "stopped"
+    assert stopped["loaded"] is False
+    assert after_stop["ready"] is False
+    assert models_after_stop["state"] == "stopped"
+    assert started["model_state"] == "loaded"
+    assert started["loaded"] is True
+    assert after_start["ready"] is True
+    assert restarted["restarting"] is True
+    assert initial["model"] == "small"
+    assert initial["idle_unload_seconds"] == 600
+
+
+async def test_idle_unload_is_hot_only_when_a_manager_applies_it(tmp_path: Path) -> None:
+    from kitsune_server.models import ModelManager
+
+    path = config_file(tmp_path)
+    store = ConfigStore(path, env={})
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small"),
+        transcriber=FakeTranscriber(info=EngineInfo("small", "cpu", "int8")),
+        loader=_ManagerLoader(),
+        storage=_ManagerStorage(),
+    )
+    app = create_app(
+        manager.config,
+        None,
+        FakeTextProcessor(),
+        cuda_device_count=0,
+        config_store=store,
+        models=manager,
+    )
+
+    async with make_client(app) as client:
+        patched = await client.patch("/admin/config", json={"patch": {"idle_unload_seconds": 300}})
+        status = await client.get("/status")
+
+    assert patched.status_code == 200
+    assert patched.json()["hot_applied"] == ["server.idle_unload_seconds"]
+    assert patched.json()["restart_required"] == []
+    assert manager.idle_unload_seconds == 300
+    assert status.json()["idle_unload_seconds"] == 300
+
+    # Without a manager the same edit is honestly restart-required.
+    fixed = build(tmp_path=tmp_path, config_store=ConfigStore(path, env={}))
+    async with make_client(fixed) as client:
+        fixed_patch = await client.patch(
+            "/admin/config", json={"patch": {"idle_unload_seconds": 120}}
+        )
+    assert fixed_patch.json()["hot_applied"] == []
+    assert fixed_patch.json()["restart_required"] == ["server.idle_unload_seconds"]
+
+
+def test_the_runtime_is_the_only_owner_of_the_loaded_model(tmp_path: Path) -> None:
+    import gc
+    import weakref
+
+    from kitsune_server.models import ModelManager
+
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small"),
+        loader=_ManagerLoader(),
+        storage=_ManagerStorage(),
+    )
+    manager.start()
+    # The test holds no other strong reference: stop must release the model.
+    reference = weakref.ref(manager.current_transcriber())
+    manager.stop()
+    gc.collect()
+
+    assert reference() is None
+    assert manager.current_transcriber() is None

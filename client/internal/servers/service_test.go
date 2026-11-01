@@ -59,6 +59,7 @@ type fakeServer struct {
 	configCalls    int
 	logsTail       int
 	lifecycleCalls []string
+	legacyRestart  bool
 
 	models     map[string]any
 	modelCalls []string
@@ -194,7 +195,15 @@ func newFakeServer(t *testing.T) *fakeServer {
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/restart":
 			fake.lifecycleCalls = append(fake.lifecycleCalls, "restart")
 			w.WriteHeader(http.StatusAccepted)
-			_ = json.NewEncoder(w).Encode(map[string]any{"restarting": true})
+			if fake.legacyRestart {
+				_ = json.NewEncoder(w).Encode(map[string]any{"restarting": true})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"restarting": true, "stopped": false, "loaded": true,
+				"model": "small", "model_state": "loaded", "model_path": "",
+				"idle_unload_seconds": 600,
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/stop":
 			fake.lifecycleCalls = append(fake.lifecycleCalls, "stop")
 			_ = json.NewEncoder(w).Encode(map[string]any{

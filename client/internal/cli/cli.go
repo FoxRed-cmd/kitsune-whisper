@@ -454,10 +454,13 @@ func profilePatch(profiles []config.ServerProfile) ([]any, error) {
 	return servers, nil
 }
 
-// serverCheck builds the advisory health probe the Tray and Settings poll. It
-// never changes routing and never surfaces the token. When the Local Server
-// was not running at startup, a later probe pairs it as soon as it answers,
-// so autostart order does not leave the Client permanently unpaired.
+// serverCheck builds the advisory health probe the Tray and Settings poll when
+// the desktop build has no Servers service. It never changes routing and never
+// surfaces the token, and it never writes trust state: pairing happens once in
+// prepareTrust at startup. A Local Server that starts after the Client is
+// therefore reported offline until the Client restarts; the trade-off is that
+// a health probe cannot mint a token or change a profile behind the user's
+// back. The Servers service path uses CheckHealth instead.
 func serverCheck(
 	cfg config.ClientConfig,
 	manager *trust.Manager,
@@ -475,63 +478,12 @@ func serverCheck(
 		if !ok {
 			return trust.Status{State: trust.StateUnknown}
 		}
-		// Ensure is cheap once a token and pin exist. It pairs a Local Server
-		// that started after the Client, so autostart order is irrelevant.
-		if ensured, ensureErr := manager.Ensure(ctx, current); ensureErr == nil {
-			current = ensured
-			profile, _ = current.ActiveProfile()
-		}
 		token, err := manager.Token(profile.ID)
 		if err != nil && !errors.Is(err, trust.ErrNoToken) {
 			token = ""
 		}
 		return trust.CheckServer(ctx, profile, token, 3*time.Second)
 	}
-}
-
-// profileCheck is the health probe the Servers service runs for one profile.
-// It auto-pairs the Local Server when it has no token or pin, so a Local Server
-// that starts after the Client still reports Online, and it never changes the
-// active profile.
-func profileCheck(store *settings.Store, manager *trust.Manager) servers.CheckFunc {
-	return func(
-		ctx context.Context,
-		profile config.ServerProfile,
-		token string,
-		timeout time.Duration,
-	) trust.Status {
-		if profile.AutoPair {
-			current := config.Default()
-			if store != nil {
-				current = store.Snapshot().Config
-			}
-			current.ActiveServer = profile.ID
-			if !hasProfile(current.Servers, profile.ID) {
-				current.Servers = append(append([]config.ServerProfile(nil), current.Servers...), profile)
-			}
-			if ensured, err := manager.Ensure(ctx, current); err == nil {
-				for _, candidate := range ensured.Servers {
-					if candidate.ID == profile.ID {
-						profile = candidate
-					}
-				}
-				if stored, err := manager.Token(profile.ID); err == nil {
-					token = stored
-				}
-			}
-		}
-		return trust.CheckServer(ctx, profile, token, timeout)
-	}
-}
-
-// hasProfile reports whether cfg has a profile with the given id.
-func hasProfile(profiles []config.ServerProfile, id string) bool {
-	for _, profile := range profiles {
-		if profile.ID == id {
-			return true
-		}
-	}
-	return false
 }
 
 // newSpoolService builds the Spool screen's service. The directory is read per
@@ -633,7 +585,6 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			serverService = servers.New(servers.Options{
 				Store:  bootstrap.store,
 				Tokens: bootstrap.tokens,
-				Check:  profileCheck(bootstrap.store, bootstrap.manager),
 			})
 		} else {
 			// Without a profile service the shell still probes the active
