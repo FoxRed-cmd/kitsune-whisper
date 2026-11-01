@@ -10,15 +10,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
 
 func wavBytes() []byte {
@@ -371,5 +375,62 @@ func TestInstallAutostartRejectsPositionalArguments(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "install-autostart") {
 		t.Fatalf("stderr = %q, want usage", stderr.String())
+	}
+}
+
+// nullRecorder is enough of a microphone for a control-socket test.
+type nullRecorder struct{ starts atomic.Int32 }
+
+func (r *nullRecorder) Start() error { r.starts.Add(1); return nil }
+
+func (r *nullRecorder) Stop() (cycle.Utterance, error) {
+	return cycle.Utterance{Duration: time.Second}, nil
+}
+
+func (r *nullRecorder) Cancel() error { return nil }
+
+type nullTranscriber struct{}
+
+func (nullTranscriber) Transcribe(context.Context, []byte) (transcribe.Transcription, error) {
+	return transcribe.Transcription{}, nil
+}
+
+type nullInjector struct{}
+
+func (nullInjector) Inject(string) error { return nil }
+
+// TestToggleDrivesRunningRuntime pins the CLI dispatch seam: the toggle
+// subcommand still reaches the control socket served by the headless runtime.
+func TestToggleDrivesRunningRuntime(t *testing.T) {
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+
+	cfg := config.Default()
+	cfg.MaxRecordingSeconds = 60
+	recorder := &nullRecorder{}
+	rt := runtime.New(runtime.Options{
+		Config:      cfg,
+		Recorder:    recorder,
+		Transcriber: nullTranscriber{},
+		Injector:    nullInjector{},
+		ControlPath: paths.ControlSocket(),
+	})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() { _ = rt.Stop() }()
+
+	configPath := writeConfigFile(t, map[string]any{})
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", configPath, "toggle"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for recorder.starts.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("toggle did not reach the running runtime")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
