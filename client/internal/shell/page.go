@@ -2,7 +2,9 @@ package shell
 
 import (
 	"encoding/json"
+	"fmt"
 	"html"
+	"sort"
 	"strings"
 	"time"
 
@@ -57,6 +59,8 @@ func SettingsHTML(view SettingsView) string {
 		out.WriteString(`</section>`)
 	}
 	out.WriteString(serversHTML(view.Servers, view.Labels))
+	out.WriteString(serverSettingsHTML(view.Servers, view.Labels))
+	out.WriteString(diagnosticsHTML(view.Diagnostics, view.Labels))
 	if view.DeviceError != "" {
 		out.WriteString(`<p class="device-error">` + escape(view.DeviceError) + `</p>`)
 	}
@@ -97,6 +101,19 @@ func serversHTML(view servers.View, labels ServerLabels) string {
 	out.WriteString(`<input type="text" id="server-name" autocomplete="off" spellcheck="false">`)
 	out.WriteString(`<p class="help">` + escape(labels.NameHelp) + `</p></div>`)
 	out.WriteString(`<button type="button" class="primary" data-action="pair-remote">` + escape(labels.Pair) + `</button>`)
+	out.WriteString(`<h3>` + escape(labels.ManagementTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.ManagementHelp) + `</p>`)
+	if view.Lifecycle != nil {
+		out.WriteString(`<p class="row"><strong>` + escape(labels.ModelState) + `:</strong> <span data-model-state="` + escape(view.Lifecycle.ModelState) + `">` + escape(view.Lifecycle.ModelState) + `</span></p>`)
+	}
+	if view.LifecycleError != "" {
+		out.WriteString(`<p class="failure">` + escape(view.LifecycleError) + `</p>`)
+	}
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="server-restart">` + escape(labels.RestartServer) + `</button>`)
+	out.WriteString(`<button type="button" data-action="server-stop">` + escape(labels.StopServer) + `</button>`)
+	out.WriteString(`<button type="button" data-action="server-start">` + escape(labels.StartServer) + `</button>`)
+	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
 	out.WriteString(`<section class="group" data-section="exposure">`)
@@ -150,7 +167,126 @@ func serversHTML(view servers.View, labels ServerLabels) string {
 	return out.String()
 }
 
-// lastSeen renders a Device's last use in local time.
+// serverSettingsHTML renders the active Server's effective configuration as an
+// editable form. Every field carries its absolute “server.*“ path; Go sends
+// the collected patch to the Admin API, which validates it and leaves the file
+// untouched on failure. Locked fields (environment or command-line overrides)
+// are read-only.
+func serverSettingsHTML(view servers.View, labels ServerLabels) string {
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="server-settings">`)
+	out.WriteString(`<h2>` + escape(labels.SettingsTitle) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(labels.SettingsHelp) + `</p>`)
+	if view.ConfigError != "" {
+		out.WriteString(`<p class="failure">` + escape(view.ConfigError) + `</p>`)
+	}
+	if view.Config == nil {
+		out.WriteString(`<p class="help">` + escape(labels.Unavailable) + `</p>`)
+		out.WriteString(`</section>`)
+		return out.String()
+	}
+	paths := make([]string, 0, len(view.Config.Fields))
+	for path := range view.Config.Fields {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		field := view.Config.Fields[path]
+		id := "server-" + strings.NewReplacer(".", "-", "_", "-").Replace(path)
+		out.WriteString(`<div class="field" data-field="` + escape(path) + `">`)
+		out.WriteString(`<div class="field-head"><label for="` + escape(id) + `">` + escape(path) + `</label>`)
+		switch field.Mode {
+		case "restart":
+			out.WriteString(`<span class="badge">` + escape(labels.ModeRestart) + `</span>`)
+		case "hot":
+			out.WriteString(`<span class="badge hot">` + escape(labels.ModeHot) + `</span>`)
+		}
+		if field.Source != "default" {
+			out.WriteString(`<span class="source">` + escape(field.Source) + `</span>`)
+		}
+		out.WriteString(`</div>`)
+		disabled := ""
+		if field.Locked {
+			disabled = ` disabled`
+		}
+		value := ""
+		if field.Value != nil {
+			value = fmt.Sprint(field.Value)
+		}
+		out.WriteString(`<input type="text" id="` + escape(id) + `" data-server-path="` + escape(path) +
+			`" autocomplete="off" spellcheck="false" value="` + escape(value) + `"` + disabled + `>`)
+		if field.Locked && field.Reason != "" {
+			out.WriteString(`<p class="lock">` + escape(fmt.Sprintf(labels.Locked, field.Reason)) + `</p>`)
+		}
+		out.WriteString(`</div>`)
+	}
+	out.WriteString(`<button type="button" class="primary" data-action="save-server">` + escape(labels.SaveSettings) + `</button>`)
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+// diagnosticsHTML renders versions, the redacted effective configuration, and
+// the log tail, plus copy actions for both. The copy block is the one text a
+// user pastes into a bug report.
+func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="diagnostics">`)
+	out.WriteString(`<h2>` + escape(labels.DiagnosticsTitle) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(labels.DiagnosticsHelp) + `</p>`)
+	out.WriteString(`<dl class="diagnostics-versions">`)
+	for _, row := range [][2]string{
+		{labels.ClientVersion, view.ClientVersion},
+		{labels.ServerVersion, view.ServerVersion},
+		{labels.DiagnosticsFor, view.Profile},
+		{labels.ServerState, view.ServerState},
+		{labels.ModelState, view.ModelState},
+		{labels.ConfigPath, view.ConfigPath},
+	} {
+		out.WriteString(`<dt>` + escape(row[0]) + `</dt><dd>` + escape(valueOr(row[1], labels.Unavailable)) + `</dd>`)
+	}
+	out.WriteString(`</dl>`)
+	if len(view.Redacted) > 0 {
+		out.WriteString(`<p class="help">` + escape(fmt.Sprintf(labels.Redacted, strings.Join(view.Redacted, ", "))) + `</p>`)
+	}
+	if view.Error != "" {
+		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
+	}
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="refresh-diagnostics">` + escape(labels.RefreshDiag) + `</button>`)
+	out.WriteString(`<button type="button" data-action="copy-diagnostics">` + escape(labels.CopyDiagnostics) + `</button>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`<h3>` + escape(labels.ConfigTitle) + `</h3>`)
+	if view.ConfigText == "" {
+		out.WriteString(`<p class="help">` + escape(labels.Unavailable) + `</p>`)
+	} else {
+		out.WriteString(`<pre class="diagnostics" id="diagnostics-config">` + escape(view.ConfigText) + `</pre>`)
+	}
+	out.WriteString(`<h3>` + escape(labels.LogsTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.LogsHelp) + `</p>`)
+	if view.LogPath != "" {
+		out.WriteString(`<p class="help">` + escape(labels.LogPath) + `: <code>` + escape(view.LogPath) + `</code></p>`)
+	}
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="load-logs">` + escape(labels.LoadLogs) + `</button>`)
+	out.WriteString(`<button type="button" data-action="copy-logs">` + escape(labels.CopyLogs) + `</button>`)
+	out.WriteString(`</div>`)
+	if view.LogText == "" {
+		out.WriteString(`<p class="help">` + escape(labels.NoLogs) + `</p>`)
+	} else {
+		out.WriteString(`<pre class="diagnostics" id="diagnostics-logs">` + escape(view.LogText) + `</pre>`)
+	}
+	out.WriteString(`<pre class="diagnostics copy-source" id="diagnostics-copy" hidden>` + escape(view.CopyText) + `</pre>`)
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+func valueOr(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
 func lastSeen(value *float64, never string) string {
 	if value == nil {
 		return never
@@ -275,6 +411,9 @@ const pageHTML = `<!doctype html>
   .help { color:var(--muted); margin:6px 0 0; font-size: 13px; }
   .lock { color:#c2410c; margin:6px 0 0; font-size: 13px; }
   .badge { font-size: 12px; padding:2px 8px; border-radius:999px; background:#f5a52433; color:#b45309; }
+  .badge.hot { background:#2f9e4433; color:#2f9e44; }
+  pre.diagnostics { max-height:240px; overflow:auto; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .diagnostics-versions { margin-bottom:12px; }
   .source { font-size: 12px; color:var(--muted); }
   .mic-actions { display:flex; gap:8px; margin-top:8px; }
   .meter { height:10px; border-radius:999px; background:var(--line); overflow:hidden; margin-top:8px; }
@@ -408,6 +547,38 @@ const pageHTML = `<!doctype html>
     }
     return patch;
   }
+  function collectServerPatch() {
+    var patch = {};
+    var fields = document.querySelectorAll("#settings [data-server-path]");
+    for (var i = 0; i < fields.length; i++) {
+      var el = fields[i];
+      if (el.disabled) continue;
+      var path = el.dataset.serverPath.replace(/^server\./, "");
+      var parts = path.split(".");
+      var cursor = patch;
+      for (var j = 0; j < parts.length - 1; j++) {
+        if (!cursor[parts[j]]) cursor[parts[j]] = {};
+        cursor = cursor[parts[j]];
+      }
+      cursor[parts[parts.length - 1]] = el.value;
+    }
+    return patch;
+  }
+  function copyText(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var value = el.textContent || "";
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(value).catch(function () {});
+      return;
+    }
+    var area = document.createElement("textarea");
+    area.value = value;
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); } catch (error) {}
+    document.body.removeChild(area);
+  }
   function sendIntent(intent) {
     fetch("/kitsune/intent", {
       method: "POST",
@@ -481,6 +652,22 @@ const pageHTML = `<!doctype html>
       var exposureMessage = button.dataset.confirm || "";
       if (expose === "on" && exposureMessage && window.confirm && !window.confirm(exposureMessage)) return;
       sendIntent({ action: "exposure", value: expose });
+    } else if (action === "save-server") {
+      sendIntent({ action: "save-server", patch: collectServerPatch() });
+    } else if (action === "refresh-diagnostics") {
+      sendIntent({ action: "refresh-diagnostics" });
+    } else if (action === "load-logs") {
+      sendIntent({ action: "load-logs" });
+    } else if (action === "copy-diagnostics") {
+      copyText("diagnostics-copy");
+    } else if (action === "copy-logs") {
+      copyText("diagnostics-logs");
+    } else if (action === "server-restart") {
+      sendIntent({ action: "server-restart" });
+    } else if (action === "server-stop") {
+      sendIntent({ action: "server-stop" });
+    } else if (action === "server-start") {
+      sendIntent({ action: "server-start" });
     }
   });
   document.addEventListener("change", function (event) {

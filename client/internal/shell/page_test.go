@@ -374,3 +374,123 @@ func TestServerFieldsEscapeHostileValues(t *testing.T) {
 		t.Fatal("Servers screen did not escape a hostile value")
 	}
 }
+
+func managementView() shell.SettingsView {
+	view := sampleView()
+	view.Servers.Config = &servers.ServerConfig{
+		Path: "/home/kim/.config/kitsune-whisper/kitsune.yaml",
+		Config: map[string]any{
+			"port":       float64(8765),
+			"processing": map[string]any{"api_key": "***"},
+		},
+		Fields: map[string]servers.ConfigField{
+			"server.processing.api_key": {
+				Value: "***", Source: "file", Mode: "hot",
+			},
+			"server.port": {
+				Value: float64(8765), Source: "file", Mode: "restart",
+			},
+		},
+		Redacted: []string{"server.processing.api_key"},
+	}
+	view.Servers.Logs = &servers.ServerLog{
+		Path:  "/home/kim/.local/state/kitsune-whisper/server.log",
+		Lines: []string{"line 4", "line 5"},
+	}
+	view.Servers.Lifecycle = &servers.ServerLifecycle{Loaded: true, ModelState: "loaded"}
+	view.Diagnostics = shell.DiagnosticsView{
+		ClientVersion: "1.2.3",
+		ServerVersion: "0.9.0",
+		Profile:       "Local Server",
+		ServerState:   "Online",
+		ModelState:    "loaded",
+		ConfigPath:    "/home/kim/.config/kitsune-whisper/kitsune.yaml",
+		ConfigText:    "server.port: 8765\nserver.processing.api_key: ***",
+		Redacted:      []string{"server.processing.api_key"},
+		LogPath:       "/home/kim/.local/state/kitsune-whisper/server.log",
+		LogText:       "line 4\nline 5",
+		CopyText:      "kitsune-whisper diagnostics\nclient version: 1.2.3\nline 5\n",
+	}
+	view.Labels = shell.ServerLabels{
+		Title:            "Servers",
+		ManagementTitle:  "Server management",
+		ManagementHelp:   "Restart, stop, or start.",
+		ModelState:       "Model",
+		RestartServer:    "Restart Server",
+		StopServer:       "Stop Server",
+		StartServer:      "Start Server",
+		SettingsTitle:    "Server settings",
+		SettingsHelp:     "Validated patches.",
+		SaveSettings:     "Save Server settings",
+		ModeRestart:      "Restart required",
+		ModeHot:          "Applies live",
+		Locked:           "Locked: %s",
+		DiagnosticsTitle: "Diagnostics",
+		DiagnosticsHelp:  "Versions and logs.",
+		ClientVersion:    "Client version",
+		ServerVersion:    "Server version",
+		ServerState:      "Server state",
+		DiagnosticsFor:   "Server profile",
+		ConfigPath:       "Configuration file",
+		ConfigTitle:      "Redacted configuration",
+		Redacted:         "Redacted: %s",
+		Unavailable:      "Not available",
+		LogsTitle:        "Server log",
+		LogsHelp:         "The last lines.",
+		LogPath:          "Log file",
+		NoLogs:           "No log lines.",
+		LoadLogs:         "Load log tail",
+		CopyLogs:         "Copy log",
+		CopyDiagnostics:  "Copy diagnostics",
+		RefreshDiag:      "Refresh diagnostics",
+	}
+	return view
+}
+
+func TestPageRendersServerManagementSettingsAndDiagnostics(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	for _, want := range []string{
+		"Server management",
+		`data-action="server-restart"`,
+		`data-action="server-stop"`,
+		`data-action="server-start"`,
+		"Server settings",
+		`data-action="save-server"`,
+		`data-server-path="server.port"`,
+		`data-server-path="server.processing.api_key"`,
+		"Restart required",
+		"Applies live",
+		"Diagnostics",
+		"Client version",
+		"0.9.0",
+		"Redacted: server.processing.api_key",
+		`id="diagnostics-config"`,
+		`id="diagnostics-logs"`,
+		`id="diagnostics-copy"`,
+		"line 5",
+		"kitsune-whisper diagnostics",
+		`data-action="refresh-diagnostics"`,
+		`data-action="copy-diagnostics"`,
+		`data-action="load-logs"`,
+		`data-action="copy-logs"`,
+		"navigator.clipboard",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestDiagnosticsPageEscapesHostileConfiguration(t *testing.T) {
+	const hostile = `</pre><img src=x onerror="alert(1)">&`
+	view := managementView()
+	view.Diagnostics.ConfigText = hostile
+	view.Diagnostics.LogText = hostile
+	html := shell.SettingsHTML(view)
+	if strings.Contains(html, "<img") {
+		t.Fatal("diagnostics allowed an image injection")
+	}
+	if !strings.Contains(html, "&lt;/pre&gt;") {
+		t.Fatal("diagnostics did not escape a hostile value")
+	}
+}

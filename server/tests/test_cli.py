@@ -613,7 +613,8 @@ def test_stop_help_documents_the_soft_stop_boundary(
     assert caught.value.code == 0
     help_text = capsys.readouterr().out
     assert "Admin API" in help_text
-    assert "#77" in help_text
+    assert "POST /admin/stop" in help_text
+    assert "Server host" in help_text
 
 
 def test_supervisor_invocation_points_at_the_launcher(wiring: Wiring) -> None:

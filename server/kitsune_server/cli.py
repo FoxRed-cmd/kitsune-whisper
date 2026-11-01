@@ -34,8 +34,9 @@ from .trust import (
 )
 
 STOP_EPILOG = (
-    "Soft-stop through the Admin API (unload the model but keep serving) "
-    "lands in #77; this hard-stops the supervised process."
+    "This stops the supervised process and is available only on the Server host. "
+    "Use POST /admin/stop from the Client or Settings for a soft-stop that unloads "
+    "the model but keeps the Admin API serving."
 )
 
 INSTALL_REQUIREMENT = (
@@ -322,6 +323,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _start(args: argparse.Namespace) -> int:
     from . import server as server_module
     from .engine import EngineLoadError
+    from .lifecycle import LifecycleError
 
     log_file = server_module.default_log_file()
     try:
@@ -341,7 +343,7 @@ def _start(args: argparse.Namespace) -> int:
         message = f"trust error: {exc}"
         server_module.record_failure(log_file, message)
         return _fail(message)
-    except EngineLoadError as exc:
+    except (EngineLoadError, LifecycleError) as exc:
         message = f"engine error: {exc}"
         server_module.record_failure(log_file, message)
         return _fail(message)

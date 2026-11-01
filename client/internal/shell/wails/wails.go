@@ -308,6 +308,10 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 		serverStateItem := menu.Add(labels.Server + ": " + serverState)
 		serverStateItem.SetEnabled(false)
 	}
+	if labels.ModelState != "" {
+		modelItem := menu.Add(labels.ModelState)
+		modelItem.SetEnabled(false)
+	}
 	if snapshot.Error != "" {
 		detail := menu.Add(truncate(snapshot.Error, 64))
 		detail.SetEnabled(false)
@@ -320,6 +324,14 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	menu.Add(toggleLabel).OnClick(func(*application.Context) { t.do(shell.ActionToggle) })
 	menu.AddSeparator()
 	menu.Add(labels.Settings).OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
+	if labels.ServerRestart != "" {
+		menu.Add(labels.ServerRestart).OnClick(func(*application.Context) {
+			t.do(shell.ActionServerRestart)
+		})
+	}
+	if labels.ServerStop != "" {
+		menu.Add(labels.ServerStop).OnClick(func(*application.Context) { t.do(shell.ActionServerStop) })
+	}
 	menu.Add(labels.Restart).OnClick(func(*application.Context) { t.do(shell.ActionRestart) })
 	menu.AddSeparator()
 	menu.Add(labels.Quit).OnClick(func(*application.Context) { t.do(shell.ActionQuit) })

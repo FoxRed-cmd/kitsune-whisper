@@ -14,10 +14,11 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio.to_thread
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -29,6 +30,7 @@ from .audio import AudioDecodeError, decode_audio
 from .config import ConfigError, ServerConfig, format_errors
 from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
+from .lifecycle import Lifecycle, LifecycleError
 from .pairing import (
     ExpiredPairingCodeError,
     PairingCodeStore,
@@ -37,12 +39,31 @@ from .pairing import (
     WrongPairingCodeError,
 )
 from .processor import ProcessingError, TextProcessor
+from .redact import redact_config, redact_value, strip_redacted
 from .store import ConfigStore
 from .transcriber import Transcriber, resolve_workers
 from .trust import Certificate, DeviceStore
 from .trust import Device as TrustedDevice
 
 logger = logging.getLogger("kitsune.server")
+
+# Fields this Server can apply to the running process without a restart. The
+# store classifies more fields as hot for later tickets (#76 activates models
+# online); #77 only claims what it actually applies: values read from
+# ``app.state.config`` on the next request and the log level. Everything else
+# is reported as restart-required so the UI never promises a live change that
+# did not happen.
+_APPLIED_HOT_FIELDS = frozenset(
+    {
+        "server.log_level",
+        "server.max_audio_seconds",
+        "server.max_upload_mb",
+        "server.decode.language",
+        "server.decode.initial_prompt",
+    }
+)
+
+MAX_LOG_TAIL = 1000
 
 
 class ApiError(Exception):
@@ -122,6 +143,58 @@ class ExposureRequest(BaseModel):
     confirm: bool = False
 
 
+class ConfigPatchRequest(BaseModel):
+    """A partial ``server:``-shaped patch validated like startup."""
+
+    patch: dict[str, Any] = Field(default_factory=dict)
+
+
+def _config_payload(store: ConfigStore) -> dict[str, Any]:
+    """The editable configuration with secrets masked and per-field metadata."""
+    config = store.effective()
+    document, redacted = redact_config(config)
+    fields: dict[str, Any] = {}
+    for path, state in store.states().items():
+        fields[path] = {
+            "value": redact_value(path, state.value),
+            "source": state.source,
+            "locked": state.locked,
+            "reason": state.reason,
+            "mode": state.mode,
+        }
+    return {
+        "path": str(store.target_path),
+        "config": document,
+        "redacted": redacted,
+        "fields": fields,
+    }
+
+
+def _tail_lines(path: Path, limit: int) -> tuple[list[str], bool]:
+    """Read the last ``limit`` lines, reporting whether older lines exist."""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        lines = [line.rstrip("\r\n") for line in handle]
+    truncated = len(lines) > limit
+    return lines[-limit:], truncated
+
+
+def _model_state(lifecycle: Lifecycle) -> str:
+    if lifecycle.stopped:
+        return "stopped"
+    if lifecycle.loaded:
+        return "loaded"
+    return "cold"
+
+
+def _lifecycle_payload(lifecycle: Lifecycle) -> dict[str, Any]:
+    return {
+        "stopped": lifecycle.stopped,
+        "loaded": lifecycle.loaded,
+        "model": lifecycle.info.model,
+        "model_state": _model_state(lifecycle),
+    }
+
+
 def is_loopback_address(host: str | None) -> bool:
     """Return True when the HTTP peer is on the loopback interface."""
     if not host:
@@ -146,6 +219,9 @@ def create_app(
     certificate: Certificate | None = None,
     pairing_codes: PairingCodeStore | None = None,
     config_store: ConfigStore | None = None,
+    lifecycle: Lifecycle | None = None,
+    log_file: Path | None = None,
+    restart: Callable[[], None] | None = None,
     version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
@@ -157,6 +233,10 @@ def create_app(
     Client pins; it is absent when TLS is explicitly disabled.
     ``pairing_codes`` holds the one-time Pairing codes; ``config_store`` is the
     only writer of the Server YAML and backs the LAN exposure switch.
+    ``lifecycle`` owns the loaded model and the persisted soft-stop; ``None``
+    wraps ``transcriber`` in memory so existing tests and throwaway Servers
+    keep working. ``log_file`` backs ``GET /admin/logs`` and ``restart`` is the
+    supervised self-exit action (tests inject a recorder, production exits).
     """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
@@ -167,6 +247,11 @@ def create_app(
     app.state.config_store = config_store
     app.state.certificate = certificate
     app.state.version = version
+    app.state.lifecycle = (
+        lifecycle if lifecycle is not None else Lifecycle.from_transcriber(transcriber)
+    )
+    app.state.log_file = Path(log_file).expanduser() if log_file is not None else None
+    app.state.restart = restart
     if cuda_device_count is None:
         cuda_device_count = detect_cuda_devices()
     app.state.cuda_device_count = cuda_device_count
@@ -209,7 +294,7 @@ def create_app(
             return _StageOutcome(text, False, f"{name} requested but processing is disabled")
         if not available:
             return _StageOutcome(text, False, f"{name} requested but unavailable")
-        timeout = config.processing.stage_timeout_seconds
+        timeout = app.state.config.processing.stage_timeout_seconds
         try:
             output = await asyncio.wait_for(
                 anyio.to_thread.run_sync(
@@ -238,7 +323,7 @@ def create_app(
         The failure message never says whether a token is unknown or revoked:
         the store cannot tell them apart, and neither should the response.
         """
-        if config.allow_anonymous:
+        if app.state.config.allow_anonymous:
             return None
         header = request.headers.get("authorization")
         unauthorized = {
@@ -280,9 +365,11 @@ def create_app(
         device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
     ) -> dict[str, Any]:
         """Authenticated status for the Tray, Settings, and diagnostics."""
-        info = transcriber.info
+        active = app.state.config
+        lifecycle = app.state.lifecycle
+        info = lifecycle.info
         capability = processor.info
-        gpu = gpu_status(config, cuda_device_count=app.state.cuda_device_count)
+        gpu = gpu_status(active, cuda_device_count=app.state.cuda_device_count)
         certificate = app.state.certificate
         return {
             "status": "ok",
@@ -290,7 +377,9 @@ def create_app(
             "model": info.model,
             "device": info.device,
             "compute_type": info.compute_type,
-            "ready": bool(app.state.ready),
+            "ready": bool(app.state.ready) and lifecycle.loaded and not lifecycle.stopped,
+            "model_state": _model_state(lifecycle),
+            "lifecycle": {"stopped": lifecycle.stopped, "loaded": lifecycle.loaded},
             "processing": {
                 "enabled": capability.enabled,
                 "refine": capability.refine,
@@ -299,12 +388,12 @@ def create_app(
             "gpu": gpu.as_dict(),
             "tls_fingerprint": certificate.fingerprint if certificate is not None else "",
             "network": {
-                "expose_to_network": config.expose_to_network,
-                "bind_host": config.bind_host,
-                "port": config.port,
+                "expose_to_network": active.expose_to_network,
+                "bind_host": active.bind_host,
+                "port": active.port,
             },
             "auth": {
-                "anonymous": config.allow_anonymous,
+                "anonymous": active.allow_anonymous,
                 "device": device.name if device else None,
             },
         }
@@ -447,6 +536,154 @@ def create_app(
             "restart_required": list(result.restart_required),
         }
 
+    @app.get("/admin/config")
+    async def read_config(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Read the effective Server configuration with secrets masked."""
+        del device
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot read its configuration; edit kitsune.yaml on the "
+                "Server host instead",
+            )
+        try:
+            payload = _config_payload(store)
+        except ConfigError as exc:
+            raise ApiError(409, "config_invalid", str(exc)) from exc
+        return payload
+
+    @app.patch("/admin/config")
+    async def patch_config(
+        payload: ConfigPatchRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Validate and atomically write a partial ``server:`` patch.
+
+        Validation is exactly startup's; nothing is written on failure. A
+        secret echoed back as the redaction placeholder is dropped, never
+        written over the real value. Only hot fields this Server actually
+        applies are reported as ``hot_applied``; everything else needs a
+        restart.
+        """
+        del device
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot write its configuration; edit kitsune.yaml on the "
+                "Server host instead",
+            )
+        changes = strip_redacted(payload.patch)
+        if not changes:
+            try:
+                payload_out = _config_payload(store)
+            except ConfigError as exc:
+                raise ApiError(409, "config_invalid", str(exc)) from exc
+            return {
+                **payload_out,
+                "changed": [],
+                "hot_applied": [],
+                "restart_required": [],
+                "written": False,
+            }
+        try:
+            result = store.patch(changes)
+        except ConfigError as exc:
+            raise ApiError(400, "bad_request", str(exc)) from exc
+        app.state.config = result.config
+        if "server.log_level" in result.changed:
+            logging.getLogger("kitsune").setLevel(result.config.log_level.upper())
+        hot = [path for path in result.changed if path in _APPLIED_HOT_FIELDS]
+        restart = [path for path in result.changed if path not in _APPLIED_HOT_FIELDS]
+        payload_out = _config_payload(store)
+        return {
+            **payload_out,
+            "changed": list(result.changed),
+            "hot_applied": hot,
+            "restart_required": restart,
+            "written": result.written,
+        }
+
+    @app.get("/admin/logs")
+    async def read_logs(
+        tail: Annotated[int, Query(ge=1, le=MAX_LOG_TAIL)] = 200,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Return the last ``tail`` lines of the Server log file."""
+        del device
+        log_file = app.state.log_file
+        if log_file is None:
+            raise ApiError(
+                503,
+                "log_unavailable",
+                "this Server is not writing a log file; run it as a supervised "
+                "background process or set --log-file",
+            )
+        try:
+            lines, truncated = _tail_lines(log_file, tail)
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "log_unavailable",
+                f"the Server log {log_file} cannot be read: {exc}",
+            ) from exc
+        return {
+            "path": str(log_file),
+            "lines": lines,
+            "truncated": truncated,
+            "tail": tail,
+        }
+
+    @app.post("/admin/restart", status_code=202)
+    async def restart_server(
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Answer ``202``, then exit so the supervisor starts the Server again."""
+        del device
+        action = app.state.restart
+        if action is None:
+            raise ApiError(
+                503,
+                "restart_unavailable",
+                "this Server cannot restart itself; stop and start it on the Server host",
+            )
+        background.add_task(action)
+        return {"restarting": True}
+
+    @app.post("/admin/stop")
+    async def stop_server(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Soft-stop: unload the model, persist the state, keep the API alive."""
+        del device
+        lifecycle = app.state.lifecycle
+        lifecycle.stop()
+        logger.warning(
+            "Server soft-stopped: the model is unloaded and /transcribe returns 503 "
+            "until POST /admin/start"
+        )
+        return _lifecycle_payload(lifecycle)
+
+    @app.post("/admin/start")
+    async def start_server(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Clear a soft-stop and load the model again."""
+        del device
+        lifecycle = app.state.lifecycle
+        try:
+            lifecycle.start()
+        except LifecycleError as exc:
+            raise ApiError(503, "engine_load_failed", str(exc)) from exc
+        logger.info("Server started: model %s is loaded", lifecycle.info.model)
+        return _lifecycle_payload(lifecycle)
+
     @app.post("/transcribe", dependencies=[Depends(authenticate)])
     async def transcribe(
         audio: Annotated[UploadFile, File()],
@@ -455,39 +692,46 @@ def create_app(
         refine: Annotated[bool, Form()] = False,
         summarize: Annotated[bool, Form()] = False,
     ) -> dict[str, Any]:
+        lifecycle = app.state.lifecycle
+        try:
+            active_transcriber = lifecycle.transcriber
+        except LifecycleError as exc:
+            code = "stopped" if lifecycle.stopped else "model_not_loaded"
+            raise ApiError(503, code, str(exc)) from exc
+        active = app.state.config
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
         try:
-            max_bytes = int(config.max_upload_mb * 1024 * 1024)
+            max_bytes = int(active.max_upload_mb * 1024 * 1024)
             declared_size = getattr(audio, "size", None)
             if declared_size is not None and declared_size > max_bytes:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"upload exceeds {config.max_upload_mb:g} MB",
+                    f"upload exceeds {active.max_upload_mb:g} MB",
                 )
             data = await audio.read()
             if len(data) > max_bytes:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"upload exceeds {config.max_upload_mb:g} MB",
+                    f"upload exceeds {active.max_upload_mb:g} MB",
                 )
             try:
                 clip = await run_in_threadpool(decode_audio, data)
             except AudioDecodeError as exc:
                 raise ApiError(415, "unsupported_media", f"could not decode audio: {exc}") from exc
-            if clip.duration > config.max_audio_seconds:
+            if clip.duration > active.max_audio_seconds:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"audio exceeds {config.max_audio_seconds} s",
+                    f"audio exceeds {active.max_audio_seconds} s",
                 )
             result = await run_in_threadpool(
-                transcriber.transcribe,
+                active_transcriber.transcribe,
                 clip,
-                language=_effective_language(language, config),
-                initial_prompt=_effective_prompt(initial_prompt, config),
+                language=_effective_language(language, active),
+                initial_prompt=_effective_prompt(initial_prompt, active),
             )
         finally:
             app.state.semaphore.release()
@@ -496,7 +740,7 @@ def create_app(
         delivered = raw_text
         applied = {"refine": False, "summarize": False}
         warnings: list[str] = []
-        prompt_language = result.language if config.decode.task == "transcribe" else "en"
+        prompt_language = result.language if active.decode.task == "transcribe" else "en"
 
         # Fixed pipeline: Refine always precedes Summarize, each built on the
         # previous stage's delivered text.

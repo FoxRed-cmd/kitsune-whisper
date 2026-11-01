@@ -53,9 +53,10 @@ section is ignored entirely. Validation is fail-fast and names the offending
 field path. The configuration is read once at startup. The configuration stores
 (the Server's `kitsune_server.store` and the Client's settings store) classify
 each change as hot-applied or restart-required, and write their section
-atomically while preserving the rest of the file. Classification is advisory
-until live apply lands with the Settings window and the Admin API: until then
-**every persisted change still takes effect on the next start**.
+atomically while preserving the rest of the file. The Server's Admin API now
+applies a narrow hot subset (log level, upload and audio limits, decode language
+and initial prompt) and reports the rest as restart-required; other hot
+classification remains advisory until the runtime reloads those values.
 
 Check a config without starting either process:
 
@@ -205,6 +206,34 @@ window's **Servers and Devices** screen offers the same on/off buttons with a
 confirmation. The Admin API's
 `POST /admin/exposure` with `{"expose": true, "confirm": true}` writes the same
 setting and reports `restart_required`; it never rebinds a running listener.
+
+## Server management and diagnostics
+
+The same Device token protects the Server-management endpoints. The Settings
+window and the Tray call them for the active Server profile, including a Remote
+Server:
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /admin/config` | Effective configuration, per-field source and hot/restart classification, and the list of redacted paths. |
+| `PATCH /admin/config` | Validate and atomically write `{"patch": {...}}` with the same rules as startup. An invalid patch returns `400` and leaves the file byte-for-byte unchanged. |
+| `GET /admin/logs?tail=N` | The last `N` lines (1–1000, default 200) of the Server log and whether older lines were cut. |
+| `POST /admin/restart` | Answer `202`, then exit with code `75`; systemd `Restart=on-failure`, Task Scheduler `RestartOnFailure`, and Docker bring the Server back. The Client polls health until it is ready. |
+| `POST /admin/stop` | Soft-stop: unload the model, persist `stopped`, keep the Admin API alive. `/transcribe` returns `503` with code `stopped`. |
+| `POST /admin/start` | Clear the soft-stop, load the model again, and accept transcription. |
+
+A soft-stop survives a process restart, so a supervised restart does not
+silently reload a model the user deliberately unloaded. A hard process stop is
+still available only on the Server host (`kitsune-server stop`).
+
+`GET /admin/config` masks every secret before sending it. Today that is
+`server.processing.api_key`, shown as `***` and listed under `redacted`; Device
+token hashes never leave the Device store and are not part of the
+configuration. A patch that echoes the `***` placeholder back is dropped rather
+than writing the marker over the real key. Changes the running Server can apply
+immediately (log level, upload and audio limits, decode language and initial
+prompt) are reported under `hot_applied`; everything else is reported under
+`restart_required`.
 
 The Client keeps each token in the OS keychain (Windows Credential Manager,
 Linux Secret Service) and falls back to a file with mode `0600` under

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import os
 import socket
 import sys
 from collections.abc import Callable
@@ -15,7 +16,8 @@ import uvicorn
 from .app import create_app
 from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
 from .engine import WhisperTranscriber
-from .gpu import detect_cuda_devices
+from .gpu import detect_cuda_devices, resolve_engine
+from .lifecycle import RESTART_EXIT_CODE, Lifecycle, lifecycle_state_path
 from .llm import OpenAITextProcessor
 from .pairing import PairingCodeStore, pairing_store_path
 from .processor import DisabledTextProcessor, TextProcessor
@@ -173,6 +175,39 @@ def build_transcriber(
     return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
 
 
+def build_lifecycle(
+    config: ServerConfig,
+    *,
+    cuda_device_count: int | None = None,
+    state_path: Path | str | None = None,
+) -> Lifecycle:
+    """Own the real model load/unload and the persisted soft-stop.
+
+    The fallback info resolves ``device``/``compute_type`` without loading, so
+    a Server that boots soft-stopped still reports what it will load.
+    """
+    devices = detect_cuda_devices() if cuda_device_count is None else cuda_device_count
+
+    def load() -> Transcriber:
+        return build_transcriber(config, cuda_device_count=devices)
+
+    return Lifecycle(
+        load,
+        info=resolve_engine(config, cuda_device_count=devices),
+        state_path=state_path if state_path is not None else lifecycle_state_path(),
+    )
+
+
+def exit_for_restart() -> None:
+    """Exit with the supervisor-visible restart code (ADR 0007)."""
+    logger.warning(
+        "restarting: exiting with %s so the supervisor starts the Server again",
+        RESTART_EXIT_CODE,
+    )
+    logging.shutdown()
+    os._exit(RESTART_EXIT_CODE)
+
+
 def build_processor(config: ServerConfig) -> TextProcessor:
     """Build the processing port; the endpoint is called lazily per stage."""
     if not config.processing.enabled:
@@ -205,8 +240,19 @@ def run_server(
         )
     # Detect once so model loading and /status cannot disagree.
     cuda_devices = detect_cuda_devices()
-    transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
-    info = transcriber.info
+    lifecycle = build_lifecycle(
+        config,
+        cuda_device_count=cuda_devices,
+        state_path=lifecycle_state_path(),
+    )
+    if lifecycle.stopped:
+        logger.warning(
+            "Server is soft-stopped: the model is not loaded and /transcribe returns 503 "
+            "until POST /admin/start"
+        )
+    else:
+        lifecycle.start()
+    info = lifecycle.info
     resolved_note = (
         " (resolved from auto)" if "auto" in (config.device, config.compute_type) else ""
     )
@@ -222,13 +268,16 @@ def run_server(
     processor = build_processor(config)
     app = create_app(
         config,
-        transcriber,
+        lifecycle,
         processor,
         cuda_device_count=cuda_devices,
         devices=devices,
         certificate=certificate,
         pairing_codes=pairing_codes,
         config_store=config_store if config_store is not None else ConfigStore(),
+        lifecycle=lifecycle,
+        log_file=log_file if log_file is not None else default_log_file(),
+        restart=exit_for_restart,
     )
     if config.expose_to_network:
         logger.warning(
