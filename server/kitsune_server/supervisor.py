@@ -19,15 +19,18 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
-import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config import config_home, platform_name
+
 UNIT_NAME = "kitsune-server.service"
 TASK_NAME = "kitsune-server"
 
-ARCHIVE_DIR = "kitsune-whisper"
+# APP_DIR_NAME names the per-user directory under the OS config home, next to
+# kitsune.yaml; the cached task XML lives there.
+APP_DIR_NAME = "kitsune-whisper"
 
 
 @dataclass(frozen=True)
@@ -114,30 +117,13 @@ class Environment:
         run: Runner | None = None,
     ) -> Environment:
         """Build the production environment for this process."""
-        resolved_os = os_name or _current_platform()
+        resolved_os = os_name or platform_name()
         environ = os.environ if environ is None else environ
         return cls(
             os_name=resolved_os,
-            config_home=_config_home(resolved_os, environ),
+            config_home=config_home(environ, os_name=resolved_os),
             run=run or _default_runner,
         )
-
-
-def _current_platform() -> str:
-    if sys.platform == "win32":
-        return "windows"
-    if sys.platform.startswith("linux"):
-        return "linux"
-    return sys.platform
-
-
-def _config_home(os_name: str, environ: Mapping[str, str]) -> Path:
-    home = Path(environ.get("HOME") or Path.home())
-    if os_name == "windows":
-        base = environ.get("APPDATA")
-        return Path(base) if base else home / "AppData" / "Roaming"
-    base = environ.get("XDG_CONFIG_HOME")
-    return Path(base) if base else home / ".config"
 
 
 class SupervisorError(Exception):
@@ -154,7 +140,7 @@ def unit_path(env: Environment) -> Path:
 
 def task_path(env: Environment) -> Path:
     """The cached Task Scheduler XML path."""
-    return env.config_home / ARCHIVE_DIR / "kitsune-server-task.xml"
+    return env.config_home / APP_DIR_NAME / "kitsune-server-task.xml"
 
 
 # -- generation ------------------------------------------------------------
@@ -283,6 +269,10 @@ def uninstall(env: Environment) -> None:
         _try(env, ["systemctl", "--user", "daemon-reload"])
         return
     if env.os_name == "windows":
+        # A running pythonw.exe holds files in %LOCALAPPDATA%\kitsune-whisper\
+        # Server, so the task is ended before the bundle is deleted. /End fails
+        # for an already stopped task, which is still a successful uninstall.
+        _try(env, ["schtasks", "/End", "/TN", TASK_NAME])
         _try(env, ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"])
         _remove_file(task_path(env))
         return

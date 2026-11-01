@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from kitsune_server import config as config_module
 from kitsune_server.cli import main
 from kitsune_server.config import (
     ConfigError,
@@ -12,6 +13,10 @@ from kitsune_server.config import (
     ServerConfig,
     dump_config,
     load_config,
+    platform_name,
+    resolve_config_file,
+    user_config_dir,
+    user_state_dir,
 )
 
 
@@ -301,6 +306,53 @@ def test_discovered_config_from_cwd(tmp_path: Path) -> None:
     write_config(tmp_path, {"model": "tiny"})
     config = load_config(env={}, cwd=tmp_path)
     assert config.model == "tiny"
+
+
+def test_resolve_config_file_matches_startup_discovery(tmp_path: Path) -> None:
+    local = write_config(tmp_path, {})
+    explicit = tmp_path / "explicit.yaml"
+    explicit.write_text("", encoding="utf-8")
+
+    assert resolve_config_file(None, env={}, cwd=tmp_path) == local.resolve()
+    assert resolve_config_file(str(explicit), env={}, cwd=tmp_path) == explicit.resolve()
+    assert (
+        resolve_config_file(None, env={"KITSUNE_CONFIG": str(explicit)}, cwd=tmp_path)
+        == explicit.resolve()
+    )
+
+
+def test_resolve_config_file_reports_none_without_a_file(tmp_path: Path) -> None:
+    assert resolve_config_file(None, env={}, cwd=tmp_path) is None
+
+
+def test_resolve_config_file_finds_the_user_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config_module, "user_config_dir", lambda env=None: tmp_path / "user")
+    user_file = tmp_path / "user" / "kitsune.yaml"
+    user_file.parent.mkdir()
+    user_file.write_text("", encoding="utf-8")
+
+    assert resolve_config_file(None, env={}, cwd=tmp_path / "empty") == user_file.resolve()
+
+
+def test_user_state_dir_uses_the_xdg_state_home(tmp_path: Path) -> None:
+    base = user_state_dir({"XDG_STATE_HOME": str(tmp_path / "state"), "HOME": str(tmp_path)})
+
+    assert base == tmp_path / "state" / "kitsune-whisper"
+
+
+def test_platform_name_maps_the_python_platforms() -> None:
+    assert platform_name("win32") == "windows"
+    assert platform_name("linux") == "linux"
+    assert platform_name("darwin") == "darwin"
+
+
+def test_user_config_dir_shares_the_platform_rules(tmp_path: Path) -> None:
+    environ = {"HOME": str(tmp_path), "APPDATA": str(tmp_path / "roaming")}
+
+    assert user_config_dir(environ, os_name="windows") == tmp_path / "roaming" / "kitsune-whisper"
+    assert user_config_dir(environ, os_name="linux") == tmp_path / ".config" / "kitsune-whisper"
 
 
 def test_dump_config_wraps_in_server_key() -> None:

@@ -215,13 +215,65 @@ def test_build_transcriber_loads_whisper_adapter(monkeypatch: pytest.MonkeyPatch
     assert calls["config"] is config
 
 
+def test_run_server_writes_its_output_to_the_log_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
+    log_file = tmp_path / "state" / "server.log"
+
+    server.run_server(ServerConfig(), port_check=allow_port, log_file=log_file)
+
+    assert "model=small" in log_file.read_text(encoding="utf-8")
+
+
+def test_start_writes_a_fatal_config_error_to_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_file = tmp_path / "state" / "server.log"
+    monkeypatch.setattr(server, "default_log_file", lambda: log_file)
+
+    assert cli.main(["--config", str(tmp_path / "missing.yaml")]) == 1
+
+    assert "config error" in log_file.read_text(encoding="utf-8")
+    assert "config error" in capsys.readouterr().err
+
+
+def test_start_writes_a_port_conflict_to_the_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    log_file = tmp_path / "state" / "server.log"
+    monkeypatch.setattr(server, "default_log_file", lambda: log_file)
+
+    def taken(config: ServerConfig, log_file: Path | None = None) -> None:
+        raise server.PortInUseError(
+            "server.port 8765 is already in use on 127.0.0.1; change server.port"
+        )
+
+    monkeypatch.setattr(server, "run_server", taken)
+
+    assert cli.main(["start"]) == 1
+
+    assert "server.port 8765" in log_file.read_text(encoding="utf-8")
+    assert "error: server.port 8765" in capsys.readouterr().err
+
+
+def test_default_log_file_lives_under_the_user_state_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    assert server.default_log_file() == tmp_path / "state" / "kitsune-whisper" / "server.log"
+
+
 def test_main_reports_engine_load_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     path = tmp_path / "kitsune.yaml"
     path.write_text(yaml.safe_dump({"server": {"model": "small"}}), encoding="utf-8")
 
-    def boom(config: ServerConfig) -> None:
+    def boom(config: ServerConfig, *, log_file: Path | None = None) -> None:
         raise EngineLoadError("model unavailable")
 
     monkeypatch.setattr(server, "run_server", boom)

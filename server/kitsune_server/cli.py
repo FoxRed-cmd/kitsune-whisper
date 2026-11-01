@@ -12,12 +12,12 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, get_args
 
 from . import __version__, bundle, supervisor
-from .config import ConfigError, Device, ServerConfig, dump_config, load_config
+from .config import ConfigError, Device, ServerConfig, dump_config, load_config, resolve_config_file
 
 STOP_EPILOG = (
     "Soft-stop through the Admin API (unload the model but keep serving) "
@@ -165,19 +165,40 @@ def _supervisor_env() -> supervisor.Environment:
 def _bundle_installer(
     layout: bundle.Layout,
     models_dir: Path | None = None,
+    config_file: str = "",
 ) -> bundle.BundleInstaller:
-    return bundle.BundleInstaller(layout, models_dir=models_dir)
+    return bundle.BundleInstaller(layout, models_dir=models_dir, config_file=config_file)
 
 
 def _models_dir(config: ServerConfig) -> Path:
     return Path(config.download_root).expanduser()
 
 
-def _absolute_config(path: str | None) -> str | None:
-    """Pin the config path: the supervisor's working directory is not the shell's."""
-    if not path:
-        return None
-    return str(Path(path).expanduser().resolve())
+def _port_check(host: str, port: int) -> None:
+    """Fail with the same actionable message startup prints for a taken port."""
+    from .server import check_port_available
+
+    check_port_available(host, port)
+
+
+def _config_file(args: argparse.Namespace) -> str:
+    """Pin the absolute file the supervisor will read, resolved like startup."""
+    path = resolve_config_file(getattr(args, "config", None))
+    return str(path) if path is not None else ""
+
+
+def _default_config_path(layout: bundle.Layout) -> str:
+    return str(layout.config_dir / "kitsune.yaml")
+
+
+def _supervised_config_path(
+    layout: bundle.Layout, manifest: bundle.Manifest | None, args: argparse.Namespace
+) -> str:
+    """The config file the installed supervisor reads, or would read."""
+    if manifest is not None:
+        return manifest.config_file or _default_config_path(layout)
+    resolved = resolve_config_file(getattr(args, "config", None))
+    return str(resolved) if resolved is not None else _default_config_path(layout)
 
 
 def _current_user() -> str:
@@ -228,11 +249,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if command == "start":
         return _start(args)
     if command == "status":
-        return _status()
+        return _status(args)
     if command == "stop":
-        return _supervised("stop", "stopped")
+        return _supervised(supervisor.stop, "stopped")
     if command == "restart":
-        return _supervised("restart", "restarted")
+        return _supervised(supervisor.restart, "restarted")
     if command == "install":
         return _install(args)
     if command == "uninstall":
@@ -243,26 +264,33 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _start(args: argparse.Namespace) -> int:
+    from . import server as server_module
+    from .engine import EngineLoadError
+
+    log_file = server_module.default_log_file()
     try:
         config = _load(args)
     except ConfigError as exc:
-        print(f"config error: {exc}", file=sys.stderr)
+        message = f"config error: {exc}"
+        server_module.record_failure(log_file, message)
+        print(message, file=sys.stderr)
         return 1
 
-    from .engine import EngineLoadError
-    from .server import PortInUseError, run_server
-
     try:
-        run_server(config)
-    except PortInUseError as exc:
+        server_module.run_server(config, log_file=log_file)
+    except server_module.PortInUseError as exc:
+        server_module.record_failure(log_file, f"error: {exc}")
         return _fail(str(exc))
     except EngineLoadError as exc:
-        return _fail(f"engine error: {exc}")
+        message = f"engine error: {exc}"
+        server_module.record_failure(log_file, message)
+        return _fail(message)
     return 0
 
 
-def _status() -> int:
+def _status(args: argparse.Namespace) -> int:
     layout = _layout()
+    manifest: bundle.Manifest | None = None
     print(f"kitsune-server {__version__}")
     if not layout.manifest_path.is_file():
         print(f"bundle:     not installed ({layout.root})")
@@ -283,18 +311,18 @@ def _status() -> int:
         print(f"supervisor: installed ({state.detail or 'unknown'})")
     else:
         print("supervisor: not installed")
-    print(f"config:     {layout.config_dir / 'kitsune.yaml'}")
+    print(f"config:     {_supervised_config_path(layout, manifest, args)}")
     return 0
 
 
-def _supervised(action: str, done: str) -> int:
+def _supervised(action: Callable[[supervisor.Environment], None], done: str) -> int:
     env = _supervisor_env()
     try:
         if not supervisor.status(env).installed:
             return _fail(
                 "the Server supervisor is not installed; run 'kitsune-server install' first"
             )
-        getattr(supervisor, action)(env)
+        action(env)
     except supervisor.SupervisorError as exc:
         return _fail(str(exc))
     print(f"Server {done}")
@@ -312,32 +340,40 @@ def _install(args: argparse.Namespace) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
 
+    from .server import PortInUseError
+
     env = _supervisor_env()
     if env.os_name not in ("linux", "windows"):
         return _fail(f"the Server bundle supports Linux and Windows, not {env.os_name!r}")
     layout = _layout()
-    installer = _bundle_installer(layout, models_dir=_models_dir(config))
+    config_file = _config_file(args)
+    installer = _bundle_installer(
+        layout,
+        models_dir=_models_dir(config),
+        config_file=config_file,
+    )
     try:
         # Replacing the runtime under a running Server would leave it serving
         # from deleted files; stop it so the enable/start below picks up the
         # upgrade. Both stops are idempotent, so no running check is needed.
         if supervisor.status(env).installed:
             supervisor.stop(env)
+        # The same check startup runs, so a taken port fails the install with
+        # its actionable message instead of at the next login.
+        _port_check(config.bind_host, config.port)
         manifest = installer.install(source)
         supervisor.install(
             env,
             supervisor.SupervisorOptions(
-                invocation=bundle.supervisor_invocation(
-                    layout, config=_absolute_config(getattr(args, "config", None))
-                ),
+                invocation=bundle.supervisor_invocation(layout, config=config_file or None),
                 user=_current_user(),
             ),
         )
-    except (bundle.BundleError, supervisor.SupervisorError, OSError) as exc:
+    except (bundle.BundleError, supervisor.SupervisorError, PortInUseError, OSError) as exc:
         return _fail(str(exc))
     print(f"installed kitsune-server {manifest.version} to {layout.root}")
     print(f"supervisor: registered to start at login ({env.os_name})")
-    print(f"configuration: {layout.config_dir / 'kitsune.yaml'}")
+    print(f"configuration: {config_file or _default_config_path(layout)}")
     return 0
 
 

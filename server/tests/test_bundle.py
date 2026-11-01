@@ -141,7 +141,7 @@ def installer(layout_: Layout, **kwargs: object) -> BundleInstaller:
 
 
 def test_current_os_reports_unsupported_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(bundle.sys, "platform", "darwin")
+    monkeypatch.setattr(bundle, "platform_name", lambda: "darwin")
 
     assert bundle.current_os() == "darwin"
 
