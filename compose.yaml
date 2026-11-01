@@ -30,7 +30,7 @@ x-nvidia-gpu: &nvidia-gpu
 x-server: &server
   restart: unless-stopped
   ports:
-    - "8000:8000"
+    - "8765:8765"
   environment:
     # Point Refine/Summarize at the bundled sidecar. Harmless when the `llm`
     # profile is off: processing stays disabled until kitsune.yaml enables it.

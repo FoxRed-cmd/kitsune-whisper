@@ -17,8 +17,10 @@ The first match wins:
      `~/.config/kitsune-whisper/kitsune.yaml`).
    - Windows: `%APPDATA%\kitsune-whisper\kitsune.yaml`.
 
-If no file is found, built-in defaults apply; the Client then points at
-`http://localhost:8000`, so set `client.server_url` to reach a Server elsewhere.
+If no file is found, built-in defaults apply. The Server default is
+`http://localhost:8765` (the template and Docker use the same port); the
+Client's built-in default is still `http://localhost:8000` in this release, so
+set `client.server_url` to match your Server.
 
 ## Precedence
 
@@ -47,7 +49,10 @@ Keys are `snake_case`; units are suffixes (`_seconds`, `_mb`). Unknown keys in
 the binary's own section are a **startup error** (typo safety) — the other
 section is ignored entirely. Validation is fail-fast and names the offending
 field path. The configuration is read once at startup; changes apply on
-**restart** (there is no hot reload).
+**restart** (there is no hot reload). The Server's configuration store
+(`kitsune_server.store`) validates with these same rules and writes the
+`server:` section atomically, classifying each change as hot-applied or
+restart-required for the Admin API that will drive it.
 
 Check a config without starting either process:
 
@@ -60,16 +65,24 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `host` | string | `0.0.0.0` | Bind address. `0.0.0.0` is LAN-visible; `127.0.0.1` is local-only. |
-| `port` | int | `8000` | Bind port (1–65535). |
-| `model` | string | `small` | faster-whisper size name (`tiny`, `base`, `small`, `medium`, `large-v3`, `turbo`, `distil-large-v3`) **or** a path to a local CTranslate2 model directory. |
+| `expose_to_network` | bool | `false` | LAN exposure switch. Off = the Server binds loopback only. On = it binds `0.0.0.0` (or an explicit non-loopback `host`) and requires a restart. |
+| `host` | string | `127.0.0.1` | Bind address. A non-loopback value is rejected unless `expose_to_network` is true. |
+| `port` | int | `8765` | Bind port (1–65535). The default moved from `8000` to `8765` for the desktop install; set `port: 8000` to keep an existing setup. |
+| `model` | string | `small` | Active model: a faster-whisper size name (`tiny`, `base`, `small`, `medium`, `large-v3`, `turbo`, `distil-large-v3`) **or** a path to a local CTranslate2 model directory. |
 | `device` | `auto`\|`cpu`\|`cuda` | `auto` | `auto` uses CTranslate2's CUDA detection and falls back to CPU. |
 | `compute_type` | enum | `auto` | `auto` → `float16` on CUDA, `int8` on CPU. Other values: `int8`, `int8_float16`, `int8_float32`, `int16`, `float16`, `bfloat16`, `float32`. |
 | `workers` | int | `0` | One knob for both HTTP concurrency and engine threads. `0` = auto (1 on GPU, 2 on CPU). A request beyond the cap gets an immediate `503` + `Retry-After`; there is no wait backlog. |
 | `download_root` | string | `~/.cache/kitsune-whisper/models` | Hugging Face cache for models. In Docker this is overridden to `/models` (a named volume). |
+| `catalog_file` | string | `""` | Model catalog metadata file; `""` uses the catalog bundled with the release. |
 | `offline` | bool | `false` | Sets `HF_HUB_OFFLINE`/`local_files_only`; no network, and the model must already be cached. |
+| `devices_file` | string | `""` | Paired Device store; `""` uses the OS data directory. |
 | `max_audio_seconds` | int | `300` | Requests longer than this return `413`. |
 | `max_upload_mb` | float | `30` | Requests larger than this return `413`. |
+| `idle_unload_seconds` | int | `600` | Unload the model after this many idle seconds; `0` keeps it resident. |
+| `tls.enabled` | bool | `true` | TLS is on by default; `false` is the explicit insecure-HTTP opt-out. The HTTPS listener and self-signed certificate land with the desktop install — this release accepts and reports the setting. |
+| `tls.cert_file` | string | unset | Certificate override; must be set together with `tls.key_file`. |
+| `tls.key_file` | string | unset | Private-key override; must be set together with `tls.cert_file`. |
+| `allow_anonymous` | bool | `false` | Device tokens are required by default; set `true` only to allow anonymous access. Enforcement lands with the desktop install, so the safe default is recorded now. |
 | `log_level` | `debug`\|`info`\|`warning`\|`error` | `info` | Logs to stdout (Docker-friendly). |
 | `decode.task` | `transcribe`\|`translate` | `transcribe` | Whisper task. |
 | `decode.language` | string | `auto` | Fallback language when a request omits one; `auto` detects. |

@@ -57,6 +57,39 @@ def test_run_server_does_not_warn_on_cuda(
     assert not any(record.levelno == logging.WARNING for record in caplog.records)
 
 
+def _capture_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    captured: dict[str, object] = {}
+    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
+    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+
+    def fake_run(app: object, **kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr(server.uvicorn, "run", fake_run)
+    return captured
+
+
+def test_run_server_binds_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = _capture_uvicorn(monkeypatch)
+
+    server.run_server(ServerConfig())
+
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8765
+
+
+def test_run_server_binds_all_interfaces_when_exposed(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    captured = _capture_uvicorn(monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger="kitsune.server"):
+        server.run_server(ServerConfig(expose_to_network=True))
+
+    assert captured["host"] == "0.0.0.0"
+    assert any("LAN" in record.getMessage() for record in caplog.records)
+
+
 def test_build_transcriber_loads_whisper_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: dict[str, object] = {}
     sentinel = FakeTranscriber()

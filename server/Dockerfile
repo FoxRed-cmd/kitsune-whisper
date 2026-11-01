@@ -17,8 +17,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON=3.11 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
-    KITSUNE_SERVER_HOST=0.0.0.0 \
-    KITSUNE_SERVER_PORT=8000 \
+    KITSUNE_SERVER_EXPOSE_TO_NETWORK=true \
+    KITSUNE_SERVER_PORT=8765 \
     KITSUNE_SERVER_DOWNLOAD_ROOT=/models \
     PATH="/opt/venv/bin:$PATH"
 
@@ -30,11 +30,11 @@ COPY kitsune_server ./kitsune_server
 ARG UV_SYNC_ARGS=""
 RUN uv sync --frozen --no-dev --no-editable ${UV_SYNC_ARGS}
 
-EXPOSE 8000
+EXPOSE 8765
 VOLUME ["/models"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health')"
 
 ENTRYPOINT ["kitsune-server"]
 CMD ["--config", "/config/kitsune.yaml"]

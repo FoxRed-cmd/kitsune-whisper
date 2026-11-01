@@ -53,4 +53,10 @@ def run_server(config: ServerConfig) -> None:
         logger.warning(CPU_ESCAPE_HATCH)
     processor = build_processor(config)
     app = create_app(config, transcriber, processor)
-    uvicorn.run(app, host=config.host, port=config.port, log_level=config.log_level)
+    if config.expose_to_network:
+        logger.warning(
+            "server.expose_to_network is on: listening on %s:%s and reachable from the LAN",
+            config.bind_host,
+            config.port,
+        )
+    uvicorn.run(app, host=config.bind_host, port=config.port, log_level=config.log_level)

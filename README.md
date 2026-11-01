@@ -185,21 +185,21 @@ point it at this same file instead with `--config ./kitsune.yaml` or
 
 The first run downloads the Whisper `small` model and the Qwen3 GGUF into the
 shared `kitsune-models` volume; later runs reuse them. The Server listens on
-`http://localhost:8000`, and the sidecar is reachable on the compose network as
+`http://localhost:8765`, and the sidecar is reachable on the compose network as
 `llama` — which the Server services are already pointed at.
 
 Confirm the GPU and processing are live (give the sidecar a moment to warm up;
 the Server degrades gracefully until it answers):
 
 ```sh
-curl http://localhost:8000/health
+curl http://localhost:8765/health
 ```
 
 `device` should be `cuda`, `compute_type` `float16`, and `processing.enabled`
 `true`. To smoke-test the pipeline without the Client:
 
 ```sh
-curl -F audio=@sample.wav -F refine=true http://localhost:8000/transcribe
+curl -F audio=@sample.wav -F refine=true http://localhost:8765/transcribe
 ```
 
 ### 2. Client
@@ -221,7 +221,7 @@ session. Point it at the Server and enable the flags above in the Client's confi
 
 ```yaml
 client:
-  server_url: http://localhost:8000
+  server_url: http://localhost:8765
   refine: true
   summarize: true
 ```
