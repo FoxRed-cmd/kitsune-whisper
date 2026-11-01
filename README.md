@@ -43,9 +43,10 @@ touch the models. Audio never leaves the network.
   in `warnings`. The Server talks to any **OpenAI-compatible** chat-completions
   endpoint: the bundled llama.cpp sidecar (opt-in `llm` compose profile), an
   existing Ollama / LM Studio service, or a cloud API. It is configured under
-  `server.processing` in `kitsune.yaml`; the Client asks for it with
-  `client.refine` / `client.summarize`
-  (see [Configuration](docs/configuration.md)). The built-in `base_url` is
+  `server.processing` in `kitsune.yaml` and requested per utterance through the
+  `/transcribe` API; the experimental switches are not exposed by the Client
+  (the legacy `client.refine` / `client.summarize` keys are ignored with a
+  warning). The built-in `base_url` is
   loopback, so processing stays local; the bundled `llm` profile points it at
   the sidecar instead, and an **external `base_url` sends the transcribed text
   off the host** (the audio still stays on your network).
@@ -158,16 +159,15 @@ are in [`docs/install.md`](docs/install.md).
 cp kitsune.example.yaml kitsune.yaml
 ```
 
-Turn the feature on in `kitsune.yaml` — the Server master switch and the Client's
-per-utterance flags (`server.processing.enabled` is `false` by default):
+Turn the feature on in `kitsune.yaml` — the Server master switch
+(`server.processing.enabled` is `false` by default). A request then opts in with
+its `refine` / `summarize` form fields; the Client does not send them, so this is
+for direct API users:
 
 ```yaml
 server:
   processing:
     enabled: true      # was false
-client:
-  refine: true         # was false
-  summarize: true      # was false
 ```
 
 Then start the Server and the matching sidecar (targeting both starts exactly
@@ -216,14 +216,18 @@ irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps
 
 The installer verifies the archive checksum, installs the binary, drops a
 `kitsune.yaml` template (only if absent), and registers autostart in the user
-session. Point it at the Server and enable the flags above in the Client's config
+session. Point the active Server profile at the Server in the Client's config
 (path in [`docs/install.md`](docs/install.md#where-things-go)):
 
 ```yaml
 client:
-  server_url: http://localhost:8765
-  refine: true
-  summarize: true
+  servers:
+    - id: local
+      name: Local Server
+      url: http://localhost:8765
+      fingerprint: ""
+      auto_pair: true
+  active_server: local
 ```
 
 Restart the Client service after editing (`systemctl --user restart

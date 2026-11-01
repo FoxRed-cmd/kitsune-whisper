@@ -61,6 +61,13 @@ type SaveResult struct {
 	BackupPath string
 }
 
+// interdependent fields are validated together: a profile list is meaningless
+// without an active selection, and vice versa.
+var interdependent = map[string]bool{
+	"client.servers":       true,
+	"client.active_server": true,
+}
+
 // Save validates and persists the given changes. The patch is a nested map
 // shaped like the "client:" section, e.g. {"hotkey": "Ctrl+Alt+D"}. Every
 // field is validated with the same rules as --check-config; a rejection lists
@@ -108,9 +115,14 @@ func (s *Store) Save(patch map[string]any) (SaveResult, error) {
 	}
 
 	// Validate one change at a time so every bad field is reported, then the
-	// whole result for cross-field rules such as min <= max.
+	// whole patch for cross-field rules such as min <= max. A profile list and
+	// its active selection only make sense together, so that pair is validated
+	// as a whole rather than one half at a time.
 	base := s.fileValues()
 	for _, path := range paths {
+		if interdependent[path] {
+			continue
+		}
 		candidate := cloneValues(base)
 		candidate[path] = updates[path]
 		if _, err := config.Validate(unflatten(candidate)); err != nil {
@@ -165,7 +177,7 @@ func (s *Store) Save(patch map[string]any) (SaveResult, error) {
 		return SaveResult{}, fmt.Errorf("settings: %w", err)
 	}
 	section := unflatten(candidate)
-	next, err := buildSnapshot(s.path, true, section, s.env, s.cli, candidateCfg)
+	next, err := buildSnapshot(s.path, true, section, s.env, s.cli, candidateCfg, config.DeprecationWarnings(section))
 	if err != nil {
 		return SaveResult{}, fmt.Errorf("settings: %w", err)
 	}

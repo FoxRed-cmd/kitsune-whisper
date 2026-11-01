@@ -66,6 +66,8 @@ type Snapshot struct {
 	Config config.ClientConfig
 	// Fields holds every schema field, sorted by path.
 	Fields []Field
+	// Warnings lists accepted but deprecated keys, e.g. client.refine.
+	Warnings []string
 }
 
 // Field looks up one field by its config path.
@@ -147,7 +149,7 @@ func (s *Store) load() error {
 	if err != nil {
 		return err
 	}
-	snapshot, err := buildSnapshot(s.path, s.exists, section, s.env, s.cli, cfg)
+	snapshot, err := buildSnapshot(s.path, s.exists, section, s.env, s.cli, cfg, config.DeprecationWarnings(section))
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
@@ -161,7 +163,7 @@ func (s *Store) Snapshot() Snapshot {
 	return s.snapshot
 }
 
-func buildSnapshot(path string, exists bool, section map[string]any, env map[string]string, cli map[string]any, cfg config.ClientConfig) (Snapshot, error) {
+func buildSnapshot(path string, exists bool, section map[string]any, env map[string]string, cli map[string]any, cfg config.ClientConfig, warnings []string) (Snapshot, error) {
 	values, err := canonicalValues(cfg)
 	if err != nil {
 		return Snapshot{}, err
@@ -191,7 +193,7 @@ func buildSnapshot(path string, exists bool, section map[string]any, env map[str
 		}
 		fields = append(fields, f)
 	}
-	return Snapshot{Path: path, Exists: exists, Config: cfg, Fields: fields}, nil
+	return Snapshot{Path: path, Exists: exists, Config: cfg, Fields: fields, Warnings: warnings}, nil
 }
 
 // envName maps a field path to the environment variable that overrides it.

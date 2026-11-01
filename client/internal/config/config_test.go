@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -45,10 +46,10 @@ func TestDefaultsWhenNoFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg != config.Default() {
+	if !reflect.DeepEqual(cfg, config.Default()) {
 		t.Fatalf("expected defaults, got %+v", cfg)
 	}
-	if cfg.ServerURL != "http://localhost:8000" || cfg.MinRecordingSeconds != 0.3 || cfg.Trigger != "toggle" {
+	if cfg.ServerURL != config.LocalServerURL || cfg.MinRecordingSeconds != 0.3 || cfg.Trigger != "toggle" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 	if cfg.Feedback.Indicator != "auto" {
@@ -93,24 +94,216 @@ func TestFileValues(t *testing.T) {
 	}
 }
 
-func TestRefineSummarizeDefaultFalse(t *testing.T) {
+func TestFreshConfigGetsLocalServerProfile(t *testing.T) {
 	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if cfg.Refine || cfg.Summarize {
-		t.Fatalf("refine/summarize should default false, got %+v", cfg)
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("servers = %+v, want one Local Server profile", cfg.Servers)
+	}
+	profile, ok := cfg.ActiveProfile()
+	if !ok {
+		t.Fatalf("active profile %q is not one of %+v", cfg.ActiveServer, cfg.Servers)
+	}
+	if cfg.ActiveServer != config.LocalServerID || profile.ID != config.LocalServerID {
+		t.Fatalf("active = %q / profile = %q, want %q", cfg.ActiveServer, profile.ID, config.LocalServerID)
+	}
+	if profile.Name != "Local Server" || profile.URL != config.LocalServerURL {
+		t.Fatalf("local profile = %+v", profile)
+	}
+	if !profile.AutoPair {
+		t.Fatal("the Local Server profile must auto-pair")
+	}
+	if cfg.ServerURL != config.LocalServerURL {
+		t.Fatalf("legacy server_url alias = %q, want %q", cfg.ServerURL, config.LocalServerURL)
 	}
 }
 
-func TestRefineSummarizeAccepted(t *testing.T) {
-	path := writeConfig(t, map[string]any{"refine": true, "summarize": true})
+func TestLegacyServerURLBecomesActiveProfile(t *testing.T) {
+	path := writeConfig(t, map[string]any{"server_url": "http://192.168.1.10:9000"})
 	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if !cfg.Refine || !cfg.Summarize {
-		t.Fatalf("refine/summarize should be true, got %+v", cfg)
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("servers = %+v, want the migrated profile only", cfg.Servers)
+	}
+	profile, ok := cfg.ActiveProfile()
+	if !ok {
+		t.Fatalf("active profile %q is not one of %+v", cfg.ActiveServer, cfg.Servers)
+	}
+	if profile.URL != "http://192.168.1.10:9000" {
+		t.Fatalf("migrated profile = %+v", profile)
+	}
+	if profile.AutoPair {
+		t.Fatal("a migrated server_url is not the Local Server and must not auto-pair")
+	}
+	if cfg.ServerURL != profile.URL {
+		t.Fatalf("server_url = %q, want the active profile URL %q", cfg.ServerURL, profile.URL)
+	}
+}
+
+func TestServersKeepOrderAndActiveSelection(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"servers": []any{
+			map[string]any{
+				"id":          "work",
+				"name":        "Work",
+				"url":         "http://work:8765",
+				"fingerprint": "aa:bb",
+				"auto_pair":   false,
+			},
+			map[string]any{
+				"id":          "home",
+				"name":        "Home",
+				"url":         "https://home:8765",
+				"fingerprint": "cc:dd",
+				"auto_pair":   true,
+			},
+		},
+		"active_server": "home",
+	})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Servers) != 2 || cfg.Servers[0].ID != "work" || cfg.Servers[1].ID != "home" {
+		t.Fatalf("servers = %+v, want work then home", cfg.Servers)
+	}
+	profile, ok := cfg.ActiveProfile()
+	if !ok || profile.ID != "home" {
+		t.Fatalf("active profile = %+v (%v), want home", profile, ok)
+	}
+	if profile.URL != "https://home:8765" || profile.Fingerprint != "cc:dd" || !profile.AutoPair {
+		t.Fatalf("active profile fields = %+v", profile)
+	}
+	if cfg.ServerURL != profile.URL {
+		t.Fatalf("server_url = %q, want the active profile URL %q", cfg.ServerURL, profile.URL)
+	}
+}
+
+func TestServersDefaultActiveIsTheFirstProfile(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"servers": []any{
+			map[string]any{"id": "one", "url": "http://one:8765"},
+			map[string]any{"id": "two", "url": "http://two:8765"},
+		},
+	})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.ActiveServer != "one" {
+		t.Fatalf("active_server = %q, want the first profile", cfg.ActiveServer)
+	}
+	if cfg.Servers[0].Name != "one" {
+		t.Fatalf("a profile without a name should default to its id, got %q", cfg.Servers[0].Name)
+	}
+}
+
+func TestActiveServerMustReferenceAProfile(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"servers":       []any{map[string]any{"id": "home", "url": "http://home:8765"}},
+		"active_server": "missing",
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.active_server")
+	assertErrorContains(t, err, "missing")
+}
+
+func TestDuplicateProfileIDsRejected(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"servers": []any{
+			map[string]any{"id": "home", "url": "http://home:8765"},
+			map[string]any{"id": "home", "url": "http://other:8765"},
+		},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.servers[1].id")
+	assertErrorContains(t, err, "duplicate")
+}
+
+func TestUnknownProfileFieldRejected(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"servers": []any{
+			map[string]any{"id": "home", "url": "http://home:8765", "bogus": true},
+		},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.servers[0].bogus")
+}
+
+func TestMissingProfileIDOrURLRejected(t *testing.T) {
+	cases := map[string]struct {
+		profile map[string]any
+		path    string
+	}{
+		"missing id":  {map[string]any{"url": "http://home:8765"}, "client.servers[0].id"},
+		"missing url": {map[string]any{"id": "home"}, "client.servers[0].url"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := writeConfig(t, map[string]any{"servers": []any{tc.profile}})
+			_, err := load(t, config.LoadOptions{CLIConfig: path})
+			assertErrorContains(t, err, tc.path)
+		})
+	}
+}
+
+func TestExplicitEmptyProfileListRejected(t *testing.T) {
+	path := writeConfig(t, map[string]any{"servers": []any{}})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.servers")
+	assertErrorContains(t, err, "at least one profile")
+}
+
+func TestServersMustBeAList(t *testing.T) {
+	path := writeConfig(t, map[string]any{"servers": "local"})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.servers")
+	assertErrorContains(t, err, "list")
+}
+
+func TestProfileMustBeAMapping(t *testing.T) {
+	path := writeConfig(t, map[string]any{"servers": []any{"local"}})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.servers[0]")
+	assertErrorContains(t, err, "mapping")
+}
+
+func TestProfileURLMustBeAbsolute(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"servers": []any{map[string]any{"id": "home", "url": "not-a-url"}},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.servers[0].url")
+	assertErrorContains(t, err, "absolute URL")
+}
+
+func TestLegacyRefineSummarizeAcceptedWithWarning(t *testing.T) {
+	path := writeConfig(t, map[string]any{"refine": true, "summarize": false})
+	var warnings []string
+	_, err := load(t, config.LoadOptions{
+		CLIConfig: path,
+		OnWarning: func(message string) { warnings = append(warnings, message) },
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %v, want one per deprecated key", warnings)
+	}
+	for _, key := range []string{"refine", "summarize"} {
+		found := false
+		for _, warning := range warnings {
+			if strings.Contains(warning, "client."+key) && strings.Contains(warning, "deprecated") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no deprecation warning for client.%s: %v", key, warnings)
+		}
 	}
 }
 
@@ -331,8 +524,11 @@ func TestDumpWrapsInClientKey(t *testing.T) {
 	if len(parsed) != 1 {
 		t.Fatalf("expected only client key, got %v", parsed)
 	}
-	if parsed["client"]["server_url"] != "http://localhost:8000" {
+	if parsed["client"]["server_url"] != config.LocalServerURL {
 		t.Fatalf("unexpected dump: %v", parsed)
+	}
+	if parsed["client"]["active_server"] != config.LocalServerID {
+		t.Fatalf("dump has no active Server profile: %v", parsed)
 	}
 }
 

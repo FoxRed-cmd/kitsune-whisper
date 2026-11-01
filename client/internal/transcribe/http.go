@@ -17,26 +17,20 @@ type HTTP struct {
 	Client        *http.Client
 	Language      string
 	InitialPrompt string
-	// Refine and Summarize ask the Server to post-process the utterance. They
-	// are sent only when true, so the default wire behavior is unchanged.
-	Refine    bool
-	Summarize bool
-	// OnWarning, when non-nil, receives each warning from a successful response
-	// (a requested processing step that was skipped).
+	// OnWarning, when non-nil, receives each warning from a successful response.
 	OnWarning func(string)
 }
 
 // NewHTTP builds an HTTP transcriber. language and initialPrompt are sent only
-// when they are set to something other than the "unset" defaults; refine and
-// summarize are sent only when true.
-func NewHTTP(baseURL, language, initialPrompt string, refine, summarize bool) *HTTP {
+// when they are set to something other than the "unset" defaults. The
+// deprecated Refine and Summarize switches are never sent: the Client does not
+// expose text processing.
+func NewHTTP(baseURL, language, initialPrompt string) *HTTP {
 	return &HTTP{
 		BaseURL:       baseURL,
 		Client:        &http.Client{Timeout: 0},
 		Language:      language,
 		InitialPrompt: initialPrompt,
-		Refine:        refine,
-		Summarize:     summarize,
 	}
 }
 
@@ -67,16 +61,6 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 	if prompt := strings.TrimSpace(h.InitialPrompt); prompt != "" {
 		if err := writer.WriteField("initial_prompt", prompt); err != nil {
 			return Transcription{}, fmt.Errorf("write initial_prompt: %w", err)
-		}
-	}
-	if h.Refine {
-		if err := writer.WriteField("refine", "true"); err != nil {
-			return Transcription{}, fmt.Errorf("write refine: %w", err)
-		}
-	}
-	if h.Summarize {
-		if err := writer.WriteField("summarize", "true"); err != nil {
-			return Transcription{}, fmt.Errorf("write summarize: %w", err)
 		}
 	}
 	if err := writer.Close(); err != nil {

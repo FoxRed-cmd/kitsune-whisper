@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -138,7 +139,7 @@ func TestSnapshotMatchesConfigLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if got := store.Snapshot().Config; got != want {
+	if got := store.Snapshot().Config; !reflect.DeepEqual(got, want) {
 		t.Fatalf("snapshot config = %+v, want %+v", got, want)
 	}
 }
@@ -508,6 +509,80 @@ func TestSaveKeepsUnrelatedClientKeys(t *testing.T) {
 	}
 }
 
+func TestSaveWritesServerProfilesAndActiveSelection(t *testing.T) {
+	path := writeConfig(t, baseDocument)
+	store := open(t, settings.Options{Path: path})
+
+	result, err := store.Save(map[string]any{
+		"servers": []any{
+			map[string]any{
+				"id":          "work",
+				"name":        "Work",
+				"url":         "http://work:8765",
+				"fingerprint": "aa:bb",
+				"auto_pair":   false,
+			},
+			map[string]any{
+				"id":          "home",
+				"name":        "Home",
+				"url":         "http://home:8765",
+				"fingerprint": "cc:dd",
+				"auto_pair":   true,
+			},
+		},
+		"active_server": "home",
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !result.Written {
+		t.Fatal("save reported no write")
+	}
+
+	cfg, err := config.Load(config.LoadOptions{CLIConfig: path, Env: map[string]string{}})
+	if err != nil {
+		t.Fatalf("saved config is invalid: %v", err)
+	}
+	if len(cfg.Servers) != 2 || cfg.Servers[0].ID != "work" || cfg.Servers[1].ID != "home" {
+		t.Fatalf("servers = %+v, want work then home", cfg.Servers)
+	}
+	profile, ok := cfg.ActiveProfile()
+	if !ok || profile.ID != "home" || profile.URL != "http://home:8765" {
+		t.Fatalf("active profile = %+v (%v), want home", profile, ok)
+	}
+	if cfg.ServerURL != profile.URL {
+		t.Fatalf("server_url = %q, want %q", cfg.ServerURL, profile.URL)
+	}
+
+	snapshot := store.Snapshot()
+	if f := field(t, snapshot, "client.servers"); f.Mode != settings.ApplyRestart {
+		t.Fatalf("client.servers mode = %q, want restart", f.Mode)
+	}
+	if f := field(t, snapshot, "client.active_server"); f.Mode != settings.ApplyRestart {
+		t.Fatalf("client.active_server mode = %q, want restart until live apply", f.Mode)
+	}
+}
+
+func TestSnapshotReportsDeprecatedKeys(t *testing.T) {
+	path := writeConfig(t, "client:\n  hotkey: Ctrl+Alt+D\n  refine: true\n  summarize: false\n")
+	store := open(t, settings.Options{Path: path})
+	warnings := store.Snapshot().Warnings
+	if len(warnings) != 2 {
+		t.Fatalf("warnings = %v, want one per deprecated key", warnings)
+	}
+	for _, key := range []string{"refine", "summarize"} {
+		found := false
+		for _, warning := range warnings {
+			if strings.Contains(warning, "client."+key) && strings.Contains(warning, "deprecated") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("no deprecation warning for client.%s: %v", key, warnings)
+		}
+	}
+}
+
 func TestSaveWriteFailureLeavesOriginal(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
@@ -606,10 +681,11 @@ func TestClassify(t *testing.T) {
 		"client.hotkey_backend",
 		"client.wayland_tool",
 		"client.server_url",
+		"client.servers",
+		"client.active_server",
 		"client.log_file",
-		// refine and summarize are still forwarded to the Server by the
-		// current runtime, which builds its transcriber at startup. Ignoring
-		// them with a warning is a later migration, so they need a restart.
+		// refine and summarize are accepted for one release and ignored, so
+		// there is nothing for the runtime to apply live.
 		"client.refine",
 		"client.summarize",
 		"client.unknown_future_field",

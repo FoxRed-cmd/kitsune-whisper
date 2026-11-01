@@ -44,6 +44,11 @@ _Avoid_: model list, model store
 A short-lived one-time code that authorises one Device to use a Server profile.
 _Avoid_: token, invite, PIN
 
+**Auto-pair**:
+Trusting the Client on the same machine as the Local Server without a Pairing
+code. Marked per Server profile so the Client knows it may pair silently.
+_Avoid_: auto-connect, local mode
+
 **Device**:
 A Client installation trusted by a Server profile, identified by a name and a stored Device token.
 _Avoid_: client, machine, node

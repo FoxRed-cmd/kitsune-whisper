@@ -83,9 +83,23 @@ server:
     stage_timeout_seconds: 30
 
 client:
-  # The Client addresses the Server here; the top-level server: section above
-  # is the Server process's own config and is not read by the Client.
-  server_url: http://localhost:8765
+  # Server profiles: each profile is a named Server address, the certificate
+  # fingerprint pinned during pairing, and an auto-pair marker. Exactly one
+  # profile is active; the Client sends every Utterance there and never fails
+  # over on its own. A fresh configuration has the Local Server profile below.
+  # The top-level server: section is the Server process's own config and is not
+  # read by the Client.
+  servers:
+    - id: local
+      name: Local Server
+      url: http://localhost:8765
+      # SHA-256 fingerprint of the Server certificate; "" until pairing pins it.
+      fingerprint: ""
+      auto_pair: true
+  active_server: local
+  # Deprecated: an existing client.server_url is migrated into an active
+  # profile on load. client.refine and client.summarize are accepted for one
+  # release, ignored with a warning, and never sent.
   hotkey: Ctrl+Shift+Space
   # auto | portal | x11. auto uses the GlobalShortcuts portal on Wayland when
   # available (GNOME >=48 / KDE Plasma >=5.27) and the external trigger
@@ -103,11 +117,6 @@ client:
   # Sent per request only when set to something other than "auto".
   language: auto
   initial_prompt: ""
-  # Ask the Server to post-process each utterance (needs server.processing
-  # enabled). Sent per request only when true. When both are set, Refine runs
-  # first, then Summarize.
-  refine: false
-  summarize: false
   audio:
     # "" = system default input.
     device: ""

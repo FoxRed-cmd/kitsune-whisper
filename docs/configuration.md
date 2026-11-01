@@ -17,10 +17,10 @@ The first match wins:
      `~/.config/kitsune-whisper/kitsune.yaml`).
    - Windows: `%APPDATA%\kitsune-whisper\kitsune.yaml`.
 
-If no file is found, built-in defaults apply. The Server default is
-`http://localhost:8765` (the template and Docker use the same port); the
-Client's built-in default is still `http://localhost:8000` in this release, so
-set `client.server_url` to match your Server.
+If no file is found, built-in defaults apply: the Local Server profile points at
+`http://localhost:8765`, which is also the Server's default port. An existing
+`client.server_url` is migrated into the active Server profile on load, so an
+older configuration keeps working without edits.
 
 ## Precedence
 
@@ -34,7 +34,8 @@ CLI flags  >  environment  >  file  >  built-in defaults
   `--check-config` (both binaries).
 - **Environment** variables are `KITSUNE_<SECTION>_<KEY>`, with nesting via a
   double underscore:
-  - `KITSUNE_CLIENT_SERVER_URL`
+  - `KITSUNE_CLIENT_SERVER_URL` (deprecated; migrates to a profile)
+  - `KITSUNE_CLIENT_ACTIVE_SERVER`
   - `KITSUNE_CLIENT_AUDIO__DEVICE`
   - `KITSUNE_SERVER_MODEL`
   - `KITSUNE_SERVER_DECODE__BEAM_SIZE`
@@ -137,7 +138,9 @@ sidecar.
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `server_url` | URL | `http://localhost:8000` | Full URL of the Server (`http` only in v1). |
+| `servers` | list | Local Server profile | Ordered **Server profiles**. Each entry has `id` (required, unique), `name`, `url` (required, absolute), `fingerprint` (pinned Server certificate SHA-256; `""` until pairing), and `auto_pair` (`true` only for the Local Server). Unknown profile keys and duplicate ids are rejected. |
+| `active_server` | string | first profile | The `id` of the profile that receives every Utterance. Exactly one profile is active; there is no automatic fallback. Defaults to the first profile when omitted. |
+| `server_url` | URL | `http://localhost:8765` | **Deprecated.** Full URL of a single Server. When no `servers` list exists it migrates into one active profile (`Default Server`); once `servers` exists it no longer decides routing, but it must still be a valid URL when present. |
 | `hotkey` | string | `Ctrl+Shift+Space` | Global toggle/hold key. |
 | `hotkey_backend` | `auto`\|`portal`\|`x11` | `auto` | Linux session backend. See [Wayland](wayland.md). |
 | `cancel_hotkey` | string | `Esc` | Aborts the current utterance without injecting. |
@@ -147,8 +150,8 @@ sidecar.
 | `timeout_seconds` | number | `0` | Request timeout. `0` = `max(30 s, 2 × audio length)`. |
 | `language` | string | `auto` | Sent per request only when not `auto`. |
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
-| `refine` | bool | `false` | Ask the Server to remove disfluencies and add punctuation. Sent per request only when `true`; needs `server.processing.enabled`. |
-| `summarize` | bool | `false` | Ask the Server to compress the **Transcription**. Sent per request only when `true`; runs after Refine when both are set. Needs `server.processing.enabled`. |
+| `refine` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Refine per request; use the Server API directly if needed. |
+| `summarize` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Summarize per request. |
 | `audio.device` | string | `""` | Input device name or index; `""` = system default. `--device` overrides. |
 | `paste` | bool | `true` | Synthesize a paste after writing the clipboard; `false` is clipboard-only. |
 | `paste_shortcut` | `auto`\|`ctrl_v`\|`ctrl_shift_v`\|`shift_insert` | `auto` | `auto` picks `ctrl_shift_v` in terminals and `ctrl_v` elsewhere; `shift_insert` is the classic console paste chord, so on X11/Wayland the transcription is published to the primary selection (the buffer a terminal pastes) as well as the clipboard. |

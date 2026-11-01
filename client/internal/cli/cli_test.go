@@ -153,6 +153,87 @@ func TestTranscribeFilePostsAndPrintsText(t *testing.T) {
 	}
 }
 
+func TestTranscribeFileUsesTheActiveServerProfile(t *testing.T) {
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		_, _ = io.WriteString(w, `{"text":"first"}`)
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		_, _ = io.WriteString(w, `{"text":"second"}`)
+	}))
+	defer second.Close()
+
+	dir := t.TempDir()
+	wavPath := filepath.Join(dir, "clip.wav")
+	if err := os.WriteFile(wavPath, wavBytes(), 0o600); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	path := writeConfigFile(t, map[string]any{
+		"servers": []any{
+			map[string]any{"id": "first", "name": "First", "url": first.URL},
+			map[string]any{"id": "second", "name": "Second", "url": second.URL},
+		},
+		"active_server": "second",
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", path, "transcribe-file", wavPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "second" {
+		t.Fatalf("stdout = %q, want the active profile's response", stdout.String())
+	}
+	if firstCalls.Load() != 0 {
+		t.Fatalf("the inactive profile received %d requests", firstCalls.Load())
+	}
+	if secondCalls.Load() != 1 {
+		t.Fatalf("the active profile received %d requests, want 1", secondCalls.Load())
+	}
+}
+
+func TestTranscribeFileWarnsAboutLegacyProcessingKeysAndDoesNotSendThem(t *testing.T) {
+	fields := map[string]string{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("parse multipart: %v", err)
+		}
+		for key, values := range r.MultipartForm.Value {
+			fields[key] = strings.Join(values, ",")
+		}
+		_, _ = io.WriteString(w, `{"text":"done"}`)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	wavPath := filepath.Join(dir, "clip.wav")
+	if err := os.WriteFile(wavPath, wavBytes(), 0o600); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	path := writeConfigFile(t, map[string]any{
+		"server_url": server.URL,
+		"refine":     true,
+		"summarize":  true,
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", path, "transcribe-file", wavPath}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	for _, key := range []string{"refine", "summarize"} {
+		if !strings.Contains(stderr.String(), "client."+key) || !strings.Contains(stderr.String(), "deprecated") {
+			t.Fatalf("stderr = %q, want a deprecation warning for client.%s", stderr.String(), key)
+		}
+		if value, ok := fields[key]; ok {
+			t.Fatalf("the Client sent %s=%q", key, value)
+		}
+	}
+}
+
 func TestTranscribeFileReportsUnreachableServer(t *testing.T) {
 	// Bind then release a port so the address is known to refuse connections.
 	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))

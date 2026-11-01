@@ -8,7 +8,7 @@ Both read the same `kitsune.yaml` (each process reads only its own section).
 ### Requirements
 
 - **Windows 10/11 (x64)** or **Linux (x64)** with a working microphone.
-- A reachable Server (`client.server_url`).
+- A reachable Server, named by the active Server profile in `client.servers`.
 - **Linux**: a systemd user session for autostart. X11 is first-class; Wayland is
   best-effort (see `docs/adr/0002-wayland-v1-stance.md`).
 
@@ -121,7 +121,7 @@ kitsune-client --version
 
 ### First dictation
 
-Once a Server is reachable at `client.server_url`, start the Client:
+Once a Server is reachable at the active profile (`client.active_server`), start the Client:
 
 ```sh
 kitsune-client run          # run is also the default command
@@ -255,10 +255,12 @@ LLM, so speech is delivered cleaner or shorter:
   adds punctuation and casing, without paraphrasing or dropping content.
 - **Summarize** compresses the text to its key points in plain prose.
 
-A request asks for them per utterance (`refine` / `summarize`); the Client sends
-those flags from `client.refine` / `client.summarize`. When both are set,
-**Refine runs first, then Summarize**. It is a Server master switch — everything
-is **off by default** (`server.processing.enabled: false`).
+A request asks for them per utterance (`refine` / `summarize`). The Client does
+not expose these experimental switches and never sends the flags; the legacy
+`client.refine` / `client.summarize` keys are accepted with a deprecation
+warning and ignored. When both are set on a direct API request, **Refine runs
+first, then Summarize**. It is a Server master switch — everything is **off by
+default** (`server.processing.enabled: false`).
 
 Processing is a thin HTTP client of any **OpenAI-compatible** chat-completions
 endpoint: it POSTs to `{base_url}/v1/chat/completions`. One code path backs the

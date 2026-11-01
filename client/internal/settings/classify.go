@@ -20,15 +20,14 @@ const (
 // hotFields lists the values the Dictation runtime will apply live per the
 // desktop spec: hotkey, cancel hotkey, trigger, microphone, language, initial
 // prompt, paste/clipboard, earcons, indicator, log level, timeouts and the
-// Spool. The active Server profile becomes hot when a Server-profile schema
-// lands.
+// Spool. The active Server profile becomes hot when live apply lands with the
+// Settings window (#75); the current runtime builds its transcriber at startup,
+// so switching is reported as restart-required.
 //
 // Everything else needs a restart. The hotkey backend and the Wayland
-// injection tool bind at startup, the Server URL and refine/summarize are
-// compiled into the transcriber (the current runtime still forwards both per
-// request; accepting them for one release and ignoring them with a warning is
-// a later migration), the log file is opened at startup, and an unknown field
-// is by definition one the runtime cannot apply safely.
+// injection tool bind at startup, the profile list and active selection are
+// read when the transcriber is built, the log file is opened at startup, and
+// an unknown field is by definition one the runtime cannot apply safely.
 var hotFields = map[string]struct{}{
 	"client.hotkey":                {},
 	"client.cancel_hotkey":         {},

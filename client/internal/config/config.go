@@ -24,6 +24,15 @@ const (
 	ConfigEnv     = "KITSUNE_CONFIG"
 	ConfigName    = "kitsune.yaml"
 	defaultMaxRec = 300.0
+
+	// LocalServerID is the stable id of the profile a fresh install uses to
+	// reach the Server on the same machine.
+	LocalServerID = "local"
+	// LocalServerURL is the default address of the Local Server.
+	LocalServerURL = "http://localhost:8765"
+	// migratedServerID is the profile that an existing client.server_url
+	// becomes during migration.
+	migratedServerID = "default"
 )
 
 // AudioConfig selects the capture device.
@@ -37,35 +46,61 @@ type FeedbackConfig struct {
 	Indicator string `yaml:"indicator"`
 }
 
+// ServerProfile is one named Server the Client can route Utterances to. The
+// fingerprint pins the Server certificate; an empty fingerprint means none is
+// pinned yet. AutoPair marks the Local Server, which pairs without a code.
+type ServerProfile struct {
+	ID          string `yaml:"id"`
+	Name        string `yaml:"name"`
+	URL         string `yaml:"url"`
+	Fingerprint string `yaml:"fingerprint"`
+	AutoPair    bool   `yaml:"auto_pair"`
+}
+
 // ClientConfig is the fully resolved, validated Client configuration.
 type ClientConfig struct {
-	ServerURL           string         `yaml:"server_url"`
-	Hotkey              string         `yaml:"hotkey"`
-	HotkeyBackend       string         `yaml:"hotkey_backend"`
-	CancelHotkey        string         `yaml:"cancel_hotkey"`
-	Trigger             string         `yaml:"trigger"`
-	MaxRecordingSeconds float64        `yaml:"max_recording_seconds"`
-	MinRecordingSeconds float64        `yaml:"min_recording_seconds"`
-	TimeoutSeconds      float64        `yaml:"timeout_seconds"`
-	Language            string         `yaml:"language"`
-	InitialPrompt       string         `yaml:"initial_prompt"`
-	Refine              bool           `yaml:"refine"`
-	Summarize           bool           `yaml:"summarize"`
-	Audio               AudioConfig    `yaml:"audio"`
-	Paste               bool           `yaml:"paste"`
-	PasteShortcut       string         `yaml:"paste_shortcut"`
-	ClipboardRestore    string         `yaml:"clipboard_restore"`
-	WaylandTool         string         `yaml:"wayland_tool"`
-	Feedback            FeedbackConfig `yaml:"feedback"`
-	SpoolDir            string         `yaml:"spool_dir"`
-	LogLevel            string         `yaml:"log_level"`
-	LogFile             string         `yaml:"log_file"`
+	// ServerURL is the deprecated single-Server address. It is kept as an
+	// alias of the active profile for configuration dumps and for one
+	// release of compatibility; routing uses Servers and ActiveServer.
+	ServerURL           string          `yaml:"server_url"`
+	Servers             []ServerProfile `yaml:"servers"`
+	ActiveServer        string          `yaml:"active_server"`
+	Hotkey              string          `yaml:"hotkey"`
+	HotkeyBackend       string          `yaml:"hotkey_backend"`
+	CancelHotkey        string          `yaml:"cancel_hotkey"`
+	Trigger             string          `yaml:"trigger"`
+	MaxRecordingSeconds float64         `yaml:"max_recording_seconds"`
+	MinRecordingSeconds float64         `yaml:"min_recording_seconds"`
+	TimeoutSeconds      float64         `yaml:"timeout_seconds"`
+	Language            string          `yaml:"language"`
+	InitialPrompt       string          `yaml:"initial_prompt"`
+	Audio               AudioConfig     `yaml:"audio"`
+	Paste               bool            `yaml:"paste"`
+	PasteShortcut       string          `yaml:"paste_shortcut"`
+	ClipboardRestore    string          `yaml:"clipboard_restore"`
+	WaylandTool         string          `yaml:"wayland_tool"`
+	Feedback            FeedbackConfig  `yaml:"feedback"`
+	SpoolDir            string          `yaml:"spool_dir"`
+	LogLevel            string          `yaml:"log_level"`
+	LogFile             string          `yaml:"log_file"`
+}
+
+// ActiveProfile returns the Server profile the Client routes Utterances to.
+func (c ClientConfig) ActiveProfile() (ServerProfile, bool) {
+	for _, profile := range c.Servers {
+		if profile.ID == c.ActiveServer {
+			return profile, true
+		}
+	}
+	return ServerProfile{}, false
 }
 
 // Default returns the built-in Client configuration.
 func Default() ClientConfig {
 	return ClientConfig{
-		ServerURL:           "http://localhost:8000",
+		ServerURL:           LocalServerURL,
+		Servers:             []ServerProfile{localServerProfile()},
+		ActiveServer:        LocalServerID,
 		Hotkey:              "Ctrl+Shift+Space",
 		HotkeyBackend:       "auto",
 		CancelHotkey:        "Esc",
@@ -75,8 +110,6 @@ func Default() ClientConfig {
 		TimeoutSeconds:      0,
 		Language:            "auto",
 		InitialPrompt:       "",
-		Refine:              false,
-		Summarize:           false,
 		Audio:               AudioConfig{Device: ""},
 		Paste:               true,
 		PasteShortcut:       "auto",
@@ -86,6 +119,15 @@ func Default() ClientConfig {
 		SpoolDir:            "",
 		LogLevel:            "info",
 		LogFile:             "",
+	}
+}
+
+func localServerProfile() ServerProfile {
+	return ServerProfile{
+		ID:       LocalServerID,
+		Name:     "Local Server",
+		URL:      LocalServerURL,
+		AutoPair: true,
 	}
 }
 
@@ -110,6 +152,9 @@ type LoadOptions struct {
 	Env map[string]string
 	// CWD overrides the working directory used for ./kitsune.yaml discovery.
 	CWD string
+	// OnWarning, when non-nil, receives non-fatal configuration warnings such
+	// as deprecated keys. It is called for every Load/Resolve, not only once.
+	OnWarning func(string)
 }
 
 func (o LoadOptions) environ() map[string]string {
@@ -277,6 +322,8 @@ func deepMerge(base, override map[string]any) map[string]any {
 // schema mirrors the field tree so unknown keys can be rejected by path.
 var schema = map[string]any{
 	"server_url":            nil,
+	"servers":               nil,
+	"active_server":         nil,
 	"hotkey":                nil,
 	"hotkey_backend":        nil,
 	"cancel_hotkey":         nil,
@@ -286,17 +333,19 @@ var schema = map[string]any{
 	"timeout_seconds":       nil,
 	"language":              nil,
 	"initial_prompt":        nil,
-	"refine":                nil,
-	"summarize":             nil,
-	"audio":                 map[string]any{"device": nil},
-	"paste":                 nil,
-	"paste_shortcut":        nil,
-	"clipboard_restore":     nil,
-	"wayland_tool":          nil,
-	"feedback":              map[string]any{"earcons": nil, "indicator": nil},
-	"spool_dir":             nil,
-	"log_level":             nil,
-	"log_file":              nil,
+	// refine and summarize are accepted for one release, warned about, and
+	// never read into ClientConfig or sent to a Server.
+	"refine":            nil,
+	"summarize":         nil,
+	"audio":             map[string]any{"device": nil},
+	"paste":             nil,
+	"paste_shortcut":    nil,
+	"clipboard_restore": nil,
+	"wayland_tool":      nil,
+	"feedback":          map[string]any{"earcons": nil, "indicator": nil},
+	"spool_dir":         nil,
+	"log_level":         nil,
+	"log_file":          nil,
 }
 
 func rejectUnknown(prefix string, value map[string]any, known map[string]any) error {
@@ -399,12 +448,28 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	var cfg ClientConfig
 	var err error
 
-	if cfg.ServerURL, err = stringField(m, "server_url", "client.server_url"); err != nil {
+	if cfg.Servers, err = serverProfiles(m["servers"]); err != nil {
 		return cfg, err
 	}
-	if u, parseErr := url.Parse(cfg.ServerURL); parseErr != nil || u.Scheme == "" || u.Host == "" {
-		return cfg, fieldError("client.server_url", "must be an absolute URL")
+	// The legacy single-Server key is still validated when present so a typo
+	// is reported instead of silently ignored, but the profiles above decide
+	// routing.
+	if raw, ok := m["server_url"]; ok && raw != nil {
+		legacy, valueErr := asString(raw, "client.server_url")
+		if valueErr != nil {
+			return cfg, valueErr
+		}
+		if valueErr := validateAbsoluteURL(legacy, "client.server_url"); valueErr != nil {
+			return cfg, valueErr
+		}
 	}
+
+	active, err := selectedServer(m["active_server"], cfg.Servers)
+	if err != nil {
+		return cfg, err
+	}
+	cfg.ActiveServer = active.ID
+	cfg.ServerURL = active.URL
 
 	if cfg.Hotkey, err = stringField(m, "hotkey", "client.hotkey"); err != nil {
 		return cfg, err
@@ -454,11 +519,14 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	if cfg.InitialPrompt, err = asString(m["initial_prompt"], "client.initial_prompt"); err != nil {
 		return cfg, err
 	}
-	if cfg.Refine, err = asBool(m["refine"], "client.refine"); err != nil {
-		return cfg, err
-	}
-	if cfg.Summarize, err = asBool(m["summarize"], "client.summarize"); err != nil {
-		return cfg, err
+	// Deprecated text-processing switches: type-checked but otherwise
+	// ignored. They are never stored and never sent to a Server.
+	for _, key := range []string{"refine", "summarize"} {
+		if raw, ok := m[key]; ok && raw != nil {
+			if _, err = asBool(raw, "client."+key); err != nil {
+				return cfg, err
+			}
+		}
 	}
 
 	audio, err := group(m, "audio", "client.audio")
@@ -532,6 +600,240 @@ func group(m map[string]any, key, path string) (map[string]any, error) {
 	return g, nil
 }
 
+// profileFields is the exact shape one Server profile accepts. Anything else
+// is a typo and is rejected by path.
+var profileFields = map[string]bool{
+	"id":          true,
+	"name":        true,
+	"url":         true,
+	"fingerprint": true,
+	"auto_pair":   true,
+}
+
+func serverProfiles(raw any) ([]ServerProfile, error) {
+	items, err := asList(raw, "client.servers")
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, fieldError("client.servers", "must contain at least one profile")
+	}
+	profiles := make([]ServerProfile, 0, len(items))
+	seen := map[string]int{}
+	for i, item := range items {
+		path := fmt.Sprintf("client.servers[%d]", i)
+		profile, err := serverProfile(item, path)
+		if err != nil {
+			return nil, err
+		}
+		if first, ok := seen[profile.ID]; ok {
+			return nil, fieldError(path+".id", "duplicate id %q (also used by profile %d)", profile.ID, first)
+		}
+		seen[profile.ID] = i
+		profiles = append(profiles, profile)
+	}
+	return profiles, nil
+}
+
+func serverProfile(raw any, path string) (ServerProfile, error) {
+	m, ok := raw.(map[string]any)
+	if !ok {
+		return ServerProfile{}, fieldError(path, "must be a mapping")
+	}
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !profileFields[key] {
+			return ServerProfile{}, fieldError(path+"."+key, "unknown key")
+		}
+	}
+
+	id, err := nonBlankString(m, "id", path+".id")
+	if err != nil {
+		return ServerProfile{}, err
+	}
+	name := id
+	if _, ok := m["name"]; ok {
+		if name, err = nonBlankString(m, "name", path+".name"); err != nil {
+			return ServerProfile{}, err
+		}
+	}
+	profileURL, err := nonBlankString(m, "url", path+".url")
+	if err != nil {
+		return ServerProfile{}, err
+	}
+	if err := validateAbsoluteURL(profileURL, path+".url"); err != nil {
+		return ServerProfile{}, err
+	}
+	fingerprint := ""
+	if raw, ok := m["fingerprint"]; ok && raw != nil {
+		if fingerprint, err = asString(raw, path+".fingerprint"); err != nil {
+			return ServerProfile{}, err
+		}
+	}
+	autoPair := false
+	if raw, ok := m["auto_pair"]; ok && raw != nil {
+		if autoPair, err = asBool(raw, path+".auto_pair"); err != nil {
+			return ServerProfile{}, err
+		}
+	}
+	return ServerProfile{
+		ID:          id,
+		Name:        name,
+		URL:         profileURL,
+		Fingerprint: fingerprint,
+		AutoPair:    autoPair,
+	}, nil
+}
+
+// nonBlankString reads a required string field and rejects one that is only
+// whitespace.
+func nonBlankString(m map[string]any, key, path string) (string, error) {
+	value, err := stringField(m, key, path)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(value) == "" {
+		return "", fieldError(path, "must not be empty")
+	}
+	return value, nil
+}
+
+func asList(value any, path string) ([]any, error) {
+	switch list := value.(type) {
+	case nil:
+		return nil, nil
+	case []any:
+		return list, nil
+	case []map[string]any:
+		items := make([]any, len(list))
+		for i, item := range list {
+			items[i] = item
+		}
+		return items, nil
+	default:
+		return nil, fieldError(path, "must be a list")
+	}
+}
+
+func selectedServer(raw any, profiles []ServerProfile) (ServerProfile, error) {
+	if len(profiles) == 0 {
+		return ServerProfile{}, fieldError("client.servers", "must contain at least one profile")
+	}
+	if raw == nil {
+		return profiles[0], nil
+	}
+	id, err := asString(raw, "client.active_server")
+	if err != nil {
+		return ServerProfile{}, err
+	}
+	if id == "" {
+		return profiles[0], nil
+	}
+	for _, profile := range profiles {
+		if profile.ID == id {
+			return profile, nil
+		}
+	}
+	return ServerProfile{}, fieldError("client.active_server", "%q does not match any Server profile", id)
+}
+
+func validateAbsoluteURL(value, path string) error {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return fieldError(path, "must be an absolute URL")
+	}
+	return nil
+}
+
+// migrateServers turns the legacy single-Server layout into Server profiles
+// before defaults are merged:
+//
+//   - an explicit profile list is kept in order; a missing active_server
+//     selects the first profile; an explicit empty list is rejected;
+//   - an existing client.server_url becomes one active profile;
+//   - a missing list and URL mean a fresh install, which gets the Local
+//     Server profile from Default().
+func migrateServers(m map[string]any) map[string]any {
+	migrated := make(map[string]any, len(m)+2)
+	for key, value := range m {
+		migrated[key] = value
+	}
+
+	if raw, ok := migrated["servers"]; ok && raw != nil {
+		items, err := asList(raw, "client.servers")
+		if err != nil || len(items) == 0 {
+			// Leave the value alone so validation reports the field path.
+			return migrated
+		}
+		if active, ok := migrated["active_server"]; !ok || active == nil || active == "" {
+			if id, ok := firstProfileID(items); ok {
+				migrated["active_server"] = id
+			}
+		}
+		return migrated
+	}
+	delete(migrated, "servers")
+
+	if legacy, ok := migrated["server_url"].(string); ok && strings.TrimSpace(legacy) != "" {
+		migrated["servers"] = []any{map[string]any{
+			"id":          migratedServerID,
+			"name":        "Default Server",
+			"url":         legacy,
+			"fingerprint": "",
+			"auto_pair":   false,
+		}}
+		migrated["active_server"] = migratedServerID
+	}
+	return migrated
+}
+
+func firstProfileID(items []any) (string, bool) {
+	for _, item := range items {
+		m, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := m["id"].(string); ok && strings.TrimSpace(id) != "" {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// DeprecationWarnings lists the keys a "client:" section may still carry that
+// are accepted for one release but never used. The Settings window shows them
+// next to the configuration path; Load/Resolve also pass them to OnWarning.
+func DeprecationWarnings(section map[string]any) []string {
+	var warnings []string
+	for _, key := range []string{"refine", "summarize"} {
+		if _, ok := section[key]; ok {
+			warnings = append(warnings, fmt.Sprintf("client.%s is deprecated and ignored; remove it from the configuration", key))
+		}
+	}
+	return warnings
+}
+
+func warnDeprecated(m map[string]any, warn func(string)) {
+	if warn == nil {
+		return
+	}
+	for _, warning := range DeprecationWarnings(m) {
+		warn(warning)
+	}
+}
+
+func validateEffective(effective map[string]any, warn func(string)) (ClientConfig, error) {
+	if err := rejectUnknown("client", effective, schema); err != nil {
+		return ClientConfig{}, err
+	}
+	warnDeprecated(effective, warn)
+	return configFromMap(effective)
+}
+
 func defaultsMap() (map[string]any, error) {
 	raw, err := yaml.Marshal(Default())
 	if err != nil {
@@ -572,27 +874,21 @@ func Validate(section map[string]any) (ClientConfig, error) {
 	if err != nil {
 		return ClientConfig{}, err
 	}
-	effective := deepMerge(defaults, section)
-	if err := rejectUnknown("client", effective, schema); err != nil {
-		return ClientConfig{}, err
-	}
-	return configFromMap(effective)
+	effective := deepMerge(defaults, migrateServers(section))
+	return validateEffective(effective, nil)
 }
 
 // Resolve merges a file "client:" section with environment and CLI overrides,
-// applies defaults, and validates the result.
+// applies defaults and legacy migration, and validates the result.
 func Resolve(section map[string]any, opts LoadOptions) (ClientConfig, error) {
 	defaults, err := defaultsMap()
 	if err != nil {
 		return ClientConfig{}, err
 	}
-	effective := deepMerge(defaults, section)
-	effective = deepMerge(effective, envOverrides(opts.environ()))
+	effective := deepMerge(section, envOverrides(opts.environ()))
 	effective = deepMerge(effective, opts.CLIOverrides)
-	if err := rejectUnknown("client", effective, schema); err != nil {
-		return ClientConfig{}, err
-	}
-	return configFromMap(effective)
+	effective = deepMerge(defaults, migrateServers(effective))
+	return validateEffective(effective, opts.OnWarning)
 }
 
 // Load resolves and validates the effective Client configuration.

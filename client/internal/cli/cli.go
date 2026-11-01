@@ -101,7 +101,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		overrides["log_level"] = "debug"
 	}
 
-	cfg, err := config.Load(config.LoadOptions{CLIConfig: *configPath, CLIOverrides: overrides})
+	cfg, err := config.Load(config.LoadOptions{
+		CLIConfig:    *configPath,
+		CLIOverrides: overrides,
+		OnWarning: func(message string) {
+			fmt.Fprintf(stderr, "config warning: %s\n", message)
+		},
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "config error: %v\n", err)
 		return 1
@@ -526,11 +532,13 @@ func newRecorder(cfg config.ClientConfig, logger *logging.Logger) (*mic.Recorder
 	})
 }
 
-// newTranscriber builds the HTTP adapter for the configured Server. Warnings
-// from a successful response (a requested processing step that was skipped) are
-// routed to the Client log.
+// newTranscriber builds the HTTP adapter for the active Server profile.
+// config.Load always resolves exactly one active profile, so a missing match
+// here is impossible and the zero profile would fail loudly in the request.
+// Warnings from a successful response are routed to the Client log.
 func newTranscriber(cfg config.ClientConfig, logger *logging.Logger) transcribe.Transcriber {
-	client := transcribe.NewHTTP(cfg.ServerURL, cfg.Language, cfg.InitialPrompt, cfg.Refine, cfg.Summarize)
+	profile, _ := cfg.ActiveProfile()
+	client := transcribe.NewHTTP(profile.URL, cfg.Language, cfg.InitialPrompt)
 	client.OnWarning = func(warning string) { logger.Warning("transcribe: %s", warning) }
 	return client
 }
