@@ -310,7 +310,7 @@ The same Server also ships as a Docker image with two profiles:
 | `cpu` | `python:3.11-slim` | Any host; slower, no GPU needed |
 | `gpu` | `nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04` | NVIDIA GPU; near-instant |
 
-A dedicated host keeps three things outside the container:
+A dedicated host keeps its persistent data outside the container:
 
 | Host | Container | Contents |
 | --- | --- | --- |

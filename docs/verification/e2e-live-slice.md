@@ -51,6 +51,9 @@ stops the Server it started (use `--keep` to leave it up).
 > pairing, Admin API, restart, or persistence regression. For the authenticated
 > Docker contract use [`docker-smoke.md`](docker-smoke.md).
 
+The exit code is non-zero if any check fails, so the harness can gate CI on a
+machine with the models cached.
+
 ## Docker parity smoke
 
 `scripts/docker_smoke.py` (wrapped by `scripts/docker-smoke.sh`) runs the
@@ -62,9 +65,6 @@ container restart), and recreation with the certificate, Devices, models,
 config, and soft-stop flag intact. See
 [`docker-smoke.md`](docker-smoke.md). It is opt-in (workflow dispatch/weekly),
 not part of PR CI, and requires Docker plus a model download.
-
-The exit code is non-zero if any check fails, so the harness can gate CI on a
-machine with the models cached.
 
 ## Recorded results
 
