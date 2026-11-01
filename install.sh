@@ -7,8 +7,8 @@
 # ~/.config/kitsune-whisper/kitsune.yaml (only when absent), and registers a
 # systemd user unit bound to graphical-session.target plus the portal .desktop
 # file. Re-run it to upgrade; the config is left untouched. Run with --uninstall
-# to remove the client, or --uninstall --purge to also drop config, spool, and
-# logs.
+# to remove the client, or --uninstall --purge to also drop config (including
+# Setup progress), spool, and logs.
 set -euo pipefail
 
 REPO="FoxRed-cmd/kitsune-whisper"
@@ -48,9 +48,9 @@ if [[ "$uninstall" == 1 ]]; then
   rm -f "$DATA_DIR/applications/io.github.FoxRed-cmd.kitsune-whisper.desktop"
   if [[ "$purge" == 1 ]]; then
     rm -rf "$CONFIG_DIR" "$CACHE_DIR"
-    echo "kitsune-client uninstalled (config, spool, and logs purged)"
+    echo "kitsune-client uninstalled (config, Setup progress, spool, and logs purged)"
   else
-    echo "kitsune-client uninstalled (config, spool, and logs kept)"
+    echo "kitsune-client uninstalled (config, Setup progress, spool, and logs kept)"
   fi
   exit 0
 fi

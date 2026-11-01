@@ -227,6 +227,8 @@ type Snapshot struct {
 	Error   string        `json:"error,omitempty"`
 	// ErrorAction is the action offered with Error, or "".
 	ErrorAction Action `json:"errorAction,omitempty"`
+	// WizardError is Error translated for the wizard's try step, or "".
+	WizardError string `json:"wizardError,omitempty"`
 	// Server is the advisory reachability and authentication state of the
 	// active profile. It never changes routing.
 	Server trust.Status `json:"server"`
@@ -628,6 +630,7 @@ func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 	snapshot.Server = s.server
 	if snapshot.Error != "" {
 		snapshot.ErrorAction = ActionSettings
+		snapshot.WizardError = s.catalog().T("wizard.try.error", snapshot.Error)
 	}
 	snapshot.Profiles = s.profileStatesLocked()
 	// The live /status body is authoritative; the cached lifecycle result is a

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
@@ -295,8 +296,8 @@ func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels
 			if model.Name == view.ActiveModel {
 				out.WriteString(` <span class="badge active">` + escape(labels.Active) + `</span>`)
 			}
-			out.WriteString(`</td><td>` + escape(humanBytes(model.DiskBytes)) + `</td>`)
-			out.WriteString(`<td>` + escape(humanBytes(model.MemoryBytes)) + `</td>`)
+			out.WriteString(`</td><td>` + escape(humanize.Bytes(model.DiskBytes)) + `</td>`)
+			out.WriteString(`<td>` + escape(humanize.Bytes(model.MemoryBytes)) + `</td>`)
 			out.WriteString(`<td>` + escape(speedLabel(labels, model.Speed)) + `</td>`)
 			out.WriteString(`<td>` + escape(qualityLabel(labels, model.Quality)) + `</td><td class="model-actions">`)
 			out.WriteString(modelActions(model, view, labels))
@@ -345,25 +346,6 @@ func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLab
 	out.WriteString(`<button type="button" data-action="activate-model" data-model="` + escape(model.Name) + `">` + escape(labels.Activate) + `</button>`)
 	out.WriteString(` <button type="button" data-action="delete-model" data-model="` + escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `">` + escape(labels.Delete) + `</button>`)
 	return out.String()
-}
-
-// humanBytes matches the Server's catalog sizes without shipping translations
-// for every unit the way a full unit library would.
-func humanBytes(value int64) string {
-	if value <= 0 {
-		return "—"
-	}
-	units := []string{"B", "KB", "MB", "GB", "TB"}
-	size := float64(value)
-	unit := 0
-	for size >= 1000 && unit < len(units)-1 {
-		size /= 1000
-		unit++
-	}
-	if unit == 0 {
-		return strconv.FormatInt(value, 10) + " B"
-	}
-	return strconv.FormatFloat(size, 'f', 1, 64) + " " + units[unit]
 }
 
 func idleSecondsLabel(seconds int) string {
@@ -420,10 +402,10 @@ func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
 		return labels.Queued
 	case "downloading":
 		if download.TotalBytes > 0 {
-			return labels.Downloading + " " + humanBytes(download.ReceivedBytes) +
-				" / " + humanBytes(download.TotalBytes)
+			return labels.Downloading + " " + humanize.Bytes(download.ReceivedBytes) +
+				" / " + humanize.Bytes(download.TotalBytes)
 		}
-		return labels.Downloading + " " + humanBytes(download.ReceivedBytes)
+		return labels.Downloading + " " + humanize.Bytes(download.ReceivedBytes)
 	case "verifying":
 		return labels.Verifying
 	case "done":
@@ -820,7 +802,7 @@ const pageHTML = `<!doctype html>
     var wizardState = document.querySelector("[data-wizard-try-state]");
     if (wizardState) wizardState.textContent = labels.state || "";
     var wizardError = document.querySelector("[data-wizard-error]");
-    if (wizardError) wizardError.textContent = s.error || "";
+    if (wizardError) wizardError.textContent = s.wizardError || "";
   }
   function renderSettings(v) {
     var host = document.getElementById("settings");
@@ -1115,6 +1097,8 @@ const pageHTML = `<!doctype html>
     } else if (action === "wizard-try-start-server") {
       sendIntent({ action: "wizard-try-start-server" });
     } else if (action === "wizard-try-stop") {
+      var wizardStopOutput = document.getElementById("wizard-try-output");
+      if (wizardStopOutput && wizardStopOutput.focus) wizardStopOutput.focus();
       sendIntent({ action: "wizard-try-stop" });
     } else if (action === "wizard-try-confirm") {
       sendIntent({ action: "wizard-try-confirm" });

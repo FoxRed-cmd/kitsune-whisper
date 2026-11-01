@@ -231,7 +231,7 @@ func TryReadiness(data Data) []Reason {
 		case state == "failed":
 			reasons = append(reasons, Reason{
 				Key:  "wizard.try.missing.modelFailed",
-				Args: []any{name, modelError(data)},
+				Args: []any{name},
 				Step: StepModel,
 			})
 		case presence.ModelKnown && !presence.ModelActive:
@@ -259,13 +259,6 @@ func TryReadiness(data Data) []Reason {
 		})
 	}
 	return reasons
-}
-
-func modelError(data Data) string {
-	if models := data.Servers.Models; models != nil && models.Error != "" {
-		return models.Error
-	}
-	return "the Server reported a failed model"
 }
 
 func profileName(view servers.View) string {

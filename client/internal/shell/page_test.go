@@ -278,6 +278,33 @@ func TestPageHidesTheActionsWithoutSettings(t *testing.T) {
 	}
 }
 
+func TestPageUsesTheTranslatedWizardError(t *testing.T) {
+	page := shell.Page(shell.Snapshot{Error: "raw failure", WizardError: "translated failure"}, sampleView())
+	if !strings.Contains(page, `wizardError.textContent = s.wizardError || ""`) {
+		t.Fatal("the wizard error is not rendered from the translated snapshot field")
+	}
+	if strings.Contains(page, `wizardError.textContent = s.error || ""`) {
+		t.Fatal("the wizard error still renders the raw runtime error")
+	}
+}
+
+func TestWizardTryStopRefocusesTheOutputField(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	start := strings.Index(page, `action === "wizard-try-stop"`)
+	if start < 0 {
+		t.Fatal("the page has no try-stop branch")
+	}
+	end := strings.Index(page[start:], "} else if")
+	if end < 0 {
+		t.Fatal("could not delimit the try-stop branch")
+	}
+	branch := page[start : start+end]
+	if !strings.Contains(branch, `document.getElementById("wizard-try-output")`) ||
+		!strings.Contains(branch, ".focus()") {
+		t.Fatalf("the try-stop branch does not refocus the output field: %s", branch)
+	}
+}
+
 func TestPageKeepsErrorTextInsideTheScript(t *testing.T) {
 	const hostile = `</script><script>alert("x")</script>&<`
 	page := shell.Page(shell.Snapshot{

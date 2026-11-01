@@ -1,9 +1,10 @@
 package wizard
 
 import (
-	"strconv"
+	"fmt"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 )
@@ -309,7 +310,7 @@ func (s *Service) View(data Data) View {
 	view.Hardware = hardwareView(catalog, PlanHardware(data))
 	view.Model = modelView(catalog, data)
 	view.Server = serverView(catalog, data.Servers)
-	view.Try = tryView(catalog, s, data)
+	view.Try = tryView(catalog, labels, s, data)
 	return view
 }
 
@@ -490,7 +491,7 @@ func hardwareView(catalog i18n.Catalog, plan HardwarePlan) HardwareView {
 func modelView(catalog i18n.Catalog, data Data) ModelView {
 	models := data.Servers.Models
 	if models == nil {
-		return ModelView{Error: data.Servers.ModelsError}
+		return ModelView{Error: modelMessage(catalog, "wizard.model.error", data.Servers.ModelsError)}
 	}
 	name := activeModelFromModels(models)
 	view := ModelView{
@@ -501,14 +502,14 @@ func modelView(catalog i18n.Catalog, data Data) ModelView {
 		StateLabel:  modelStateLabel(catalog, models.State),
 		ActiveModel: name,
 		ActivePath:  models.ActivePath,
-		Error:       models.Error,
-		Warning:     models.Warning,
+		Error:       modelMessage(catalog, "wizard.model.error", models.Error),
+		Warning:     modelMessage(catalog, "wizard.model.warning", models.Warning),
 	}
 	for _, model := range models.Models {
 		row := ModelRow{
 			Name:        model.Name,
-			Size:        humanBytes(model.DiskBytes),
-			Memory:      humanBytes(model.MemoryBytes),
+			Size:        humanize.Bytes(model.DiskBytes),
+			Memory:      humanize.Bytes(model.MemoryBytes),
 			Speed:       catalog.T("model.speed." + model.Speed),
 			Quality:     catalog.T("model.quality." + model.Quality),
 			Recommended: model.Recommended || model.Name == view.Recommended,
@@ -537,11 +538,11 @@ func downloadView(catalog i18n.Catalog, download *servers.ModelDownload) *Downlo
 	case "downloading":
 		if download.TotalBytes > 0 {
 			progress := catalog.T("wizard.model.progress",
-				humanBytes(download.ReceivedBytes), humanBytes(download.TotalBytes))
+				humanize.Bytes(download.ReceivedBytes), humanize.Bytes(download.TotalBytes))
 			view.Label = state + " · " + progress
 			view.Percent = int(download.ReceivedBytes * 100 / download.TotalBytes)
 		} else {
-			view.Label = state + " · " + humanBytes(download.ReceivedBytes)
+			view.Label = state + " · " + humanize.Bytes(download.ReceivedBytes)
 		}
 	case "failed":
 		if download.Error != "" {
@@ -592,15 +593,24 @@ func serverView(catalog i18n.Catalog, view servers.View) ServerView {
 	return out
 }
 
-func tryView(catalog i18n.Catalog, service *Service, data Data) TryView {
+func modelMessage(catalog i18n.Catalog, key, message string) string {
+	if message == "" {
+		return ""
+	}
+	return catalog.T(key, message)
+}
+
+func tryView(catalog i18n.Catalog, labels Labels, service *Service, data Data) TryView {
 	state := service.State()
 	view := TryView{
-		Passed:       state.TryPassed,
-		Running:      data.Running,
-		Phase:        data.Phase,
-		PhaseLabel:   phaseLabel(catalog, data.Phase),
-		StateLabel:   stateLabel(catalog, data.Phase),
-		RuntimeError: data.RuntimeError,
+		Passed:     state.TryPassed,
+		Running:    data.Running,
+		Phase:      data.Phase,
+		PhaseLabel: phaseLabel(catalog, data.Phase),
+		StateLabel: stateLabel(catalog, data.Phase),
+	}
+	if data.RuntimeError != "" {
+		view.RuntimeError = fmt.Sprintf(labels.TryError, data.RuntimeError)
 	}
 	for _, reason := range TryReadiness(data) {
 		view.Reasons = append(view.Reasons, ReasonView{
@@ -632,23 +642,6 @@ func stateLabel(catalog i18n.Catalog, phase string) string {
 	return catalog.T("state." + state)
 }
 
-func humanBytes(value int64) string {
-	if value <= 0 {
-		return "—"
-	}
-	units := []string{"B", "KB", "MB", "GB", "TB"}
-	size := float64(value)
-	unit := 0
-	for size >= 1000 && unit < len(units)-1 {
-		size /= 1000
-		unit++
-	}
-	if unit == 0 {
-		return strconv.FormatInt(value, 10) + " B"
-	}
-	return strconv.FormatFloat(size, 'f', 1, 64) + " " + units[unit]
-}
-
 // LabelKeys lists every catalog key the wizard view and its missing reasons
 // use. The i18n completeness test iterates it for both languages.
 func LabelKeys() []string {
@@ -674,6 +667,7 @@ func LabelKeys() []string {
 		"wizard.model.download", "wizard.model.cancel", "wizard.model.activate",
 		"wizard.model.defer", "wizard.model.deferred", "wizard.model.needChoice",
 		"wizard.model.device", "wizard.model.progress",
+		"wizard.model.error", "wizard.model.warning",
 		"model.recommended", "model.installed", "model.size", "model.memory",
 		"wizard.server.title", "wizard.server.localTitle", "wizard.server.localHelp",
 		"wizard.server.localAddress", "wizard.server.useLocal", "wizard.server.localExists",

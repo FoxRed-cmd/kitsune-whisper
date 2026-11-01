@@ -415,6 +415,8 @@ var english = map[string]string{
 	"wizard.model.needChoice":  "Download and activate a model, or choose Download later.",
 	"wizard.model.device":      "Device",
 	"wizard.model.progress":    "%s of %s",
+	"wizard.model.error":       "The Server reported a model error: %s",
+	"wizard.model.warning":     "The Server warned: %s",
 
 	"wizard.server.title":         "Server",
 	"wizard.server.localTitle":    "Local Server",
@@ -423,7 +425,7 @@ var english = map[string]string{
 	"wizard.server.useLocal":      "Create or use Local Server profile",
 	"wizard.server.localExists":   "The Local Server profile is active.",
 	"wizard.server.localCreated":  "The Local Server profile is active and paired.",
-	"wizard.server.localUnpaired": "The Local Server profile is saved, but the Server is not reachable yet: %s",
+	"wizard.server.localUnpaired": "The Local Server profile is saved, but pairing did not finish: %s",
 	"wizard.server.remoteTitle":   "Remote Server (optional)",
 	"wizard.server.remoteHelp":    "On the Server machine, open Settings → Servers and Devices → Generate Pairing code.",
 	"wizard.server.address":       "Address",
@@ -457,7 +459,7 @@ var english = map[string]string{
 	"wizard.try.missing.mismatch":        "The certificate of %s changed; pair it again.",
 	"wizard.try.missing.runtime":         "The Client runtime is not running.",
 	"wizard.try.missing.model":           "No model is active on %s.",
-	"wizard.try.missing.modelFailed":     "The model on %s failed: %s",
+	"wizard.try.missing.modelFailed":     "The model on %s failed; choose another model.",
 	"wizard.try.missing.stopped":         "%s is soft-stopped; start it first.",
 	"wizard.try.missing.mic":             "The microphone is not available: %s",
 

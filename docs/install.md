@@ -123,6 +123,7 @@ and degrades to clipboard-only (the error is in
 | --- | --- | --- |
 | Binary | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-client.exe` |
 | Config | `~/.config/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
+| Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
 | Spool | `~/.cache/kitsune-whisper/spool` | `%LOCALAPPDATA%\kitsune-whisper\spool` |
 | Log | `~/.cache/kitsune-whisper/client.log` | `%LOCALAPPDATA%\kitsune-whisper\client.log` |
 
@@ -252,7 +253,7 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # also removes them
 ```
 
 Uninstall stops and removes the autostart entry and the binary; `--purge` /
-`-Purge` additionally removes the config, Spool, and log.
+`-Purge` additionally removes the config and Setup progress, Spool, and log.
 
 ## Server
 
@@ -384,10 +385,13 @@ must pair again and re-pin the fingerprint, and the first transcription
 downloads the model again. Use it only for a deliberate fresh start.
 
 The container runs as root by default, so files it creates in `./config` and
-in a bind-mounted state directory are root-owned (`0600` for secrets, `0700`
-for `/state`). Named volumes avoid host permission surprises; on SELinux keep
-the `:z` label from compose. On Docker Desktop for Windows, prefer named
-volumes over host bind mounts for `/state` and `/models`.
+in a bind-mounted state directory are root-owned. Secrets (the TLS key, the
+Device and pairing stores, and `wizard.json`) are written `0600`, and the TLS
+directory is private. The state directory itself and `server.log` are created
+with the container's umask, so the log is typically `0644`. Named volumes
+avoid host permission surprises; on SELinux keep the `:z` label from compose.
+On Docker Desktop for Windows, prefer named volumes over host bind mounts for
+`/state` and `/models`.
 
 The real-container smoke for this flow is
 [`docs/verification/docker-smoke.md`](verification/docker-smoke.md); run it

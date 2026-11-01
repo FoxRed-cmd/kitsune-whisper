@@ -274,6 +274,24 @@ func TestRecommendModel(t *testing.T) {
 	}
 }
 
+func TestFailedModelReasonCarriesOnlyTheProfileName(t *testing.T) {
+	data := readyData()
+	models := modelsWith("cpu", "base", "failed", servers.Model{Name: "base", Installed: true})
+	models.Error = "load failed"
+	data.Servers.Models = models
+
+	reasons := wizard.TryReadiness(data)
+	if len(reasons) != 1 || reasons[0].Key != "wizard.try.missing.modelFailed" {
+		t.Fatalf("reasons = %+v", reasons)
+	}
+	if len(reasons[0].Args) != 1 {
+		t.Fatalf("model-failed args = %v, want only the profile name", reasons[0].Args)
+	}
+	if got := reasons[0].Args[0]; got != "Local Server" {
+		t.Fatalf("model-failed arg = %v, want the profile name", got)
+	}
+}
+
 func TestTryReadinessExplainsEachMissingPrerequisite(t *testing.T) {
 	ready := readyData()
 	if reasons := wizard.TryReadiness(ready); len(reasons) != 0 {

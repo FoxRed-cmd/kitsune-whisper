@@ -483,7 +483,7 @@ func TestWizardLocalProfileCreatesAndApplies(t *testing.T) {
 		t.Fatalf("a pairing failure rebuilt the form: %d -> %d", before, after)
 	}
 	messages, _ := env.window().lastMessages()
-	if len(messages.failures) == 0 || !strings.Contains(messages.failures[0], "not reachable") {
+	if len(messages.failures) == 0 || !strings.Contains(messages.failures[0], "pairing did not finish") {
 		t.Fatalf("messages = %+v", messages)
 	}
 	env.stop(t)
@@ -638,6 +638,127 @@ func TestWizardPageEscapesHostileTextAndSpeaksRussian(t *testing.T) {
 	if !strings.Contains(page, "Мастер настройки") {
 		t.Fatalf("the Russian page fell back to English: %s", page[:min(len(page), 200)])
 	}
+}
+
+func TestWizardWelcomeSummaryShowsValuesInBothLanguages(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	cases := []struct {
+		lang   i18n.Lang
+		client string
+		server string
+	}{
+		{lang: i18n.English, client: "Client 9.8.7", server: "Server: Online"},
+		{lang: i18n.Russian, client: "Клиент 9.8.7", server: "Сервер: Доступен"},
+	}
+	for _, tc := range cases {
+		view := wiz.View(wizard.Data{
+			Catalog: i18n.For(tc.lang),
+			Version: "9.8.7",
+			Server:  trust.Status{State: trust.StateOnline},
+			Servers: servers.View{
+				ActiveID: "local",
+				Profiles: []servers.Profile{{ID: "local", Name: "Local Server", Active: true, AutoPair: true}},
+				Models: &servers.ModelsView{
+					Device: "cpu", State: "loaded", ActiveModel: "base",
+					Models: []servers.Model{{Name: "base", Installed: true}},
+				},
+			},
+		})
+		html := shell.WizardHTML(view)
+		for _, want := range []string{tc.client, "Local Server", tc.server, "base"} {
+			if !strings.Contains(html, want) {
+				t.Errorf("%s welcome summary is missing %q: %s", tc.lang, want, html)
+			}
+		}
+		if strings.Contains(html, "%s") {
+			t.Errorf("%s welcome summary contains a literal %%s: %s", tc.lang, html)
+		}
+	}
+}
+
+func TestWizardTranslatesDeviceAndServerErrors(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	english := i18n.For(i18n.English)
+
+	t.Run("microphone list error", func(t *testing.T) {
+		data := wizard.Data{Catalog: english}
+		data.DeviceError = "backend missing"
+		view := wiz.View(data)
+		view.Step = wizard.StepMicrophone
+		html := shell.WizardHTML(view)
+		if want := english.T("wizard.mic.listError", "backend missing"); !strings.Contains(html, want) {
+			t.Fatalf("the microphone error is not translated: %s", html)
+		}
+	})
+
+	t.Run("try runtime error", func(t *testing.T) {
+		for wiz.Step() != wizard.StepTry {
+			if err := wiz.Next(); err != nil {
+				t.Fatalf("next: %v", err)
+			}
+		}
+		view := wiz.View(wizard.Data{Catalog: english, RuntimeError: "socket closed"})
+		html := shell.WizardHTML(view)
+		if want := english.T("wizard.try.error", "socket closed"); !strings.Contains(html, want) {
+			t.Fatalf("the try error is not translated: %s", html)
+		}
+	})
+
+	t.Run("model error and warning", func(t *testing.T) {
+		russian := i18n.For(i18n.Russian)
+		view := wiz.View(wizard.Data{
+			Catalog: russian,
+			Server:  trust.Status{State: trust.StateOnline},
+			Servers: servers.View{
+				ActiveID: "local",
+				Profiles: []servers.Profile{{ID: "local", Name: "Local Server", Active: true, AutoPair: true}},
+				Models: &servers.ModelsView{
+					Device: "cpu", State: "loaded", ActiveModel: "base",
+					Error: "load failed", Warning: "low memory",
+					Models: []servers.Model{{Name: "base", Installed: true}},
+				},
+			},
+		})
+		view.Step = wizard.StepModel
+		html := shell.WizardHTML(view)
+		for _, want := range []string{
+			russian.T("wizard.model.error", "load failed"),
+			russian.T("wizard.model.warning", "low memory"),
+		} {
+			if !strings.Contains(html, want) {
+				t.Fatalf("the model message is not translated: missing %q in %s", want, html)
+			}
+		}
+	})
+}
+
+func TestWizardTryErrorIsTranslatedInTheStatusSnapshot(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	env := newWizardEnv(t, wiz)
+	env.servers.health["local"] = trust.Status{State: trust.StateOnline, Model: "base", ModelState: "loaded"}
+	env.start(t)
+	waitFor(t, "the Server status", func() bool { return env.shell.Snapshot().Server.State == trust.StateOnline })
+	env.navigate(t, wizard.StepTry)
+
+	const raw = "socket closed"
+	env.rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseIdle, Error: raw})
+	waitFor(t, "the failed cycle", func() bool { return env.shell.Snapshot().Error == raw })
+
+	snapshot := env.shell.Snapshot()
+	want := i18n.For(i18n.English).T("wizard.try.error", raw)
+	if snapshot.Error != raw {
+		t.Fatalf("raw error = %q, want %q", snapshot.Error, raw)
+	}
+	if snapshot.WizardError != want {
+		t.Fatalf("translated wizard error = %q, want %q", snapshot.WizardError, want)
+	}
+	waitFor(t, "the window wizard error", func() bool { return env.window().last().WizardError == want })
+	if got := env.window().last().WizardError; got != want {
+		t.Fatalf("window wizard error = %q, want %q", got, want)
+	}
+	env.stop(t)
 }
 
 func TestWizardCloseIsRespectedByLaterHealthChecks(t *testing.T) {
