@@ -186,8 +186,11 @@ kitsune-client gui --hidden     # start in the Tray without a window
 kitsune-client run              # headless: hotkeys and the control socket only
 ```
 
-Press **Ctrl+Shift+Space** to start and stop recording; **Esc** cancels without
-injecting. Closing the Settings window hides it to the Tray; **Quit** in the
+Press **Ctrl+Shift+Space** to start and stop recording; **Ctrl+Shift+Q** cancels
+without injecting. On GNOME Wayland, open Settings → Dictation and click
+**Add shortcuts to GNOME** if the portal does not deliver the hotkeys; the
+Client then uses GNOME custom shortcuts and keeps them in sync with these
+values. Closing the Settings window hides it to the Tray; **Quit** in the
 Tray stops the Client and releases its hotkeys, microphone, control socket, and
 single-instance lock. **Restart** re-executes the Client.
 

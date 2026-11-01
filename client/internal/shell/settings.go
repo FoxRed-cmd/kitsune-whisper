@@ -10,6 +10,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/gnome"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
@@ -20,10 +21,39 @@ import (
 // *dictation.Service implements it.
 type Settings interface {
 	View() dictation.View
+	Config() config.ClientConfig
 	Catalog() i18n.Catalog
 	Save(patch map[string]any) (dictation.Outcome, error)
 	ValidateHotkey(path, value string) error
 	StartLevelTest(device string) (dictation.LevelStream, error)
+}
+
+// Startup controls the login autostart registration for the Client and the
+// local Server. The Settings window renders the state and calls the setters;
+// the platform implementation lives in the CLI, so the shell stays testable.
+type Startup interface {
+	Status() (clientEnabled, serverEnabled, serverAvailable bool)
+	SetClient(enabled bool) error
+	SetServer(enabled bool) error
+}
+
+// StartupView is the autostart screen's state.
+type StartupView struct {
+	Available       bool `json:"available"`
+	Client          bool `json:"client"`
+	Server          bool `json:"server"`
+	ServerAvailable bool `json:"serverAvailable"`
+}
+
+// GnomeShortcuts manages the Client's GNOME custom keybindings. It is optional:
+// only a GNOME Wayland session gets the offer, and *gnome.Manager implements it.
+type GnomeShortcuts interface {
+	Status() (gnome.Status, error)
+	Apply(toggle, cancel string) error
+	Remove() error
+	// ReleasePortal drops the accelerators GNOME's GlobalShortcuts portal
+	// persisted for the Client, so they are free for the custom keybindings.
+	ReleasePortal() error
 }
 
 // Servers is the Server-profile and Device-management service the window
@@ -53,6 +83,19 @@ type Servers interface {
 	ActivateModel(ctx context.Context, profileID, model, path string) (servers.ModelsView, error)
 	DeleteModel(ctx context.Context, profileID, model string) error
 	SetIdleTimeout(ctx context.Context, profileID string, seconds int) (servers.ModelsView, error)
+}
+
+// ServerFieldLabel is the human name and explanation of one Server setting.
+// The Server reports absolute paths only; the Client owns the wording.
+type ServerFieldLabel struct {
+	Label string `json:"label"`
+	Help  string `json:"help"`
+}
+
+// ServerSettingsGroup is one titled block of the Server settings form.
+type ServerSettingsGroup struct {
+	Title  string   `json:"title"`
+	Fields []string `json:"fields"`
 }
 
 // ServerLabels are the translated strings for the Servers and Devices screens.
@@ -92,27 +135,41 @@ type ServerLabels struct {
 	ExposureOnState  string            `json:"exposureOnState"`
 	ExposureOffState string            `json:"exposureOffState"`
 
-	ManagementTitle  string `json:"managementTitle"`
-	ManagementHelp   string `json:"managementHelp"`
-	RestartServer    string `json:"restartServer"`
-	StopServer       string `json:"stopServer"`
-	StartServer      string `json:"startServer"`
-	ModelState       string `json:"modelState"`
-	SettingsTitle    string `json:"settingsTitle"`
-	SettingsHelp     string `json:"settingsHelp"`
-	SaveSettings     string `json:"saveSettings"`
-	AdvancedValue    string `json:"advancedValue"`
-	Source           string `json:"source"`
-	ModeRestart      string `json:"modeRestart"`
-	ModeHot          string `json:"modeHot"`
-	Locked           string `json:"locked"`
-	LogsTitle        string `json:"logsTitle"`
-	LogsHelp         string `json:"logsHelp"`
-	LogPath          string `json:"logPath"`
-	LogTruncated     string `json:"logTruncated"`
-	NoLogs           string `json:"noLogs"`
-	LoadLogs         string `json:"loadLogs"`
-	CopyLogs         string `json:"copyLogs"`
+	ManagementTitle string `json:"managementTitle"`
+	ManagementHelp  string `json:"managementHelp"`
+	RestartServer   string `json:"restartServer"`
+	StopServer      string `json:"stopServer"`
+	StartServer     string `json:"startServer"`
+	ModelState      string `json:"modelState"`
+	SettingsTitle   string `json:"settingsTitle"`
+	SettingsHelp    string `json:"settingsHelp"`
+	SaveSettings    string `json:"saveSettings"`
+	AdvancedValue   string `json:"advancedValue"`
+	Source          string `json:"source"`
+	ModeRestart     string `json:"modeRestart"`
+	ModeHot         string `json:"modeHot"`
+	Locked          string `json:"locked"`
+	LogsTitle       string `json:"logsTitle"`
+	LogsHelp        string `json:"logsHelp"`
+	LogPath         string `json:"logPath"`
+	LogTruncated    string `json:"logTruncated"`
+	NoLogs          string `json:"noLogs"`
+	LoadLogs        string `json:"loadLogs"`
+	CopyLogs        string `json:"copyLogs"`
+	ClientLogsTitle string `json:"clientLogsTitle"`
+	ClientLogPath   string `json:"clientLogPath"`
+	CopyClientLogs  string `json:"copyClientLogs"`
+	LogLevelTitle   string `json:"logLevelTitle"`
+	LogLevelHelp    string `json:"logLevelHelp"`
+
+	StartupTitle             string `json:"startupTitle"`
+	StartupHelp              string `json:"startupHelp"`
+	StartupClient            string `json:"startupClient"`
+	StartupClientHelp        string `json:"startupClientHelp"`
+	StartupServer            string `json:"startupServer"`
+	StartupServerHelp        string `json:"startupServerHelp"`
+	StartupServerUnavailable string `json:"startupServerUnavailable"`
+
 	DiagnosticsTitle string `json:"diagnosticsTitle"`
 	DiagnosticsHelp  string `json:"diagnosticsHelp"`
 	ClientVersion    string `json:"clientVersion"`
@@ -120,6 +177,7 @@ type ServerLabels struct {
 	ServerState      string `json:"serverState"`
 	DiagnosticsFor   string `json:"diagnosticsFor"`
 	ModelName        string `json:"modelName"`
+	DiagnosticsModel string `json:"diagnosticsModel"`
 	ModelPath        string `json:"modelPath"`
 	IdleUnload       string `json:"idleUnload"`
 	Redacted         string `json:"redacted"`
@@ -128,6 +186,18 @@ type ServerLabels struct {
 	CopyDiagnostics  string `json:"copyDiagnostics"`
 	RefreshDiag      string `json:"refreshDiagnostics"`
 	Unavailable      string `json:"unavailable"`
+
+	// FieldLabels names and explains the Server settings the form renders.
+	FieldLabels    map[string]ServerFieldLabel `json:"fieldLabels"`
+	SettingsGroups []ServerSettingsGroup       `json:"settingsGroups"`
+	OtherTitle     string                      `json:"otherTitle"`
+	BoolOn         string                      `json:"boolOn"`
+	BoolOff        string                      `json:"boolOff"`
+	// Choices holds the translated options for enumerated Server settings
+	// (device, compute type, task, log level).
+	Choices map[string][]dictation.Option `json:"choices"`
+	// LanguageOptions fills the Server's spoken-language select.
+	LanguageOptions []dictation.Option `json:"languageOptions"`
 }
 
 // ModelLabels are the translated strings for the Model catalog screen.
@@ -179,12 +249,25 @@ type ModelLabels struct {
 	RecommendedDevice string `json:"recommendedDevice"`
 }
 
+// GnomeShortcutsView renders the GNOME custom-keybinding offer. Visible is
+// false outside a GNOME Wayland session.
+type GnomeShortcutsView struct {
+	Visible   bool   `json:"visible"`
+	Installed bool   `json:"installed"`
+	Title     string `json:"title"`
+	Help      string `json:"help"`
+	Add       string `json:"add"`
+	Remove    string `json:"remove"`
+	Error     string `json:"error,omitempty"`
+}
+
 // SettingsView is everything the Settings window renders: the Dictation and
 // General screens plus the Servers, Devices, Spool, and Models screens.
 type SettingsView struct {
 	dictation.View
 	Servers     servers.View    `json:"servers"`
 	Diagnostics DiagnosticsView `json:"diagnostics"`
+	Startup     StartupView     `json:"startup"`
 	// ModelState is the translated lifecycle state of the active Server.
 	ModelState  string       `json:"modelState,omitempty"`
 	Labels      ServerLabels `json:"serverLabels"`
@@ -192,6 +275,8 @@ type SettingsView struct {
 	Spool       SpoolView    `json:"spool"`
 	// Wizard is the Setup wizard view; Enabled is false in a build without it.
 	Wizard wizard.View `json:"wizard"`
+	// Gnome is the GNOME custom-keybinding offer shown on GNOME Wayland.
+	Gnome GnomeShortcutsView `json:"gnome"`
 }
 
 // SettingsPayload is the JSON shape of a settings update: the view plus its
@@ -209,10 +294,124 @@ func (s *Shell) serversView() servers.View {
 	return s.opts.Servers.View()
 }
 
+// serverFieldSpec names one Server setting the form shows. The Server sends
+// absolute paths only, so the label and help live here, next to the grouping.
+type serverFieldSpec struct {
+	path     string
+	labelKey string
+	helpKey  string
+}
+
+var serverFieldSpecs = []serverFieldSpec{
+	{"server.host", "server.field.host", "server.help.host"},
+	{"server.port", "server.field.port", "server.help.port"},
+	{"server.tls.enabled", "server.field.tlsEnabled", "server.help.tlsEnabled"},
+	{"server.tls.cert_file", "server.field.tlsCert", "server.help.tlsCert"},
+	{"server.tls.key_file", "server.field.tlsKey", "server.help.tlsKey"},
+
+	{"server.model", "server.field.model", "server.help.model"},
+	{"server.device", "server.field.device", "server.help.device"},
+	{"server.compute_type", "server.field.computeType", "server.help.computeType"},
+	{"server.workers", "server.field.workers", "server.help.workers"},
+	{"server.idle_unload_seconds", "server.field.idleUnload", "server.help.idleUnload"},
+	{"server.download_root", "server.field.downloadRoot", "server.help.downloadRoot"},
+	{"server.catalog_file", "server.field.catalogFile", "server.help.catalogFile"},
+	{"server.offline", "server.field.offline", "server.help.offline"},
+
+	{"server.decode.task", "server.field.decodeTask", "server.help.decodeTask"},
+	{"server.decode.language", "server.field.decodeLanguage", "server.help.decodeLanguage"},
+	{"server.decode.beam_size", "server.field.beamSize", "server.help.beamSize"},
+	{"server.decode.temperature", "server.field.temperature", "server.help.temperature"},
+	{"server.decode.vad_filter", "server.field.vad", "server.help.vad"},
+	{"server.decode.initial_prompt", "server.field.initialPrompt", "server.help.initialPrompt"},
+
+	{"server.max_audio_seconds", "server.field.maxAudio", "server.help.maxAudio"},
+	{"server.max_upload_mb", "server.field.maxUpload", "server.help.maxUpload"},
+	{"server.devices_file", "server.field.devicesFile", "server.help.devicesFile"},
+	{"server.log_level", "server.field.logLevel", "server.help.logLevel"},
+}
+
+// serverChoiceSpecs names the enumerated Server settings; the form renders
+// them as selects instead of raw YAML words.
+var serverChoiceSpecs = map[string][]struct {
+	value    string
+	labelKey string
+}{
+	"server.device": {
+		{"auto", "server.choice.auto"},
+		{"cpu", "server.choice.cpu"},
+		{"cuda", "server.choice.cuda"},
+	},
+	"server.compute_type": {
+		{"auto", "server.choice.auto"},
+		{"int8", "server.choice.int8"},
+		{"int8_float16", "server.choice.int8Float16"},
+		{"int8_float32", "server.choice.int8Float32"},
+		{"int16", "server.choice.int16"},
+		{"float16", "server.choice.float16"},
+		{"bfloat16", "server.choice.bfloat16"},
+		{"float32", "server.choice.float32"},
+	},
+	"server.decode.task": {
+		{"transcribe", "server.choice.transcribe"},
+		{"translate", "server.choice.translate"},
+	},
+	"server.log_level": {
+		{"debug", "server.choice.debug"},
+		{"info", "server.choice.info"},
+		{"warning", "server.choice.warning"},
+		{"error", "server.choice.error"},
+	},
+}
+
+// serverSettingsGroupSpecs lists the visible Server settings in reading order.
+// Fields not named here fall into a final "Other" group.
+var serverSettingsGroupSpecs = []struct {
+	titleKey string
+	fields   []string
+}{
+	{"server.group.network", []string{
+		"server.host", "server.port", "server.tls.enabled", "server.tls.cert_file", "server.tls.key_file",
+	}},
+	{"server.group.model", []string{
+		"server.model", "server.device", "server.compute_type", "server.workers",
+		"server.idle_unload_seconds", "server.download_root", "server.catalog_file", "server.offline",
+	}},
+	{"server.group.recognition", []string{
+		"server.decode.task", "server.decode.language", "server.decode.beam_size",
+		"server.decode.temperature", "server.decode.vad_filter", "server.decode.initial_prompt",
+	}},
+	{"server.group.limits", []string{
+		"server.max_audio_seconds", "server.max_upload_mb", "server.devices_file", "server.log_level",
+	}},
+}
+
 // serverLabels translates the Servers and Devices screens in the active
 // interface language.
 func (s *Shell) serverLabels() ServerLabels {
 	catalog := s.catalog()
+	fieldLabels := make(map[string]ServerFieldLabel, len(serverFieldSpecs))
+	for _, spec := range serverFieldSpecs {
+		fieldLabels[spec.path] = ServerFieldLabel{
+			Label: catalog.T(spec.labelKey),
+			Help:  catalog.T(spec.helpKey),
+		}
+	}
+	groups := make([]ServerSettingsGroup, 0, len(serverSettingsGroupSpecs))
+	for _, group := range serverSettingsGroupSpecs {
+		groups = append(groups, ServerSettingsGroup{
+			Title:  catalog.T(group.titleKey),
+			Fields: group.fields,
+		})
+	}
+	choices := make(map[string][]dictation.Option, len(serverChoiceSpecs))
+	for path, specs := range serverChoiceSpecs {
+		options := make([]dictation.Option, 0, len(specs))
+		for _, spec := range specs {
+			options = append(options, dictation.Option{Value: spec.value, Label: catalog.T(spec.labelKey)})
+		}
+		choices[path] = options
+	}
 	return ServerLabels{
 		Title:            catalog.T("section.servers"),
 		Profiles:         catalog.T("server.profiles"),
@@ -249,27 +448,41 @@ func (s *Shell) serverLabels() ServerLabels {
 		ExposureOnState:  catalog.T("server.exposureStateOn"),
 		ExposureOffState: catalog.T("server.exposureStateOff"),
 
-		ManagementTitle:  catalog.T("server.managementTitle"),
-		ManagementHelp:   catalog.T("server.managementHelp"),
-		RestartServer:    catalog.T("server.restart"),
-		StopServer:       catalog.T("server.stopSoft"),
-		StartServer:      catalog.T("server.start"),
-		ModelState:       catalog.T("server.modelState"),
-		SettingsTitle:    catalog.T("server.settingsTitle"),
-		SettingsHelp:     catalog.T("server.settingsHelp"),
-		SaveSettings:     catalog.T("action.saveServer"),
-		AdvancedValue:    catalog.T("server.advancedValue"),
-		Source:           catalog.T("server.source"),
-		ModeRestart:      catalog.T("server.modeRestart"),
-		ModeHot:          catalog.T("server.modeHot"),
-		Locked:           catalog.T("server.locked"),
-		LogsTitle:        catalog.T("server.logsTitle"),
-		LogsHelp:         catalog.T("server.logsHelp"),
-		LogPath:          catalog.T("server.logPath"),
-		LogTruncated:     catalog.T("server.logTruncated"),
-		NoLogs:           catalog.T("server.noLogs"),
-		LoadLogs:         catalog.T("action.loadLogs"),
-		CopyLogs:         catalog.T("action.copyLogs"),
+		ManagementTitle: catalog.T("server.managementTitle"),
+		ManagementHelp:  catalog.T("server.managementHelp"),
+		RestartServer:   catalog.T("server.restart"),
+		StopServer:      catalog.T("server.stopSoft"),
+		StartServer:     catalog.T("server.start"),
+		ModelState:      catalog.T("server.modelState"),
+		SettingsTitle:   catalog.T("server.settingsTitle"),
+		SettingsHelp:    catalog.T("server.settingsHelp"),
+		SaveSettings:    catalog.T("action.saveServer"),
+		AdvancedValue:   catalog.T("server.advancedValue"),
+		Source:          catalog.T("server.source"),
+		ModeRestart:     catalog.T("server.modeRestart"),
+		ModeHot:         catalog.T("server.modeHot"),
+		Locked:          catalog.T("server.locked"),
+		LogsTitle:       catalog.T("server.logsTitle"),
+		LogsHelp:        catalog.T("server.logsHelp"),
+		LogPath:         catalog.T("server.logPath"),
+		LogTruncated:    catalog.T("server.logTruncated"),
+		NoLogs:          catalog.T("server.noLogs"),
+		LoadLogs:        catalog.T("action.loadLogs"),
+		CopyLogs:        catalog.T("action.copyLogs"),
+		ClientLogsTitle: catalog.T("diagnostics.clientLogs"),
+		ClientLogPath:   catalog.T("diagnostics.clientLogPath"),
+		CopyClientLogs:  catalog.T("action.copyClientLogs"),
+		LogLevelTitle:   catalog.T("diagnostics.logLevel"),
+		LogLevelHelp:    catalog.T("diagnostics.logLevelHelp"),
+
+		StartupTitle:             catalog.T("startup.title"),
+		StartupHelp:              catalog.T("startup.help"),
+		StartupClient:            catalog.T("startup.client"),
+		StartupClientHelp:        catalog.T("startup.clientHelp"),
+		StartupServer:            catalog.T("startup.server"),
+		StartupServerHelp:        catalog.T("startup.serverHelp"),
+		StartupServerUnavailable: catalog.T("startup.serverUnavailable"),
+
 		DiagnosticsTitle: catalog.T("diagnostics.title"),
 		DiagnosticsHelp:  catalog.T("diagnostics.help"),
 		ClientVersion:    catalog.T("diagnostics.clientVersion"),
@@ -277,6 +490,7 @@ func (s *Shell) serverLabels() ServerLabels {
 		ServerState:      catalog.T("diagnostics.serverState"),
 		DiagnosticsFor:   catalog.T("diagnostics.profile"),
 		ModelName:        catalog.T("diagnostics.model"),
+		DiagnosticsModel: catalog.T("diagnostics.modelState"),
 		ModelPath:        catalog.T("diagnostics.modelPath"),
 		IdleUnload:       catalog.T("diagnostics.idleUnload"),
 		Redacted:         catalog.T("diagnostics.redacted"),
@@ -285,6 +499,14 @@ func (s *Shell) serverLabels() ServerLabels {
 		CopyDiagnostics:  catalog.T("action.copyDiagnostics"),
 		RefreshDiag:      catalog.T("action.refreshDiagnostics"),
 		Unavailable:      catalog.T("diagnostics.unavailable"),
+
+		FieldLabels:     fieldLabels,
+		SettingsGroups:  groups,
+		OtherTitle:      catalog.T("server.group.other"),
+		BoolOn:          catalog.T("server.boolOn"),
+		BoolOff:         catalog.T("server.boolOff"),
+		Choices:         choices,
+		LanguageOptions: dictation.LanguageOptions(catalog, ""),
 	}
 }
 
@@ -299,10 +521,13 @@ func serverStateLabels(catalog i18n.Catalog) map[string]string {
 		trust.StateUnpinned,
 		trust.StateMismatch,
 	}
-	labels := make(map[string]string, len(states))
+	labels := make(map[string]string, len(states)+1)
 	for _, state := range states {
 		labels[string(state)] = catalog.T("server." + string(state))
 	}
+	// Not a reachability state: a soft-stopped Server is still online, but the
+	// profile row shows the lifecycle instead of claiming it is ready.
+	labels["stopped"] = catalog.T("server.stopped")
 	return labels
 }
 
@@ -379,13 +604,30 @@ func (s *Shell) settingsView() SettingsView {
 		View:        s.dictationView(),
 		Servers:     serverView,
 		Diagnostics: s.diagnosticsView(serverView),
+		Startup:     s.startupView(),
 		ModelState:  modelState,
 		Labels:      s.serverLabels(),
 		ModelLabels: s.modelLabels(),
 		Spool:       s.spoolView(),
 		Wizard:      s.wizardView(),
+		Gnome:       s.gnomeShortcutsView(),
 	}
 	return view
+}
+
+// startupView reads the login autostart state. Without a controller (a
+// headless or non-systemd build) the screen is omitted.
+func (s *Shell) startupView() StartupView {
+	if s.opts.Startup == nil {
+		return StartupView{}
+	}
+	client, server, available := s.opts.Startup.Status()
+	return StartupView{
+		Available:       true,
+		Client:          client,
+		Server:          server,
+		ServerAvailable: available,
+	}
 }
 
 // liveServersView merges the live /status body into the cached Servers view,
@@ -457,6 +699,10 @@ type Intent struct {
 	Model string `json:"model,omitempty"`
 	// Seconds carries the idle unload timeout.
 	Seconds int `json:"seconds,omitempty"`
+	// Component selects the autostart component: client or server.
+	Component string `json:"component,omitempty"`
+	// Enabled is the requested autostart state.
+	Enabled bool `json:"enabled,omitempty"`
 	// Tail is the number of log lines for ActionLoadLogs; 0 uses 200.
 	Tail int `json:"tail,omitempty"`
 	// Hotkey and Trigger carry the wizard's hotkey step values.
@@ -472,6 +718,8 @@ type Intent struct {
 const (
 	IntentSave               = "save"
 	IntentValidate           = "validate"
+	IntentGnomeShortcutsAdd  = "gnome-shortcuts-add"
+	IntentGnomeShortcutsDrop = "gnome-shortcuts-remove"
 	IntentTestMic            = "test-mic"
 	IntentStopMic            = "stop-mic"
 	IntentRestart            = "restart"
@@ -493,10 +741,14 @@ const (
 	IntentDeleteModel        = "delete-model"
 	IntentIdleTimeout        = "idle-timeout"
 	IntentSaveServer         = "save-server"
+	IntentSetStartup         = "set-startup"
+	IntentSetLogLevel        = "set-log-level"
+	IntentPrimeDiagnostics   = "prime-diagnostics"
 	IntentRefreshDiagnostics = "refresh-diagnostics"
 	IntentLoadLogs           = "load-logs"
 	IntentCopyDiagnostics    = "copy-diagnostics"
 	IntentCopyLogs           = "copy-logs"
+	IntentCopyClientLogs     = "copy-client-logs"
 	IntentServerRestart      = "server-restart"
 	IntentServerStop         = "server-stop"
 	IntentServerStart        = "server-start"
@@ -550,6 +802,12 @@ func (s *Shell) HandleIntent(payload []byte) error {
 			}
 		}
 		s.save(patch)
+		return nil
+	case IntentGnomeShortcutsAdd:
+		s.installGnomeShortcuts()
+		return nil
+	case IntentGnomeShortcutsDrop:
+		s.removeGnomeShortcuts()
 		return nil
 	case IntentValidate:
 		if s.opts.Settings == nil {
@@ -637,8 +895,17 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		}
 		s.saveServerSettings(patch)
 		return nil
+	case IntentSetStartup:
+		s.setStartup(intent.Component, intent.Enabled)
+		return nil
+	case IntentSetLogLevel:
+		s.setLogLevel(intent.Value)
+		return nil
 	case IntentRefreshDiagnostics:
 		s.refreshDiagnostics()
+		return nil
+	case IntentPrimeDiagnostics:
+		s.primeDiagnostics()
 		return nil
 	case IntentLoadLogs:
 		s.loadServerLogs(intent.Tail)
@@ -648,6 +915,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentCopyLogs:
 		s.copyLogs()
+		return nil
+	case IntentCopyClientLogs:
+		s.copyClientLogs()
 		return nil
 	case IntentServerRestart:
 		s.runServerAction(actionServerRestart)
@@ -724,9 +994,6 @@ func (s *Shell) refreshDevices() {
 		s.pushMessages(nil, []string{s.catalog().T("error.server.devices", err.Error())})
 		return
 	}
-	s.mu.Lock()
-	s.devicesLoaded = view.ActiveID
-	s.mu.Unlock()
 	s.pushSettings()
 	s.pushMessages([]string{s.catalog().T("notice.server.devices", len(devices))}, nil)
 }
@@ -1024,6 +1291,9 @@ func (s *Shell) save(patch map[string]any) {
 	// A written save may have changed the language and the values; re-render
 	// the form. A rejected save writes nothing, so the form is left alone.
 	if outcome.Written {
+		if warning := s.syncGnomeShortcuts(); warning != "" {
+			failures = append(failures, warning)
+		}
 		s.pushSettings()
 	}
 	s.pushMessages(notices, failures)

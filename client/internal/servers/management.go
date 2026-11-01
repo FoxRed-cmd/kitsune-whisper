@@ -1,6 +1,10 @@
 package servers
 
-import "context"
+import (
+	"context"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+)
 
 // ConfigField is one Server setting as the Admin API reports it: the effective
 // value, where it came from, whether an environment variable or command-line
@@ -148,7 +152,38 @@ func (s *Service) runLifecycle(
 		s.mu.Unlock()
 	}
 	s.cacheLifecycle(profileID, &result, nil)
+	s.recordLifecycle(profileID, result)
 	return result, nil
+}
+
+// recordLifecycle folds a just-completed stop/start/restart into the cached
+// health of one profile. The request reached the Server, so a profile without
+// a health result is online; its model state is now what the reply reported.
+// Without this, the profile list would keep calling a soft-stopped Server
+// "Online" until the next background probe.
+func (s *Service) recordLifecycle(profileID string, result ServerLifecycle) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	status, known := s.health[profileID]
+	if known && status.State != trust.StateOnline {
+		return
+	}
+	status.State = trust.StateOnline
+	status.Stopped = result.Stopped
+	status.Loaded = result.Loaded
+	if result.Model != "" {
+		status.Model = result.Model
+	}
+	if result.ModelState != "" {
+		status.ModelState = result.ModelState
+	}
+	if result.ModelPath != "" {
+		status.ModelPath = result.ModelPath
+	}
+	if result.IdleUnloadSeconds != 0 {
+		status.IdleUnloadSeconds = result.IdleUnloadSeconds
+	}
+	s.health[profileID] = status
 }
 
 func (s *Service) cacheConfig(profileID string, config *ServerConfig, err error) {

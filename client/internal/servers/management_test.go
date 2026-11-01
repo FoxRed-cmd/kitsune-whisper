@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 func pairedService(t *testing.T) (*servers.Service, *fakeServer, string) {
@@ -125,6 +126,9 @@ func TestLifecycleCallsReachTheAdminAPIAndUpdateTheView(t *testing.T) {
 	if result, err := service.Stop(context.Background(), profileID); err != nil || !result.Stopped {
 		t.Fatalf("stop = %+v, %v", result, err)
 	}
+	if stopped := service.View(); !profileHealth(stopped, profileID).Stopped {
+		t.Fatalf("the stopped profile still reports a ready health: %+v", stopped.Profiles)
+	}
 	if result, err := service.Start(context.Background(), profileID); err != nil || result.Stopped {
 		t.Fatalf("start = %+v, %v", result, err)
 	}
@@ -135,9 +139,21 @@ func TestLifecycleCallsReachTheAdminAPIAndUpdateTheView(t *testing.T) {
 	if view.Lifecycle == nil || view.Lifecycle.ModelState != "loaded" {
 		t.Fatalf("view = %+v", view)
 	}
+	if started := profileHealth(view, profileID); started.Stopped || started.ModelState != "loaded" {
+		t.Fatalf("the started profile is still soft-stopped: %+v", started)
+	}
 	if view.LifecycleError != "" {
 		t.Fatalf("lifecycle error = %q", view.LifecycleError)
 	}
+}
+
+func profileHealth(view servers.View, profileID string) trust.Status {
+	for _, profile := range view.Profiles {
+		if profile.ID == profileID {
+			return profile.Health
+		}
+	}
+	return trust.Status{}
 }
 
 func TestALegacyRestartReplyKeepsTheCachedLifecycleState(t *testing.T) {

@@ -13,6 +13,7 @@ package shell
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,6 +23,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
@@ -286,7 +288,7 @@ func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 		Running:       catalog.T("status.running"),
 		Stopped:       catalog.T("status.stopped"),
 		Server:        catalog.T("status.server"),
-		ServerState:   serverStateLabel(catalog, snapshot.Server.State),
+		ServerState:   serverStatusLabel(catalog, snapshot.Server),
 		Profiles:      catalog.T("tray.profiles"),
 		OpenSettings:  catalog.T("action.openSettings"),
 		ServerRestart: catalog.T("tray.serverRestart"),
@@ -302,6 +304,23 @@ func modelLifecycleLabel(catalog i18n.Catalog, state string) string {
 		return ""
 	}
 	return catalog.T("state.model." + state)
+}
+
+// serverStatusLabel translates one Server health result. A Server that answers
+// the Admin API but is soft-stopped is still reachable, yet calling it
+// "Online" is misleading: transcription fails with 503 until it is started.
+func serverStatusLabel(catalog i18n.Catalog, status trust.Status) string {
+	if status.State == trust.StateOnline && serverSoftStopped(status) {
+		return catalog.T("server.stopped")
+	}
+	return serverStateLabel(catalog, status.State)
+}
+
+// serverSoftStopped reports a reachable Server whose model lifecycle is
+// stopped. Older Servers may omit Lifecycle.Stopped but still report the model
+// state, so both are accepted.
+func serverSoftStopped(status trust.Status) bool {
+	return status.Stopped || status.ModelState == "stopped"
 }
 
 // serverStateLabel translates the Server reachability/auth state shown next to
@@ -334,6 +353,14 @@ type Options struct {
 	// Servers is the Server-profile and Device-management service. Nil renders
 	// no Servers or Devices screens.
 	Servers Servers
+	// Startup controls login autostart for the Client and the local Server.
+	// Nil omits the Startup screen.
+	Startup Startup
+	// GnomeShortcuts manages GNOME custom keybindings. Nil hides the offer; the
+	// Client wires it only on GNOME Wayland.
+	GnomeShortcuts GnomeShortcuts
+	// LogPath is the Client's log file, shown in Diagnostics.
+	LogPath string
 	// Spool is the Spool screen's service. Nil renders no Spool screen.
 	Spool Spool
 	// Wizard is the first-run Setup wizard. Nil disables the wizard screens.
@@ -380,10 +407,13 @@ type Shell struct {
 	window        Window
 	tray          Tray
 	levelTest     dictation.LevelStream
-	devicesLoaded string
 	notifiedError string
 	healthState   string
 	modelsLoaded  string
+
+	// diagnosticsLoading guards the automatic Diagnostics preload so opening
+	// the window while the page is loading does not fetch twice.
+	diagnosticsLoading bool
 
 	// wizardOffered is true once the shell auto-opened the wizard or the user
 	// closed it, so a close is respected until the next process.
@@ -421,6 +451,25 @@ func New(opts Options) *Shell {
 func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	updates, unsubscribe := s.opts.Runtime.Subscribe()
 	defer unsubscribe()
+
+	// A Client upgraded from a build that used the GlobalShortcuts portal
+	// leaves the portal's accelerators grabbed for the whole GNOME session.
+	// When the configuration asks for the External trigger, the portal must not
+	// hold the Client's keys; release them once, off the startup path.
+	if s.opts.GnomeShortcuts != nil && s.opts.Settings != nil &&
+		s.opts.Settings.Config().HotkeyBackend == "external" {
+		go func() {
+			if err := s.opts.GnomeShortcuts.ReleasePortal(); err != nil {
+				s.log.Debug("gnome: releasing the portal shortcuts: %v", err)
+			}
+			// The accelerators may have been held when the bindings were
+			// installed, so GNOME never grabbed them. Rewriting the installed
+			// pair now that the portal let go repairs that session.
+			if warning := s.syncGnomeShortcuts(); warning != "" {
+				s.log.Debug("gnome: refreshing the custom shortcuts: %s", warning)
+			}
+		}()
+	}
 
 	s.update(s.opts.Runtime.Status())
 	s.maybeAutoOpenWizard()
@@ -662,7 +711,7 @@ func (s *Shell) profileStatesLocked() []ProfileState {
 			Name:       profile.Name,
 			Active:     profile.Active,
 			State:      profile.Health.State,
-			StateLabel: serverStateLabel(catalog, profile.Health.State),
+			StateLabel: serverStatusLabel(catalog, profile.Health),
 		})
 	}
 	return states
@@ -679,8 +728,21 @@ func (s *Shell) activeProfileName() string {
 
 // monitorServer probes the active Server once at startup and then on the slow
 // interval until the Client stops. A probe that hangs is bounded by CheckServer.
+//
+// The Client and the Local Server start together, so the first probe can beat
+// the Server's first listen. While the active profile is the Local Server and
+// it is not paired yet, retry quickly for a short window so a fresh install
+// heals without restarting the Client.
 func (s *Shell) monitorServer(ctx context.Context) {
 	s.checkServer(ctx)
+	for attempt := 0; attempt < 8 && s.localPairingPending(); attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+		s.checkServer(ctx)
+	}
 	interval := s.opts.CheckInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -695,6 +757,67 @@ func (s *Shell) monitorServer(ctx context.Context) {
 			s.checkServer(ctx)
 		}
 	}
+}
+
+// localPairingPending reports whether the active profile is the Local Server
+// and has not answered a probe yet.
+func (s *Shell) localPairingPending() bool {
+	if s.opts.Servers == nil {
+		return false
+	}
+	for _, profile := range s.opts.Servers.View().Profiles {
+		if profile.Active && profile.AutoPair {
+			return profile.Health.State != trust.StateOnline
+		}
+	}
+	return false
+}
+
+// ensureLocalPairing retries the loopback auto-pair for the active Local Server
+// profile. The startup attempt can race the Server's first listen, so every
+// health poll (and the Refresh button) retries it; a Remote profile is never
+// touched. An already paired profile returns without a network call.
+func (s *Shell) ensureLocalPairing(ctx context.Context) {
+	if s.opts.Servers == nil {
+		return
+	}
+	var active *servers.Profile
+	profiles := s.opts.Servers.View().Profiles
+	for i := range profiles {
+		if profiles[i].Active {
+			active = &profiles[i]
+			break
+		}
+	}
+	if active == nil || !active.AutoPair {
+		return
+	}
+	wasPinned := strings.HasPrefix(strings.ToLower(active.URL), "http://") ||
+		strings.TrimSpace(active.Fingerprint) != ""
+	pairCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if _, err := s.opts.Servers.EnsureLocal(pairCtx, ""); err != nil {
+		s.log.Debug("trust: Local Server pairing retry: %v", err)
+		return
+	}
+	if !wasPinned && s.localProfilePinned() {
+		s.log.Info("trust: paired the Local Server profile")
+	}
+}
+
+// localProfilePinned reports whether the active Local Server profile now
+// carries a pinned certificate. It is how the retry path tells a real pairing
+// from a no-op check of an already paired profile.
+func (s *Shell) localProfilePinned() bool {
+	if s.opts.Servers == nil {
+		return false
+	}
+	for _, profile := range s.opts.Servers.View().Profiles {
+		if profile.Active && profile.AutoPair {
+			return strings.TrimSpace(profile.Fingerprint) != ""
+		}
+	}
+	return false
 }
 
 func (s *Shell) checkServer(ctx context.Context) {
@@ -748,6 +871,7 @@ func (s *Shell) probeProfile(ctx context.Context, profileID string) trust.Status
 // changes the active profile and never applies a configuration; a changed
 // health only re-renders the profile list.
 func (s *Shell) checkProfiles(ctx context.Context) {
+	s.ensureLocalPairing(ctx)
 	view := s.opts.Servers.View()
 	active := trust.Status{State: trust.StateUnknown}
 	for _, profile := range view.Profiles {
@@ -778,6 +902,11 @@ func (s *Shell) pushSettingsIfHealthChanged() {
 		signature.WriteString(profile.ID)
 		signature.WriteByte(':')
 		signature.WriteString(string(profile.Health.State))
+		signature.WriteByte(',')
+		signature.WriteString(profile.Health.ModelState)
+		if serverSoftStopped(profile.Health) {
+			signature.WriteString(",stopped")
+		}
 		signature.WriteByte(';')
 	}
 	s.mu.Lock()
@@ -789,19 +918,19 @@ func (s *Shell) pushSettingsIfHealthChanged() {
 	}
 }
 
-// loadDevices refreshes the active profile's Devices once per profile after a
-// successful health check, then whenever the user asks.
+// loadDevices refreshes the active profile's Devices on every health check and
+// whenever the user asks. A Device that pairs from another machine appears
+// without restarting the Client; the form is rebuilt only when the list
+// actually changed, so a background probe does not disturb an edit.
 func (s *Shell) loadDevices(ctx context.Context) {
 	if s.opts.Servers == nil {
 		return
 	}
 	view := s.opts.Servers.View()
-	s.mu.Lock()
-	loaded := s.devicesLoaded
-	s.mu.Unlock()
-	if view.ActiveID == "" || loaded == view.ActiveID {
+	if view.ActiveID == "" {
 		return
 	}
+	before := deviceSignature(view.Devices)
 	devicesCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if _, err := s.opts.Servers.LoadDevices(devicesCtx, view.ActiveID); err != nil {
@@ -809,10 +938,26 @@ func (s *Shell) loadDevices(ctx context.Context) {
 		s.pushSettings()
 		return
 	}
-	s.mu.Lock()
-	s.devicesLoaded = view.ActiveID
-	s.mu.Unlock()
-	s.pushSettings()
+	if deviceSignature(s.opts.Servers.View().Devices) != before {
+		s.pushSettings()
+	}
+}
+
+// deviceSignature changes when a Device is added, revoked, renamed, or seen at
+// a new time.
+func deviceSignature(devices []servers.Device) string {
+	var out strings.Builder
+	for _, device := range devices {
+		out.WriteString(device.ID)
+		out.WriteByte('|')
+		out.WriteString(device.Name)
+		out.WriteByte('|')
+		if device.LastSeen != nil {
+			out.WriteString(strconv.FormatFloat(*device.LastSeen, 'f', 0, 64))
+		}
+		out.WriteByte(';')
+	}
+	return out.String()
 }
 
 // loadModelsForCheck reads the active profile's Model catalog once per profile
@@ -847,11 +992,10 @@ func (s *Shell) loadModelsForCheck(ctx context.Context) {
 	s.maybeAutoOpenWizard()
 }
 
-// resetDevices forgets the cached Device list so the next check or refresh
-// reloads it for a changed active profile.
+// resetDevices forgets the cached Model catalog so the next check reloads it
+// for a changed active profile. The Device list is refreshed on every check.
 func (s *Shell) resetDevices() {
 	s.mu.Lock()
-	s.devicesLoaded = ""
 	s.modelsLoaded = ""
 	s.mu.Unlock()
 }
@@ -874,6 +1018,9 @@ func (s *Shell) ShowSettings() error {
 		return errors.New("settings window is not available")
 	}
 	window.Show()
+	// Each visit sees a current Diagnostics screen. The page also asks for
+	// this on load; a request already in flight is collapsed by the guard.
+	s.primeDiagnostics()
 	return nil
 }
 

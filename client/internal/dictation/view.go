@@ -130,16 +130,6 @@ var specs = []sectionSpec{
 			{path: "client.hotkey", kind: KindHotkey, labelKey: "field.hotkey", helpKey: "help.hotkey"},
 			{path: "client.cancel_hotkey", kind: KindHotkey, labelKey: "field.cancel_hotkey", helpKey: "help.cancel_hotkey"},
 			{
-				path:     "client.trigger",
-				kind:     KindSelect,
-				labelKey: "field.trigger",
-				helpKey:  "help.trigger",
-				options: []optionSpec{
-					{value: "toggle", key: "trigger.toggle"},
-					{value: "hold", key: "trigger.hold"},
-				},
-			},
-			{
 				path:     "client.hotkey_backend",
 				kind:     KindSelect,
 				labelKey: "field.hotkey_backend",
@@ -148,10 +138,11 @@ var specs = []sectionSpec{
 					{value: "auto", key: "backend.auto"},
 					{value: "portal", key: "backend.portal"},
 					{value: "x11", key: "backend.x11"},
+					{value: "external", key: "backend.external"},
 				},
 			},
 			{path: "client.audio.device", kind: KindMicrophone, labelKey: "field.audio.device", helpKey: "help.audio.device"},
-			{path: "client.language", kind: KindText, labelKey: "field.language", helpKey: "help.language"},
+			{path: "client.language", kind: KindSelect, labelKey: "field.language", helpKey: "help.language"},
 			{path: "client.paste", kind: KindToggle, labelKey: "field.paste", helpKey: "help.paste"},
 			{
 				path:     "client.paste_shortcut",
@@ -245,7 +236,11 @@ func (s *Service) View() View {
 			}
 			switch spec.kind {
 			case KindSelect:
-				viewField.Options = catalogOptions(catalog, spec.options)
+				if spec.path == "client.language" {
+					viewField.Options = LanguageOptions(catalog, viewField.Value)
+				} else {
+					viewField.Options = catalogOptions(catalog, spec.options)
+				}
 			case KindMicrophone:
 				viewField.Options = microphoneOptions(catalog, viewField.Value, devices)
 			}

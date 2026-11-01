@@ -13,6 +13,7 @@ import functools
 import ipaddress
 import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
@@ -963,11 +964,27 @@ def create_app(
                     "payload_too_large",
                     f"audio exceeds {active_config.max_audio_seconds} s",
                 )
+            effective_language = _effective_language(language, active_config)
+            logger.info(
+                "transcribing %.2fs of audio (requested language=%s, effective=%s)",
+                clip.duration,
+                language or "auto",
+                effective_language or "auto",
+            )
+            started = time.monotonic()
             result = await run_in_threadpool(
                 active.transcribe,
                 clip,
-                language=_effective_language(language, active_config),
+                language=effective_language,
                 initial_prompt=_effective_prompt(initial_prompt, active_config),
+            )
+            elapsed = time.monotonic() - started
+            logger.info(
+                "transcribed %.2fs of audio in %.2fs (language=%s, probability=%.2f)",
+                clip.duration,
+                elapsed,
+                result.language,
+                result.language_probability,
             )
             runtime.touch()
         finally:
@@ -995,6 +1012,7 @@ def create_app(
             if outcome.warning is not None:
                 warnings.append(outcome.warning)
 
+        logger.debug("recognized text (%d chars): %s", len(delivered), delivered)
         return {
             "text": delivered,
             "raw_text": raw_text,

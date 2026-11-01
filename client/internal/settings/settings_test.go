@@ -105,8 +105,8 @@ func TestReportsSourcePerField(t *testing.T) {
 	if f := field(t, snapshot, "client.hotkey"); f.Mode != settings.ApplyHot {
 		t.Errorf("client.hotkey mode = %q, want hot", f.Mode)
 	}
-	if f := field(t, snapshot, "client.hotkey_backend"); f.Mode != settings.ApplyRestart {
-		t.Errorf("client.hotkey_backend mode = %q, want restart", f.Mode)
+	if f := field(t, snapshot, "client.hotkey_backend"); f.Mode != settings.ApplyHot {
+		t.Errorf("client.hotkey_backend mode = %q, want hot", f.Mode)
 	}
 	if f := field(t, snapshot, "client.audio.device"); !f.Locked || !strings.Contains(f.Reason, "KITSUNE_CLIENT_AUDIO__DEVICE") {
 		t.Errorf("client.audio.device lock = %+v, want locked by its env var", f)
@@ -702,6 +702,7 @@ func TestClassify(t *testing.T) {
 		"client.hotkey",
 		"client.cancel_hotkey",
 		"client.trigger",
+		"client.hotkey_backend",
 		"client.audio.device",
 		"client.language",
 		"client.ui_language",
@@ -724,7 +725,6 @@ func TestClassify(t *testing.T) {
 		}
 	}
 	restart := []string{
-		"client.hotkey_backend",
 		"client.wayland_tool",
 		"client.server_url",
 		"client.servers",
@@ -756,7 +756,7 @@ func TestSaveReportsClassificationPerChange(t *testing.T) {
 	}
 	want := map[string]settings.ApplyMode{
 		"client.hotkey":         settings.ApplyHot,
-		"client.hotkey_backend": settings.ApplyRestart,
+		"client.hotkey_backend": settings.ApplyHot,
 		"client.wayland_tool":   settings.ApplyRestart,
 	}
 	if len(result.Changes) != len(want) {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -41,6 +42,9 @@ type fakeServers struct {
 
 	modelsView servers.ModelsView
 	modelErr   error
+	// devicesHook, when set, supplies the Device list each load, so a test can
+	// change the list between health probes.
+	devicesHook func() []servers.Device
 
 	config          servers.ServerConfig
 	logs            servers.ServerLog
@@ -174,7 +178,11 @@ func (f *fakeServers) LoadDevices(_ context.Context, profileID string) ([]server
 	if f.devicesErr != nil {
 		return nil, f.devicesErr
 	}
-	f.view.Devices = []servers.Device{{ID: "dev-1", Name: "Laptop"}}
+	if f.devicesHook != nil {
+		f.view.Devices = f.devicesHook()
+	} else {
+		f.view.Devices = []servers.Device{{ID: "dev-1", Name: "Laptop"}}
+	}
 	f.view.DevicesError = ""
 	return f.view.Devices, nil
 }
@@ -831,10 +839,10 @@ func TestHealthCheckLoadsTheModelCatalogOnce(t *testing.T) {
 		defer service.mu.Unlock()
 		return len(service.modelCalls) > 0
 	})
-	view, ok := desktop.getWindow().lastSettings()
-	if !ok || view.Servers.Models == nil || len(view.Servers.Models.Models) != 2 {
-		t.Fatalf("pushed view = %+v", view.Servers.Models)
-	}
+	waitFor(t, "the pushed Model catalog", func() bool {
+		view, ok := desktop.getWindow().lastSettings()
+		return ok && view.Servers.Models != nil && len(view.Servers.Models.Models) == 2
+	})
 	service.mu.Lock()
 	calls := len(service.modelCalls)
 	service.mu.Unlock()
@@ -966,4 +974,126 @@ func (f *fakeServers) Start(_ context.Context, profileID string) (servers.Server
 	}
 	f.view.Lifecycle = &result
 	return result, nil
+}
+
+func TestHealthPollRetriesTheLocalAutoPair(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	service := newFakeServers()
+	service.view.Profiles = []servers.Profile{{
+		ID: "local", Name: "Local Server", URL: "https://localhost:8765",
+		Active: true, AutoPair: true,
+		Health: trust.Status{State: trust.StateUnpinned},
+	}}
+	service.health = map[string]trust.Status{"local": {State: trust.StateUnpinned}}
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Settings:      newFakeSettings(i18n.English),
+		Servers:       service,
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "a local Server pairing retry", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.ensureCalls) > 0
+	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestHealthPollLeavesRemoteProfilesAlone(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	service := twoProfileServers()
+	service.view.ActiveID = "remote-desktop"
+	for i := range service.view.Profiles {
+		service.view.Profiles[i].Active = service.view.Profiles[i].ID == "remote-desktop"
+	}
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOffline},
+		"remote-desktop": {State: trust.StateUnpinned},
+	}
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Settings:      newFakeSettings(i18n.English),
+		Servers:       service,
+		Version:       "test",
+		Profile:       "Desktop",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "a health probe", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.healthCalls) >= 2
+	})
+	service.mu.Lock()
+	ensureCalls := len(service.ensureCalls)
+	service.mu.Unlock()
+	if ensureCalls != 0 {
+		t.Fatalf("paired a Remote profile %d times", ensureCalls)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestHealthPollRefreshesTheDeviceList(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	service := twoProfileServers()
+	service.health = map[string]trust.Status{"local": {State: trust.StateOnline}}
+	var deviceCount atomic.Int32
+	deviceCount.Store(1)
+	service.devicesHook = func() []servers.Device {
+		devices := []servers.Device{{ID: "dev-1", Name: "Laptop"}}
+		if deviceCount.Load() > 1 {
+			devices = append(devices, servers.Device{ID: "dev-2", Name: "Phone"})
+		}
+		return devices
+	}
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Settings:      newFakeSettings(i18n.English),
+		Servers:       service,
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "the first Device list", func() bool {
+		view, ok := desktop.getWindow().lastSettings()
+		return ok && len(view.Servers.Devices) == 1
+	})
+
+	deviceCount.Store(2)
+	if err := sh.HandleIntent([]byte(`{"action":"refresh-servers"}`)); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	waitFor(t, "the newly paired Device", func() bool {
+		view, ok := desktop.getWindow().lastSettings()
+		return ok && len(view.Servers.Devices) == 2
+	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
 }

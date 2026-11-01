@@ -52,6 +52,9 @@ func TestDefaultsWhenNoFile(t *testing.T) {
 	if cfg.ServerURL != config.LocalServerURL || cfg.MinRecordingSeconds != 0.3 || cfg.Trigger != "toggle" {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
+	if cfg.Hotkey != "Ctrl+Shift+Space" || cfg.CancelHotkey != "Ctrl+Shift+Q" {
+		t.Fatalf("hotkey defaults = %q / %q", cfg.Hotkey, cfg.CancelHotkey)
+	}
 	if cfg.Feedback.Indicator != "auto" {
 		t.Fatalf("feedback.indicator = %q, want auto", cfg.Feedback.Indicator)
 	}

@@ -108,7 +108,7 @@ func Default() ClientConfig {
 		ActiveServer:        LocalServerID,
 		Hotkey:              "Ctrl+Shift+Space",
 		HotkeyBackend:       "auto",
-		CancelHotkey:        "Esc",
+		CancelHotkey:        "Ctrl+Shift+Q",
 		Trigger:             "toggle",
 		MaxRecordingSeconds: defaultMaxRec,
 		MinRecordingSeconds: 0.3,
@@ -527,7 +527,7 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	if cfg.HotkeyBackend, err = stringField(m, "hotkey_backend", "client.hotkey_backend"); err != nil {
 		return cfg, err
 	}
-	if err = oneOf(cfg.HotkeyBackend, "client.hotkey_backend", "auto", "portal", "x11"); err != nil {
+	if err = oneOf(cfg.HotkeyBackend, "client.hotkey_backend", "auto", "portal", "x11", "external"); err != nil {
 		return cfg, err
 	}
 	if cfg.CancelHotkey, err = stringField(m, "cancel_hotkey", "client.cancel_hotkey"); err != nil {
@@ -539,6 +539,11 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	}
 	if err = oneOf(cfg.Trigger, "client.trigger", "toggle", "hold"); err != nil {
 		return cfg, err
+	}
+	// Push-to-talk was removed from the UI: keep old files loadable but treat
+	// the unsupported mode as toggle so the hotkey still answers.
+	if cfg.Trigger == "hold" {
+		cfg.Trigger = "toggle"
 	}
 
 	if cfg.MaxRecordingSeconds, err = asFloat(m["max_recording_seconds"], "client.max_recording_seconds"); err != nil {

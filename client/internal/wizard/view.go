@@ -7,6 +7,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // StepStatus is how the step navigation renders one step.
@@ -72,7 +73,6 @@ type Labels struct {
 	HotkeyHelp         string `json:"hotkeyHelp"`
 	HotkeyLabel        string `json:"hotkeyLabel"`
 	HotkeyPlaceholder  string `json:"hotkeyPlaceholder"`
-	HotkeyTrigger      string `json:"hotkeyTrigger"`
 	HotkeyConflictNote string `json:"hotkeyConflictNote"`
 
 	HardwareTitle         string `json:"hardwareTitle"`
@@ -97,6 +97,7 @@ type Labels struct {
 	ModelMemory      string `json:"modelMemory"`
 	ModelNoCatalog   string `json:"modelNoCatalog"`
 	ModelActive      string `json:"modelActive"`
+	ModelIsActive    string `json:"modelIsActive"`
 	ModelNone        string `json:"modelNone"`
 	ModelDownload    string `json:"modelDownload"`
 	ModelCancel      string `json:"modelCancel"`
@@ -236,33 +237,45 @@ type TryView struct {
 
 // View is the rendered Setup wizard: step navigation, translated labels, and
 // the current step's payload.
+// ShortcutOffer is an optional OS-level shortcut installer shown on the Hotkey
+// step. The shell fills it in when the session offers one (GNOME Wayland).
+type ShortcutOffer struct {
+	Enabled   bool   `json:"enabled"`
+	Installed bool   `json:"installed"`
+	Title     string `json:"title,omitempty"`
+	Help      string `json:"help,omitempty"`
+	Add       string `json:"add,omitempty"`
+	Remove    string `json:"remove,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// View is the rendered wizard state.
 type View struct {
-	Enabled        bool         `json:"enabled"`
-	Active         bool         `json:"active"`
-	Completed      bool         `json:"completed"`
-	SkippedAll     bool         `json:"skippedAll"`
-	Step           Step         `json:"step"`
-	StepNumber     int          `json:"stepNumber"`
-	StepCount      int          `json:"stepCount"`
-	Progress       string       `json:"progress"`
-	Steps          []StepView   `json:"steps"`
-	Labels         Labels       `json:"labels"`
-	Version        string       `json:"version,omitempty"`
-	ProfileName    string       `json:"profileName,omitempty"`
-	ServerState    string       `json:"serverState,omitempty"`
-	ModelName      string       `json:"modelName,omitempty"`
-	ModelState     string       `json:"modelState,omitempty"`
-	Devices        []Option     `json:"devices,omitempty"`
-	SelectedDevice string       `json:"selectedDevice,omitempty"`
-	DeviceError    string       `json:"deviceError,omitempty"`
-	Hotkey         string       `json:"hotkey,omitempty"`
-	Trigger        string       `json:"trigger,omitempty"`
-	TriggerOptions []Option     `json:"triggerOptions,omitempty"`
-	Hardware       HardwareView `json:"hardware"`
-	Model          ModelView    `json:"model"`
-	Server         ServerView   `json:"server"`
-	Try            TryView      `json:"try"`
-	DeferredModel  string       `json:"deferredModel,omitempty"`
+	Enabled        bool          `json:"enabled"`
+	Active         bool          `json:"active"`
+	Completed      bool          `json:"completed"`
+	SkippedAll     bool          `json:"skippedAll"`
+	Step           Step          `json:"step"`
+	StepNumber     int           `json:"stepNumber"`
+	StepCount      int           `json:"stepCount"`
+	Progress       string        `json:"progress"`
+	Steps          []StepView    `json:"steps"`
+	Labels         Labels        `json:"labels"`
+	Version        string        `json:"version,omitempty"`
+	ProfileName    string        `json:"profileName,omitempty"`
+	ServerState    string        `json:"serverState,omitempty"`
+	ModelName      string        `json:"modelName,omitempty"`
+	ModelState     string        `json:"modelState,omitempty"`
+	Devices        []Option      `json:"devices,omitempty"`
+	SelectedDevice string        `json:"selectedDevice,omitempty"`
+	DeviceError    string        `json:"deviceError,omitempty"`
+	Hotkey         string        `json:"hotkey,omitempty"`
+	Hardware       HardwareView  `json:"hardware"`
+	Model          ModelView     `json:"model"`
+	Server         ServerView    `json:"server"`
+	Try            TryView       `json:"try"`
+	DeferredModel  string        `json:"deferredModel,omitempty"`
+	ShortcutOffer  ShortcutOffer `json:"shortcutOffer"`
 }
 
 // View renders the wizard for one data snapshot. It sets Enabled so a build
@@ -288,24 +301,15 @@ func (s *Service) View(data Data) View {
 		SelectedDevice: data.SelectedDevice,
 		DeviceError:    data.DeviceError,
 		Hotkey:         data.Hotkey,
-		Trigger:        data.Trigger,
 		DeferredModel:  state.DeferredModel,
 	}
 	view.StepNumber = stepIndex(state.Step) + 1
 	view.Progress = catalog.T("wizard.progress", view.StepNumber, view.StepCount)
 	view.Steps = stepViews(catalog, state)
-	serverState := string(data.Server.State)
-	if serverState == "" {
-		serverState = "unknown"
-	}
-	view.ServerState = catalog.T("server." + serverState)
+	view.ServerState = serverHealthLabel(catalog, data.Server)
 	view.ModelName, view.ModelState = ActiveModel(data)
 	if view.ModelState != "" {
 		view.ModelState = catalog.T("model.state." + view.ModelState)
-	}
-	view.TriggerOptions = []Option{
-		{Value: "toggle", Label: catalog.T("trigger.toggle")},
-		{Value: "hold", Label: catalog.T("trigger.hold")},
 	}
 	view.Hardware = hardwareView(catalog, PlanHardware(data))
 	view.Model = modelView(catalog, data)
@@ -355,7 +359,6 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		HotkeyHelp:         catalog.T("wizard.hotkey.help"),
 		HotkeyLabel:        catalog.T("wizard.hotkey.label"),
 		HotkeyPlaceholder:  catalog.T("wizard.hotkey.placeholder"),
-		HotkeyTrigger:      catalog.T("wizard.hotkey.trigger"),
 		HotkeyConflictNote: catalog.T("wizard.hotkey.conflictNote"),
 
 		HardwareTitle:         catalog.T("wizard.hardware.title"),
@@ -380,6 +383,7 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		ModelMemory:      catalog.T("model.memory"),
 		ModelNoCatalog:   catalog.T("wizard.model.noCatalog"),
 		ModelActive:      catalog.T("wizard.model.active"),
+		ModelIsActive:    catalog.T("model.active"),
 		ModelNone:        catalog.T("wizard.model.none"),
 		ModelDownload:    catalog.T("wizard.model.download"),
 		ModelCancel:      catalog.T("wizard.model.cancel"),
@@ -563,21 +567,31 @@ func modelStateLabel(catalog i18n.Catalog, state string) string {
 	return catalog.T("model.state." + state)
 }
 
+// serverHealthLabel translates one health result. A soft-stopped Server still
+// answers /health, but the wizard summarizes it as stopped because the final
+// try would fail until the Server is started.
+func serverHealthLabel(catalog i18n.Catalog, status trust.Status) string {
+	if status.State == trust.StateOnline && (status.Stopped || status.ModelState == "stopped") {
+		return catalog.T("server.stopped")
+	}
+	state := status.State
+	if state == "" {
+		state = trust.StateUnknown
+	}
+	return catalog.T("server." + string(state))
+}
+
 func serverView(catalog i18n.Catalog, view servers.View) ServerView {
 	out := ServerView{
 		ActiveID: view.ActiveID,
 		Profiles: make([]ProfileView, 0, len(view.Profiles)),
 	}
 	for _, profile := range view.Profiles {
-		state := profile.Health.State
-		if state == "" {
-			state = "unknown"
-		}
 		out.Profiles = append(out.Profiles, ProfileView{
 			Name:   profile.Name,
 			URL:    profile.URL,
 			Active: profile.Active,
-			Health: catalog.T("server." + string(state)),
+			Health: serverHealthLabel(catalog, profile.Health),
 		})
 		if profile.Active {
 			out.ActiveName = profile.Name
@@ -657,7 +671,7 @@ func LabelKeys() []string {
 		"wizard.mic.title", "wizard.mic.help", "wizard.mic.device", "wizard.mic.test",
 		"wizard.mic.stop", "wizard.mic.noDevices", "wizard.mic.listError",
 		"wizard.hotkey.title", "wizard.hotkey.help", "wizard.hotkey.label",
-		"wizard.hotkey.placeholder", "wizard.hotkey.trigger", "wizard.hotkey.conflictNote",
+		"wizard.hotkey.placeholder", "wizard.hotkey.conflictNote",
 		"wizard.hardware.title", "wizard.hardware.help", "wizard.hardware.auto",
 		"wizard.hardware.cpu", "wizard.hardware.cuda", "wizard.hardware.detected",
 		"wizard.hardware.notDetected", "wizard.hardware.resolved", "wizard.hardware.pinned",
@@ -668,7 +682,7 @@ func LabelKeys() []string {
 		"wizard.model.defer", "wizard.model.deferred", "wizard.model.needChoice",
 		"wizard.model.device", "wizard.model.progress",
 		"wizard.model.error", "wizard.model.warning",
-		"model.recommended", "model.installed", "model.size", "model.memory",
+		"model.recommended", "model.installed", "model.active", "model.size", "model.memory",
 		"wizard.server.title", "wizard.server.localTitle", "wizard.server.localHelp",
 		"wizard.server.localAddress", "wizard.server.useLocal", "wizard.server.localExists",
 		"wizard.server.localCreated", "wizard.server.localUnpaired", "wizard.server.remoteTitle",
@@ -685,7 +699,6 @@ func LabelKeys() []string {
 		"wizard.try.missing.mic",
 		"wizard.notice.saved", "wizard.error.state", "wizard.error.choice",
 		"wizard.error.cudaUnavailable", "wizard.error.noProfile",
-		"trigger.toggle", "trigger.hold",
 		"model.speed.fast", "model.speed.balanced", "model.speed.slow",
 		"model.quality.basic", "model.quality.good", "model.quality.excellent",
 		"model.state.loaded", "model.state.cold", "model.state.loading",

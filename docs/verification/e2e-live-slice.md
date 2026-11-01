@@ -134,8 +134,9 @@ Verified 2026-10-05 (Client log):
       transcription (restore is impossible on Windows).
 - [x] Windows Terminal: injected via the auto-selected `Ctrl+Shift+V`.
 - [x] Toggle starts and stops the cycle; speech transcribes and injects.
-- [ ] `Esc` cancels an in-progress utterance with no injection.
-- [ ] Hold-to-talk (`trigger: hold`) works when configured.
+- [ ] `Ctrl+Shift+Q` cancels an in-progress utterance with no injection.
+- [x] Push-to-talk is no longer offered; a legacy `trigger: hold` file loads as
+      toggle and the hotkey still starts and stops the cycle.
 - [x] No injection on an empty/silent utterance (verified live); injection never
       runs, so the clipboard is untouched.
 
@@ -144,7 +145,7 @@ Verified 2026-10-05 (Client log):
 - [ ] `xterm`/`gnome-terminal` (terminal): text is injected via `Ctrl+Shift+V`.
 - [ ] A GUI editor (e.g. `gedit`/`kate`): text is injected via `Ctrl+V`.
 - [ ] The previous clipboard is restored after injection (`clipboard_restore`).
-- [ ] Hotkey, toggle, and `Esc` behave as on Windows.
+- [ ] Hotkey, toggle, and `Ctrl+Shift+Q` behave as on Windows.
 - [ ] `kitsune-client toggle` from a script drives the cycle (External trigger).
 
 ### Wayland (best effort)

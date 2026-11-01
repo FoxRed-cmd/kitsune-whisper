@@ -50,7 +50,7 @@ type Slot int
 const (
 	// Main is the toggle / hold-to-talk hotkey.
 	Main Slot = iota
-	// Cancel is the cancel hotkey (Esc by default).
+	// Cancel is the cancel hotkey (Ctrl+Shift+Q by default).
 	Cancel
 )
 

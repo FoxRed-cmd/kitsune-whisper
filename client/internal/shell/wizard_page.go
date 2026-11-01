@@ -22,10 +22,15 @@ func WizardHTML(view wizard.View) string {
 func wizardHTML(view wizard.View) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group wizard" data-section="wizard">`)
+	out.WriteString(`<div class="wizard-head">`)
 	out.WriteString(`<p class="wizard-progress" data-wizard-progress>` + escape(view.Progress) + `</p>`)
-	out.WriteString(`<h2>` + escape(view.Labels.Title) + `</h2>`)
+	out.WriteString(`<h2>` + pageIcon("wand") + escape(view.Labels.Title) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.Subtitle) + `</p>`)
 	out.WriteString(wizardStepsHTML(view))
+	out.WriteString(`</div>`)
+	// The step body is the only scrollable part, so the navigation buttons
+	// below it stay in the same place no matter how tall the step is.
+	out.WriteString(`<div class="wizard-body">`)
 	switch view.Step {
 	case wizard.StepWelcome:
 		out.WriteString(wizardWelcomeHTML(view))
@@ -42,6 +47,7 @@ func wizardHTML(view wizard.View) string {
 	case wizard.StepTry:
 		out.WriteString(wizardTryHTML(view))
 	}
+	out.WriteString(`</div>`)
 	out.WriteString(wizardFooterHTML(view))
 	out.WriteString(`</section>`)
 	return out.String()
@@ -126,17 +132,23 @@ func wizardHotkeyHTML(view wizard.View) string {
 	out.WriteString(`<div class="field"><label for="wizard-hotkey">` + escape(view.Labels.HotkeyLabel) + `</label>`)
 	out.WriteString(`<input type="text" id="wizard-hotkey" data-wizard-hotkey="true" autocomplete="off" spellcheck="false" value="` +
 		escape(view.Hotkey) + `" placeholder="` + escape(view.Labels.HotkeyPlaceholder) + `"></div>`)
-	out.WriteString(`<div class="field"><label for="wizard-trigger">` + escape(view.Labels.HotkeyTrigger) + `</label>`)
-	out.WriteString(`<select id="wizard-trigger">`)
-	for _, option := range view.TriggerOptions {
-		out.WriteString(`<option value="` + escape(option.Value) + `"`)
-		if option.Value == view.Trigger {
-			out.WriteString(` selected`)
-		}
-		out.WriteString(`>` + escape(option.Label) + `</option>`)
-	}
-	out.WriteString(`</select></div>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.HotkeyConflictNote) + `</p>`)
+	if offer := view.ShortcutOffer; offer.Enabled {
+		out.WriteString(`<div class="shortcut-offer" data-wizard-shortcuts>`)
+		out.WriteString(`<h4>` + escape(offer.Title) + `</h4>`)
+		out.WriteString(`<p class="help">` + escape(offer.Help) + `</p>`)
+		if offer.Error != "" {
+			out.WriteString(`<p class="failure">` + escape(offer.Error) + `</p>`)
+		}
+		out.WriteString(`<div class="mic-actions">`)
+		if offer.Add != "" {
+			out.WriteString(`<button type="button" class="primary" data-action="gnome-shortcuts-add">` + escape(offer.Add) + `</button>`)
+		}
+		if offer.Installed && offer.Remove != "" {
+			out.WriteString(`<button type="button" data-action="gnome-shortcuts-remove">` + escape(offer.Remove) + `</button>`)
+		}
+		out.WriteString(`</div></div>`)
+	}
 	return out.String()
 }
 
@@ -246,7 +258,7 @@ func wizardModelActions(view wizard.View, row wizard.ModelRow) string {
 			escape(row.Name) + `">` + escape(fmt.Sprintf(view.Labels.ModelDownload, row.Name)) + `</button>`
 	}
 	if row.Active {
-		return `<span class="badge active">` + escape(view.Labels.ModelActive) + `</span>`
+		return `<span class="badge active">` + escape(view.Labels.ModelIsActive) + `</span>`
 	}
 	return `<button type="button" data-action="wizard-model-activate" data-model="` +
 		escape(row.Name) + `">` + escape(view.Labels.ModelActivate) + `</button>`
@@ -356,7 +368,7 @@ func wizardLauncherHTML(view wizard.View) string {
 	}
 	var out strings.Builder
 	out.WriteString(`<section class="group" data-section="wizard-launcher">`)
-	out.WriteString(`<h2>` + escape(view.Labels.ReopenTitle) + `</h2>`)
+	out.WriteString(`<h2>` + pageIcon("wand") + escape(view.Labels.ReopenTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.ReopenHelp) + `</p>`)
 	if view.DeferredModel != "" {
 		out.WriteString(`<p class="help">` + escape(fmt.Sprintf(view.Labels.ModelDeferred, view.DeferredModel)) + `</p>`)

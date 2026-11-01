@@ -143,6 +143,12 @@ func (s *Service) Catalog() i18n.Catalog {
 	return s.catalogFor(s.opts.Store.Snapshot())
 }
 
+// Config returns the stored Client configuration. The Settings shell uses it
+// to hand the current hotkeys to the GNOME custom-keybinding manager.
+func (s *Service) Config() config.ClientConfig {
+	return s.opts.Store.Snapshot().Config
+}
+
 func (s *Service) catalogFor(snapshot settings.Snapshot) i18n.Catalog {
 	return i18n.For(i18n.Resolve(snapshot.Config.UILanguage, s.env))
 }

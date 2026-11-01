@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
@@ -47,6 +48,7 @@ type fakeSettings struct {
 
 	view    dictation.View
 	catalog i18n.Catalog
+	config  config.ClientConfig
 
 	saved   []map[string]any
 	outcome dictation.Outcome
@@ -102,6 +104,12 @@ func (f *fakeSettings) Catalog() i18n.Catalog {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.catalog
+}
+
+func (f *fakeSettings) Config() config.ClientConfig {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.config
 }
 
 func (f *fakeSettings) Save(patch map[string]any) (dictation.Outcome, error) {
@@ -191,7 +199,7 @@ func TestSettingsWindowRendersTheServiceView(t *testing.T) {
 
 	done := startWithWindow(t, sh, desktop)
 	view := desktop.initialView()
-	if view.Language != "ru" || view.Sections[0].Title != "Диктовка" {
+	if view.Language != "ru" || view.Sections[0].Title != "Распознавание речи" {
 		t.Fatalf("initial view = %+v", view)
 	}
 
@@ -228,7 +236,7 @@ func TestSaveIntentGoesThroughSettingsAndPushesTheNewView(t *testing.T) {
 	if !ok {
 		t.Fatal("save did not push a new settings view")
 	}
-	if view.Language != "ru" || view.Sections[0].Title != "Диктовка" {
+	if view.Language != "ru" || view.Sections[0].Title != "Распознавание речи" {
 		t.Fatalf("pushed view = %+v, want the switched language", view)
 	}
 	messages, ok := window.lastMessages()

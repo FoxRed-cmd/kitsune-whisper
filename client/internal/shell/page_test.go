@@ -22,7 +22,7 @@ func sampleView() shell.SettingsView {
 			Title:       "kitsune-whisper",
 			ConfigTitle: "Файл настроек",
 			ConfigPath:  "/home/user/.config/kitsune-whisper/kitsune.yaml",
-			Subtitle:    "Приватная диктовка в локальной сети",
+			Subtitle:    "Приватное распознавание речи в локальной сети",
 			Actions: dictation.Actions{
 				Save:              "Сохранить",
 				Restart:           "Перезапустить клиент",
@@ -52,14 +52,23 @@ func sampleView() shell.SettingsView {
 				},
 				{
 					ID:    "dictation",
-					Title: "Диктовка",
+					Title: "Распознавание речи",
 					Fields: []dictation.Field{
 						{
 							Path:   "client.hotkey",
-							Label:  "Горячая клавиша диктовки",
+							Label:  "Горячая клавиша распознавания",
 							Help:   "Нажмите сочетание в поле.",
 							Kind:   dictation.KindHotkey,
 							Value:  "Ctrl+Alt+D",
+							Source: "file", SourceLabel: "Сохранено",
+							Mode: settings.ApplyHot,
+						},
+						{
+							Path:   "client.cancel_hotkey",
+							Label:  "Горячая клавиша отмены",
+							Help:   "Отменяет текущую запись.",
+							Kind:   dictation.KindHotkey,
+							Value:  "Ctrl+Alt+Q",
 							Source: "file", SourceLabel: "Сохранено",
 							Mode: settings.ApplyHot,
 						},
@@ -158,6 +167,94 @@ func sampleView() shell.SettingsView {
 
 func ptrFloat(value float64) *float64 { return &value }
 
+func TestPageUsesTheFullWindowWidthAndPreloadsDiagnostics(t *testing.T) {
+	page := shell.Page(shell.Snapshot{Version: "1.0.0"}, sampleView())
+	if strings.Contains(page, "max-width:1200px") {
+		t.Fatal("the page still centres its content in a fixed-width column")
+	}
+	if !strings.Contains(page, `action: "prime-diagnostics"`) {
+		t.Fatal("the page does not preload Diagnostics when it opens")
+	}
+	if !strings.Contains(page, ".settings-pane [data-section][hidden] { display:none !important; }") {
+		t.Fatal("an author display rule can override [hidden] and show every screen at once")
+	}
+}
+
+func TestPageFitsAServerSettingsFormToThePaneHeight(t *testing.T) {
+	page := shell.Page(shell.Snapshot{Version: "1.0.0"}, managementView())
+	if !strings.Contains(page, `class="group server-settings"`) {
+		t.Fatal("the Server settings form does not fill the pane")
+	}
+	if !strings.Contains(page, `class="server-fields"`) || !strings.Contains(page, `class="server-save"`) {
+		t.Fatal("the Server settings body and its Save footer are not split")
+	}
+	if !strings.Contains(page, ".server-fields { flex:1 1 auto; min-height:0; overflow-y:auto;") {
+		t.Fatal("the Server fields are not the scrolling part")
+	}
+}
+
+func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	for _, want := range []string{
+		`id="settings-nav"`,
+		`data-nav="general"`,
+		`data-nav="dictation"`,
+		`data-nav="servers" data-targets="servers,devices,exposure"`,
+		`data-nav="server" data-targets="server-settings"`,
+		`data-nav="diagnostics" data-targets="diagnostics"`,
+		`id="settings-pane"`,
+		`function selectSection(`,
+		`function renderSettings(`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+	nav := strings.Index(page, `id="settings-nav"`)
+	pane := strings.Index(page, `id="settings-pane"`)
+	general := strings.Index(page, `data-section="general"`)
+	if nav < 0 || pane < 0 || general < 0 || nav > pane || pane > general {
+		t.Fatalf("navigation, pane, and content are out of order: nav=%d pane=%d content=%d", nav, pane, general)
+	}
+	if strings.Contains(page, `data-nav="wizard"`) {
+		t.Error("the wizard launcher is listed without a wizard view")
+	}
+	if strings.Index(page, `data-nav="servers"`) > strings.Index(page, `data-nav="server"`) {
+		t.Error("the navigation order is wrong")
+	}
+}
+
+func TestSettingsPageUsesOneScrollingPane(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	if !strings.Contains(page, ".settings-nav { display:flex; flex-direction:column; gap:2px; overflow-y:auto;") {
+		t.Error("the navigation menu does not scroll on its own")
+	}
+	if !strings.Contains(page, ".settings-pane { display:flex; flex-direction:column; gap:10px; min-height:0; overflow-y:auto;") {
+		t.Error("the content pane does not scroll on its own")
+	}
+	if !strings.Contains(page, "body { margin:0; font: 13px/1.45 system-ui, -apple-system, \"Segoe UI\", sans-serif; background:var(--bg); color:var(--fg); overflow:hidden;") {
+		t.Error("the page itself still scrolls instead of the panes")
+	}
+}
+
+func TestPageFailuresAreShownAboveTheScrollingContent(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	messages := strings.Index(page, `id="messages"`)
+	settings := strings.Index(page, `id="settings"`)
+	if messages < 0 || settings < 0 || messages > settings {
+		t.Fatalf("the message area is not above the settings: messages=%d settings=%d", messages, settings)
+	}
+	for _, want := range []string{
+		`function showMessage(`,
+		`button.dataset.pending = "1"`,
+		`button.classList.add("pending")`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
 func TestPageRendersTheInitialSnapshot(t *testing.T) {
 	page := shell.Page(shell.Snapshot{
 		Version: "v1.2.3",
@@ -180,9 +277,9 @@ func TestPageRendersTheDictationScreens(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, sampleView())
 	for _, want := range []string{
 		"Общие",
-		"Диктовка",
+		"Распознавание речи",
 		"Язык интерфейса",
-		"Горячая клавиша диктовки",
+		"Горячая клавиша распознавания",
 		"Нажмите сочетание",
 		"Микрофон",
 		"Звуковые сигналы",
@@ -212,6 +309,57 @@ func TestPageRendersTheDictationScreens(t *testing.T) {
 	// Toggled values render as checked checkboxes.
 	if !strings.Contains(page, `type="checkbox"`) || !strings.Contains(page, `checked`) {
 		t.Error("earcons toggle is not checked")
+	}
+}
+
+func TestServersHTMLShowsASoftStoppedServerAsStopped(t *testing.T) {
+	view := managementView()
+	for i := range view.Servers.Profiles {
+		if view.Servers.Profiles[i].ID == view.Servers.ActiveID {
+			view.Servers.Profiles[i].Health = trust.Status{
+				State: trust.StateOnline, Stopped: true, ModelState: "stopped",
+			}
+		}
+	}
+	view.Labels.StateLabels = map[string]string{
+		"unknown": "Проверка…", "online": "Доступен", "stopped": "Остановлен",
+	}
+	page := shell.SettingsHTML(view)
+	if !strings.Contains(page, `data-health="stopped"`) || !strings.Contains(page, "Остановлен") {
+		t.Fatalf("a soft-stopped Server is still rendered as online: %s", page)
+	}
+}
+
+func TestPageRendersStartupSwitchesAndTheUnifiedLogLevel(t *testing.T) {
+	view := managementView()
+	view.Startup = shell.StartupView{Available: true, Client: true, Server: false, ServerAvailable: false}
+	view.Labels.StartupTitle = "Autostart"
+	view.Labels.StartupHelp = "Start both at login."
+	view.Labels.StartupClient = "Client at login"
+	view.Labels.StartupClientHelp = "Starts hidden."
+	view.Labels.StartupServer = "Server at login"
+	view.Labels.StartupServerHelp = "Starts the local Server."
+	page := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-section="startup"`,
+		`data-nav="startup"`,
+		`data-startup-component="client"`,
+		`data-startup-component="server"`,
+		`id="diagnostics-log-level"`,
+		`<option value="info" selected>Info</option>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+	if !strings.Contains(page, `id="startup-client" data-startup-component="client" checked`) {
+		t.Error("the Client switch is not enabled")
+	}
+	if strings.Contains(page, `id="startup-client" data-startup-component="client" checked disabled`) {
+		t.Error("the Client switch is disabled even though the controller manages it")
+	}
+	if !strings.Contains(page, `id="startup-server" data-startup-component="server" disabled`) {
+		t.Error("the unavailable Server switch is not disabled")
 	}
 }
 
@@ -357,7 +505,7 @@ func TestPageUpdatesTheWindowChromeOnALanguageSwitch(t *testing.T) {
 	if !strings.Contains(page, `<h1 id="page-title">kitsune-whisper</h1>`) {
 		t.Fatal("the page title has no element the settings renderer can update")
 	}
-	if !strings.Contains(page, `<p class="sub" id="page-subtitle">Приватная диктовка в локальной сети</p>`) {
+	if !strings.Contains(page, `<p class="sub" id="page-subtitle">Приватное распознавание речи в локальной сети</p>`) {
 		t.Fatal("the page subtitle is not rendered with its id")
 	}
 	// renderSettings receives the whole view, so it must refresh the title and
@@ -614,18 +762,25 @@ func managementView() shell.SettingsView {
 	view.Servers.Config = &servers.ServerConfig{
 		Path: "/home/kim/.config/kitsune-whisper/kitsune.yaml",
 		Config: map[string]any{
+			"host":       "127.0.0.1",
 			"port":       float64(8765),
 			"processing": map[string]any{"api_key": "***"},
 		},
 		Fields: map[string]servers.ConfigField{
+			"server.host": {
+				Value: "127.0.0.1", Source: "file", Mode: "restart",
+			},
+			"server.port": {
+				Value: float64(8765), Source: "file", Mode: "restart",
+			},
+			"server.decode.language": {
+				Value: "auto", Source: "default", Mode: "hot",
+			},
 			"server.processing.api_key": {
 				Value: "***", Source: "file", Mode: "hot",
 			},
 			"server.processing.extra_body": {
 				Value: map[string]any{"temperature": float64(0)}, Source: "file", Mode: "hot",
-			},
-			"server.port": {
-				Value: float64(8765), Source: "file", Mode: "restart",
 			},
 			"server.expose_to_network": {
 				Value: false, Source: "file", Locked: true, Mode: "restart",
@@ -646,10 +801,13 @@ func managementView() shell.SettingsView {
 		ServerState:   "Online",
 		ModelState:    "loaded",
 		ConfigPath:    "/home/kim/.config/kitsune-whisper/kitsune.yaml",
-		ConfigText:    "server.port: 8765\nserver.processing.api_key: ***",
-		Redacted:      []string{"server.processing.api_key"},
+		ConfigText:    "server.port: 8765\nserver.token: ***",
+		Redacted:      []string{"server.token"},
 		LogPath:       "/home/kim/.local/state/kitsune-whisper/server.log",
 		LogText:       "line 4\nline 5",
+		ClientLogPath: "/home/kim/.cache/kitsune-whisper/client.log",
+		ClientLogText: "client line 1\nclient line 2",
+		LogLevel:      "info",
 		CopyText:      "kitsune-whisper diagnostics\nclient version: 1.2.3\nline 5\n",
 	}
 	view.Labels = shell.ServerLabels{
@@ -683,8 +841,38 @@ func managementView() shell.SettingsView {
 		NoLogs:           "No log lines.",
 		LoadLogs:         "Load log tail",
 		CopyLogs:         "Copy log",
+		ClientLogsTitle:  "Client log",
+		ClientLogPath:    "Client log path",
+		CopyClientLogs:   "Copy Client log",
+		LogLevelTitle:    "Log level",
+		LogLevelHelp:     "One level for both.",
 		CopyDiagnostics:  "Copy diagnostics",
 		RefreshDiag:      "Refresh diagnostics",
+		FieldLabels: map[string]shell.ServerFieldLabel{
+			"server.host":            {Label: "Listen address", Help: "The address the Server binds."},
+			"server.port":            {Label: "Port", Help: "The TCP port."},
+			"server.decode.language": {Label: "Spoken language", Help: "Automatic detects it."},
+		},
+		SettingsGroups: []shell.ServerSettingsGroup{
+			{Title: "Network", Fields: []string{"server.host", "server.port"}},
+			{Title: "Speech recognition", Fields: []string{"server.decode.language"}},
+		},
+		OtherTitle: "Other",
+		BoolOn:     "On",
+		BoolOff:    "Off",
+		Choices: map[string][]dictation.Option{
+			"server.log_level": {
+				{Value: "debug", Label: "Debug"},
+				{Value: "info", Label: "Info"},
+				{Value: "warning", Label: "Warning"},
+				{Value: "error", Label: "Error"},
+			},
+		},
+		LanguageOptions: []dictation.Option{
+			{Value: "auto", Label: "Automatic"},
+			{Value: "en", Label: "English"},
+			{Value: "ru", Label: "Russian"},
+		},
 	}
 	return view
 }
@@ -697,21 +885,29 @@ func TestPageRendersServerManagementSettingsAndDiagnostics(t *testing.T) {
 		`data-action="server-stop"`,
 		`data-action="server-start"`,
 		"Server settings",
+		"Listen address",
+		"The address the Server binds.",
 		`data-action="save-server"`,
+		`data-server-path="server.host"`,
 		`data-server-path="server.port"`,
-		`data-server-path="server.processing.api_key"`,
-		`data-server-advanced="server.processing.extra_body"`,
-		"structured setting",
+		`data-server-path="server.decode.language"`,
+		"Spoken language",
+		"Automatic detects it.",
+		"Network",
+		"Speech recognition",
 		"Restart required",
 		"Applies live",
 		"Diagnostics",
 		"Client version",
 		"0.9.0",
-		"Redacted: server.processing.api_key",
+		"Redacted: server.token",
 		`id="diagnostics-config"`,
 		`id="diagnostics-logs"`,
+		`id="diagnostics-client-logs"`,
 		`id="diagnostics-copy"`,
 		"line 5",
+		"client line 2",
+		"Log level",
 		"kitsune-whisper diagnostics",
 		`data-action="refresh-diagnostics"`,
 		`data-action="copy-diagnostics"`,
@@ -728,8 +924,9 @@ func TestPageRendersServerManagementSettingsAndDiagnostics(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`sendIntent({ action: "copy-diagnostics" })`,
-		`sendIntent({ action: "copy-logs" })`,
+		`sendIntent({ action: "copy-diagnostics" }, button)`,
+		`sendIntent({ action: "copy-logs" }, button)`,
+		`sendIntent({ action: "copy-client-logs" }, button)`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing copy intent %q", want)
@@ -751,22 +948,16 @@ func TestDiagnosticsPageEscapesHostileConfiguration(t *testing.T) {
 	}
 }
 
-func TestLockedSecurityFieldIsRenderedReadOnly(t *testing.T) {
+func TestServerSettingsHideTextProcessingAndSecuritySwitches(t *testing.T) {
 	html := shell.SettingsHTML(managementView())
-	marker := `data-server-path="server.expose_to_network"`
-	start := strings.Index(html, marker)
-	if start < 0 {
-		t.Fatalf("the security field is missing from the page")
-	}
-	end := start + 200
-	if end > len(html) {
-		end = len(html)
-	}
-	fragment := html[start:end]
-	if !strings.Contains(fragment, "disabled") {
-		t.Fatalf("the security field is editable: %q", fragment)
-	}
-	if !strings.Contains(fragment, "Locked:") {
-		t.Fatalf("the security field does not explain why it is locked: %q", fragment)
+	for _, hidden := range []string{
+		`data-server-path="server.processing.api_key"`,
+		`data-server-advanced="server.processing.extra_body"`,
+		`data-server-path="server.expose_to_network"`,
+		`data-server-path="server.allow_anonymous"`,
+	} {
+		if strings.Contains(html, hidden) {
+			t.Errorf("the Server settings form still offers %s", hidden)
+		}
 	}
 }

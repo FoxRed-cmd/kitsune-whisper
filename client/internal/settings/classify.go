@@ -20,19 +20,21 @@ const (
 // shell without a runtime rebuild.
 //
 // hotFields lists the values the Dictation runtime applies live per the
-// desktop spec: hotkey, cancel hotkey, trigger, microphone, language, initial
-// prompt, paste/clipboard, earcons, indicator, log level, timeouts, the Spool,
-// and the active Server profile. The runtime rebuilds its transcriber from the
-// active profile, so a Server switch needs no process restart.
+// desktop spec: hotkey, cancel hotkey, trigger, the hotkey backend, microphone,
+// language, initial prompt, paste/clipboard, earcons, indicator, log level,
+// timeouts, the Spool, and the active Server profile. The runtime rebuilds its
+// transcriber from the active profile, so a Server switch needs no process
+// restart.
 //
-// Everything else needs a restart. The hotkey backend and the Wayland
-// injection tool bind at startup, the profile list is read when the
-// transcriber is built, the log file is opened at startup, and an unknown
-// field is by definition one the runtime cannot apply safely.
+// Everything else needs a restart. The Wayland injection tool binds at startup,
+// the profile list is read when the transcriber is built, the log file is
+// opened at startup, and an unknown field is by definition one the runtime
+// cannot apply safely.
 var hotFields = map[string]struct{}{
 	"client.hotkey":                {},
 	"client.cancel_hotkey":         {},
 	"client.trigger":               {},
+	"client.hotkey_backend":        {},
 	"client.audio.device":          {},
 	"client.language":              {},
 	"client.ui_language":           {},

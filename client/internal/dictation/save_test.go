@@ -145,7 +145,7 @@ func TestSaveReportsRestartRequiredChanges(t *testing.T) {
 	runtime := &fakeRuntime{}
 	service := newService(t, path, nil, runtime)
 
-	outcome, err := service.Save(map[string]any{"hotkey_backend": "x11"})
+	outcome, err := service.Save(map[string]any{"log_file": "/tmp/kitsune-test.log"})
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -156,13 +156,13 @@ func TestSaveReportsRestartRequiredChanges(t *testing.T) {
 		t.Fatalf("applied/restart = %+v / %+v", outcome.Applied, outcome.RestartRequired)
 	}
 	change := outcome.RestartRequired[0]
-	if change.Path != "client.hotkey_backend" || change.Label != "Session backend" || change.Mode != settings.ApplyRestart {
+	if change.Path != "client.log_file" || change.Label != "client.log_file" || change.Mode != settings.ApplyRestart {
 		t.Fatalf("restart change = %+v", change)
 	}
 	if runtime.count() != 0 {
 		t.Fatalf("restart-only change rebuilt adapters %d times", runtime.count())
 	}
-	if !strings.Contains(strings.Join(outcome.Notices, " | "), "Restart the Client to apply: Session backend") {
+	if !strings.Contains(strings.Join(outcome.Notices, " | "), "Restart the Client to apply: client.log_file") {
 		t.Fatalf("notices = %v, want a restart hint", outcome.Notices)
 	}
 }
@@ -261,7 +261,7 @@ func TestValidateHotkeyReportsConflictsBeforeSave(t *testing.T) {
 	}
 }
 
-func TestSaveAcceptsToggleAndPushToTalkTriggerModes(t *testing.T) {
+func TestSaveKeepsToggleAndMigratesLegacyPushToTalk(t *testing.T) {
 	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
 	service := newService(t, path, nil, &fakeRuntime{})
 
@@ -277,8 +277,10 @@ func TestSaveAcceptsToggleAndPushToTalkTriggerModes(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load: %v", err)
 		}
-		if cfg.Trigger != mode {
-			t.Fatalf("trigger = %q, want %q", cfg.Trigger, mode)
+		// Push-to-talk is no longer offered; an old file that still asks for
+		// it loads as toggle so the hotkey keeps working.
+		if cfg.Trigger != "toggle" {
+			t.Fatalf("trigger = %q, want toggle", cfg.Trigger)
 		}
 	}
 }
@@ -395,6 +397,26 @@ func TestSaveOfOnlyTheInterfaceLanguageDoesNotRebuildAdapters(t *testing.T) {
 	// would interrupt dictation for a cosmetic change.
 	if runtime.count() != 0 {
 		t.Fatalf("a language-only save rebuilt runtime adapters %d times", runtime.count())
+	}
+}
+
+func TestSaveOfTheSpokenLanguageRebuildsAdapters(t *testing.T) {
+	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
+	runtime := &fakeRuntime{}
+	service := newService(t, path, map[string]string{"LANG": "en_US.UTF-8"}, runtime)
+
+	outcome, err := service.Save(map[string]any{"language": "ru"})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !outcome.Written || len(outcome.Errors) != 0 {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	if runtime.count() != 1 {
+		t.Fatalf("the spoken-language save rebuilt adapters %d times, want one", runtime.count())
+	}
+	if got := runtime.last().Language; got != "ru" {
+		t.Fatalf("rebuilt language = %q, want ru", got)
 	}
 }
 

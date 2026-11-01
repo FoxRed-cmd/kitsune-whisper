@@ -204,12 +204,14 @@ func (d *desktop) NewWindow(initial shell.Snapshot, settings shell.SettingsView,
 	}
 	d.setPage(withRuntime(shell.Page(initial, settings)))
 	win := d.app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "settings",
-		Title:            "kitsune-whisper Settings",
-		Width:            760,
+		Name:  "settings",
+		Title: "kitsune-whisper Settings",
+		// 1280x720 is exactly 16:9 and leaves the desktop visible on a
+		// typical laptop instead of opening nearly full screen.
+		Width:            1280,
 		Height:           720,
-		MinWidth:         560,
-		MinHeight:        420,
+		MinWidth:         960,
+		MinHeight:        540,
 		Hidden:           hidden,
 		URL:              "/",
 		BackgroundColour: application.NewRGB(24, 24, 27),
@@ -348,24 +350,8 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	t.tray.SetTooltip(tooltip)
 
 	menu := application.NewMenu()
-	statusItem := menu.Add(status)
-	statusItem.SetEnabled(false)
-	if snapshot.Profile != "" {
-		serverItem := menu.Add(labels.Profile + ": " + snapshot.Profile)
-		serverItem.SetEnabled(false)
-	}
-	if serverState != "" {
-		serverStateItem := menu.Add(labels.Server + ": " + serverState)
-		serverStateItem.SetEnabled(false)
-	}
-	if labels.ModelState != "" {
-		label := labels.ModelState
-		if snapshot.Server.Model != "" {
-			label += ": " + snapshot.Server.Model
-		}
-		modelItem := menu.Add(label)
-		modelItem.SetEnabled(false)
-	}
+	// Status rows live in the tooltip and the Settings window; the menu starts
+	// with actions so the first clickable item is not below four dead labels.
 	// The profile submenu is the manual Server switch. Health labels are
 	// advisory and never change what the radio item selects.
 	if len(snapshot.Profiles) > 0 {

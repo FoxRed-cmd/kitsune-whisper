@@ -49,6 +49,15 @@ func fieldByPath(t *testing.T, view dictation.View, path string) dictation.Field
 	return dictation.Field{}
 }
 
+func hasOption(options []dictation.Option, value, label string) bool {
+	for _, option := range options {
+		if option.Value == value && option.Label == label {
+			return true
+		}
+	}
+	return false
+}
+
 func TestViewReportsEffectiveFieldsWithTheirSources(t *testing.T) {
 	path := configFile(t, `# keep me
 server:
@@ -101,13 +110,17 @@ client:
 		t.Fatalf("audio.device lock reason = %q", microphone.LockReason)
 	}
 
-	// Trigger is a select with translated option labels.
-	trigger := fieldByPath(t, view, "client.trigger")
-	if trigger.Kind != dictation.KindSelect || trigger.Value != "hold" {
-		t.Fatalf("trigger = %+v", trigger)
+	// The spoken language is a select with Automatic first.
+	language := fieldByPath(t, view, "client.language")
+	if language.Kind != dictation.KindSelect || language.Value != "auto" {
+		t.Fatalf("language = %+v", language)
 	}
-	if len(trigger.Options) != 2 || trigger.Options[0].Value != "toggle" || trigger.Options[1].Label != "Push-to-talk" {
-		t.Fatalf("trigger options = %+v", trigger.Options)
+	if len(language.Options) < 3 || language.Options[0].Value != "auto" ||
+		language.Options[0].Label != "Automatic" {
+		t.Fatalf("language options = %+v", language.Options)
+	}
+	if !hasOption(language.Options, "ru", "Русский") {
+		t.Fatalf("language options have no Russian entry: %+v", language.Options)
 	}
 
 	if view.ConfigPath != path {
@@ -115,17 +128,17 @@ client:
 	}
 }
 
-func TestViewMarksRestartRequiredFieldsWithABadge(t *testing.T) {
+func TestViewAppliesTheHotkeyBackendWithoutARestart(t *testing.T) {
 	path := configFile(t, "client:\n  hotkey_backend: x11\n")
 	store := openStore(t, path, nil, nil)
 	service := dictation.New(dictation.Options{Store: store, Env: map[string]string{"LANG": "en"}})
 	view := service.View()
 
 	field := fieldByPath(t, view, "client.hotkey_backend")
-	if field.Mode != settings.ApplyRestart {
-		t.Fatalf("hotkey_backend mode = %q, want restart", field.Mode)
+	if field.Mode != settings.ApplyHot {
+		t.Fatalf("hotkey_backend mode = %q, want hot", field.Mode)
 	}
-	if field.Badge != "Restart required" {
+	if field.Badge != "" {
 		t.Fatalf("hotkey_backend badge = %q", field.Badge)
 	}
 }
@@ -140,14 +153,14 @@ func TestViewRendersInRussian(t *testing.T) {
 	if view.Language != "ru" {
 		t.Fatalf("language = %q, want ru", view.Language)
 	}
-	if view.Sections[1].Title != "Диктовка" {
+	if view.Sections[1].Title != "Распознавание речи" {
 		t.Fatalf("dictation title = %q", view.Sections[1].Title)
 	}
-	if got := fieldByPath(t, view, "client.hotkey").Label; got != "Горячая клавиша диктовки" {
+	if got := fieldByPath(t, view, "client.hotkey").Label; got != "Горячая клавиша распознавания" {
 		t.Fatalf("hotkey label = %q", got)
 	}
-	if got := fieldByPath(t, view, "client.trigger").Options[1].Label; got != "Удержание" {
-		t.Fatalf("hold label = %q", got)
+	if got := fieldByPath(t, view, "client.language").Options[0].Label; got != "Авто" {
+		t.Fatalf("automatic language label = %q", got)
 	}
 	if got := fieldByPath(t, view, "client.ui_language").Options[1].Label; got != "Английский" {
 		t.Fatalf("english language label = %q", got)
@@ -170,7 +183,7 @@ func TestViewSwitchesLanguageAfterSaving(t *testing.T) {
 		t.Fatalf("save errors = %v", outcome.Errors)
 	}
 	view := service.View()
-	if view.Language != "ru" || view.Sections[1].Title != "Диктовка" {
+	if view.Language != "ru" || view.Sections[1].Title != "Распознавание речи" {
 		t.Fatalf("view after switching language = %+v", view.Sections)
 	}
 	if service.Catalog().Lang() != "ru" {

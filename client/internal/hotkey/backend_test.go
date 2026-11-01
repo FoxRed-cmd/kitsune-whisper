@@ -62,6 +62,11 @@ func TestResolveBackend(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:      "explicit external",
+			requested: "external", wayland: true, portal: true,
+			want: hotkey.BackendExternal,
+		},
+		{
 			name:      "unknown backend",
 			requested: "wayland",
 			wantErr:   true,

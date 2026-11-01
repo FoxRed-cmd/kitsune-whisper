@@ -108,13 +108,13 @@ func TestEnglishAndRussianCatalogsCoverTheSameKeys(t *testing.T) {
 func TestRussianCatalogTranslatesTheSettingsScreen(t *testing.T) {
 	russian := i18n.For(i18n.Russian)
 	cases := map[string]string{
-		"section.dictation":    "Диктовка",
-		"field.hotkey":         "Горячая клавиша диктовки",
+		"section.dictation":    "Распознавание речи",
+		"field.hotkey":         "Горячая клавиша распознавания",
 		"action.save":          "Сохранить",
 		"action.restart":       "Перезапустить клиент",
 		"badge.restart":        "Нужен перезапуск",
 		"tray.quit":            "Выход",
-		"tray.start":           "Начать диктовку",
+		"tray.start":           "Начать распознавание",
 		"error.hotkey.invalid": "«%s» — недопустимое сочетание клавиш. Используйте модификаторы и клавишу, например Ctrl+Shift+Space.",
 	}
 	for key, want := range cases {

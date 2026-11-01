@@ -677,6 +677,30 @@ func TestWizardWelcomeSummaryShowsValuesInBothLanguages(t *testing.T) {
 	}
 }
 
+func TestWizardModelRowShowsAShortActiveBadge(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	view := wiz.View(wizard.Data{
+		Catalog: i18n.For(i18n.Russian),
+		Servers: servers.View{
+			ActiveID: "local",
+			Profiles: []servers.Profile{{ID: "local", Name: "Local Server", Active: true, AutoPair: true}},
+			Models: &servers.ModelsView{
+				Device: "cpu", State: "loaded", ActiveModel: "base",
+				Models: []servers.Model{{Name: "base", Installed: true}},
+			},
+		},
+	})
+	view.Step = wizard.StepModel
+	html := shell.WizardHTML(view)
+	if strings.Contains(html, "%s") {
+		t.Fatalf("the model row leaves a placeholder unformatted: %s", html)
+	}
+	if !strings.Contains(html, `<span class="badge active">Активная</span>`) {
+		t.Fatalf("the active model badge is missing its short label: %s", html)
+	}
+}
+
 func TestWizardTranslatesDeviceAndServerErrors(t *testing.T) {
 	wiz, _ := newWizardService(t)
 	_ = wiz.Open()

@@ -115,7 +115,7 @@ sequenceDiagram
     User->>T: press Ctrl+Shift+Space
     T->>C: start
     C->>C: capture + resample to 16 kHz mono
-    User->>T: press again (toggle), release (hold), or Esc
+    User->>T: press again or Esc
     T->>C: stop / cancel
 
     alt cancelled or too short
@@ -282,9 +282,8 @@ kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask
 
 With the Client running, press **Ctrl+Shift+Space** to start recording, speak,
 and press it again to stop. The transcription is pasted into the focused field.
-Press **Esc** to cancel without injecting. The hotkey, the cancel key, and the
-trigger mode are all configurable; `client.trigger: hold` switches to
-push-to-talk.
+Press **Esc** to cancel without injecting. The hotkey and the cancel key are
+configurable.
 
 If the Server isn't reachable the Client reports it and saves the audio to the
 Spool instead of losing your speech. An empty transcription injects nothing. If
@@ -293,12 +292,14 @@ the raw transcription.
 
 ## The hotkey
 
-- **Toggle** (default): press to start, press again to stop.
-- **Hold**: hold to talk, release to stop — set `client.trigger: hold`.
-- **Cancel**: `client.cancel_hotkey` (default `Esc`) aborts the utterance.
+- **Toggle**: press to start, press again to stop.
+- **Cancel**: `client.cancel_hotkey` (default `Ctrl+Shift+Q`) aborts the utterance.
+  On GNOME Wayland, Settings can install the shortcuts as GNOME custom
+  keybindings (`kitsune-client toggle` / `kitsune-client cancel`); they stay in
+  sync with the hotkeys above.
 
 The defaults are `client.hotkey: Ctrl+Shift+Space` and
-`client.cancel_hotkey: Esc`. On Wayland, hotkeys are best-effort; see
+`client.cancel_hotkey: Ctrl+Shift+Q`. On Wayland, hotkeys are best-effort; see
 [Wayland support and known limitations](docs/wayland.md).
 
 ## Server (Docker for a dedicated host)

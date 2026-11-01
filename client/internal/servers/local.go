@@ -55,12 +55,22 @@ func (s *Service) EnsureLocal(ctx context.Context, address string) (Profile, err
 		profile.URL = normalized
 	}
 	profile.AutoPair = true
-	profiles := replaceProfile(snapshot.Config.Servers, profile)
-	if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile)); err != nil {
-		s.mu.Unlock()
-		return Profile{}, err
+	// A health poll calls this repeatedly for an already paired Local Server.
+	// Skip the config write when nothing would change, so the shared
+	// kitsune.yaml is not rewritten every 30 seconds.
+	unchanged := found && strings.TrimSpace(existing.URL) == normalized &&
+		strings.TrimSpace(existing.Name) != "" && existing.AutoPair
+	var saved Profile
+	if unchanged {
+		saved = s.profileByIDLocked(profile.ID)
+	} else {
+		profiles := replaceProfile(snapshot.Config.Servers, profile)
+		if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile)); err != nil {
+			s.mu.Unlock()
+			return Profile{}, err
+		}
+		saved = s.profileByIDLocked(profile.ID)
 	}
-	saved := s.profileByIDLocked(profile.ID)
 	s.mu.Unlock()
 	if s.paired(profile) {
 		return saved, nil
@@ -80,7 +90,7 @@ func (s *Service) EnsureLocal(ctx context.Context, address string) (Profile, err
 	defer s.mu.Unlock()
 	// Re-read the profile list after the network call so a concurrent pairing
 	// or selection is not overwritten.
-	profiles = replaceProfile(s.opts.Store.Snapshot().Config.Servers, profile)
+	profiles := replaceProfile(s.opts.Store.Snapshot().Config.Servers, profile)
 	if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile)); err != nil {
 		// Leave the previous credential in place if the pin could not be
 		// written, so a temporary disk error does not remove existing trust.

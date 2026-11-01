@@ -98,8 +98,11 @@ func TestRefreshDiagnosticsLoadsConfigAndLogs(t *testing.T) {
 	if diagnostics.ServerVersion != "0.9.0" {
 		t.Fatalf("server version = %q, want the health probe", diagnostics.ServerVersion)
 	}
-	if !strings.Contains(diagnostics.ConfigText, "server.processing.api_key: ***") {
+	if !strings.Contains(diagnostics.ConfigText, "server.port: 8765") {
 		t.Fatalf("config text = %q", diagnostics.ConfigText)
+	}
+	if strings.Contains(diagnostics.ConfigText, "server.processing") {
+		t.Fatalf("diagnostics still expose the text-processing settings: %q", diagnostics.ConfigText)
 	}
 	if !strings.Contains(diagnostics.LogText, "line 5") {
 		t.Fatalf("log text = %q", diagnostics.LogText)
@@ -120,7 +123,9 @@ func TestRefreshDiagnosticsLoadsConfigAndLogs(t *testing.T) {
 
 func TestDiagnosticsRedactsSecretsEvenIfTheServerLeaksThem(t *testing.T) {
 	service := managementService()
+	service.config.Config["token"] = "sk-leaked"
 	service.config.Config["processing"] = map[string]any{"api_key": "sk-leaked"}
+	service.config.Redacted = []string{"server.processing.api_key", "server.token"}
 	sh, desktop := newManagementShell(t, service, nil)
 
 	done := startWithWindow(t, sh, desktop)
@@ -133,8 +138,11 @@ func TestDiagnosticsRedactsSecretsEvenIfTheServerLeaksThem(t *testing.T) {
 		strings.Contains(view.Diagnostics.ConfigText, "sk-leaked") {
 		t.Fatalf("diagnostics leaked a secret: %+v", view.Diagnostics)
 	}
-	if !strings.Contains(view.Diagnostics.ConfigText, "***") {
+	if !strings.Contains(view.Diagnostics.ConfigText, "server.token: ***") {
 		t.Fatalf("config text = %q", view.Diagnostics.ConfigText)
+	}
+	if strings.Contains(view.Diagnostics.ConfigText, "server.processing") {
+		t.Fatalf("diagnostics still expose the text-processing settings: %q", view.Diagnostics.ConfigText)
 	}
 
 	desktop.getTray().do(shell.ActionQuit)
@@ -164,6 +172,63 @@ func TestSaveServerSettingsIntentPatchesTheActiveProfile(t *testing.T) {
 	messages, _ := window.lastMessages()
 	if len(messages.notices) != 1 || !strings.Contains(messages.notices[0], "Restart") {
 		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestShowingSettingsPrefillsDiagnostics(t *testing.T) {
+	service := managementService()
+	sh, desktop := newManagementShell(t, service, func(context.Context) trust.Status {
+		return trust.Status{State: trust.StateOnline, Version: "0.9.0"}
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	if err := sh.ShowSettings(); err != nil {
+		t.Fatalf("show settings: %v", err)
+	}
+	waitFor(t, "the Diagnostics preload", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.configCalls) > 0 && len(service.logCalls) > 0
+	})
+	waitFor(t, "the Diagnostics screen", func() bool {
+		view, ok := desktop.getWindow().lastSettings()
+		return ok && view.Diagnostics.ConfigPath != ""
+	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestSavingServerSettingsRefreshesDiagnostics(t *testing.T) {
+	service := managementService()
+	sh, desktop := newManagementShell(t, service, func(context.Context) trust.Status {
+		return trust.Status{State: trust.StateOnline, Version: "0.9.0"}
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{
+		Action: shell.IntentSaveServer,
+		Patch:  []byte(`{"port":9100}`),
+	}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	service.mu.Lock()
+	logCalls := len(service.logCalls)
+	service.mu.Unlock()
+	if logCalls != 1 {
+		t.Fatalf("log calls after save = %d, want the diagnostics tail reloaded", logCalls)
+	}
+	view, _ := window.lastSettings()
+	if !strings.Contains(view.Diagnostics.ConfigText, "9100") {
+		t.Fatalf("diagnostics still show the old configuration: %q", view.Diagnostics.ConfigText)
 	}
 
 	desktop.getTray().do(shell.ActionQuit)
@@ -268,6 +333,34 @@ func TestStopServerIntentCallsLifecycleAndStartClearsIt(t *testing.T) {
 	if len(service.stopCalls) != 1 || len(service.startCalls) != 1 {
 		t.Fatalf("stop calls = %v, start calls = %v", service.stopCalls, service.startCalls)
 	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestSoftStopUpdatesTheStatusBeforeTheNextHealthProbe(t *testing.T) {
+	service := managementService()
+	sh, desktop := newManagementShell(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	desktop.getTray().do(shell.ActionServerStop)
+
+	waitFor(t, "the soft-stopped status", func() bool {
+		snapshot := sh.Snapshot()
+		return snapshot.Server.Stopped && snapshot.Labels.ServerState == "Stopped"
+	})
+	view, ok := desktop.getWindow().lastSettings()
+	if !ok || view.Diagnostics.ServerState != "Stopped" {
+		t.Fatalf("diagnostics server state = %q, want Stopped", view.Diagnostics.ServerState)
+	}
+
+	desktop.getTray().do(shell.ActionServerStart)
+	waitFor(t, "the started status", func() bool {
+		snapshot := sh.Snapshot()
+		return !snapshot.Server.Stopped && snapshot.Labels.ServerState == "Online"
+	})
 
 	desktop.getTray().do(shell.ActionQuit)
 	if res := <-done; res.err != nil {

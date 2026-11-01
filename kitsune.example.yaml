@@ -105,13 +105,16 @@ client:
   # profile on load. client.refine and client.summarize are accepted for one
   # release, ignored with a warning, and never sent.
   hotkey: Ctrl+Shift+Space
-  # auto | portal | x11. auto uses the GlobalShortcuts portal on Wayland when
-  # available (GNOME >=48 / KDE Plasma >=5.27) and the external trigger
-  # (kitsune-client toggle) otherwise; on an X11 session it uses the X11 global
-  # grab. Set x11 explicitly to force the XWayland grab on Wayland.
+  # auto | portal | x11 | external. auto uses the GlobalShortcuts portal on
+  # Wayland when available (GNOME >=48 / KDE Plasma >=5.27) and the external
+  # trigger (kitsune-client toggle) otherwise; on an X11 session it uses the X11
+  # global grab. Set x11 explicitly to force the XWayland grab on Wayland, or
+  # external to rely only on a compositor keybinding. Settings offers to add
+  # GNOME custom keybindings, which use external.
   hotkey_backend: auto
-  cancel_hotkey: Esc
-  # toggle (press to start, press again to stop) or hold (push-to-talk).
+  cancel_hotkey: Ctrl+Shift+Q
+  # toggle (press to start, press again to stop). Push-to-talk was removed;
+  # an old hold value loads as toggle.
   trigger: toggle
   max_recording_seconds: 300
   # Recordings shorter than this are discarded as accidental taps.

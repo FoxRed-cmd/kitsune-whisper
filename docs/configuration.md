@@ -318,10 +318,10 @@ fingerprint produces a distinct "certificate changed, pair again" error.
 | `servers` | list | Local Server profile | Ordered **Server profiles**. Each entry has `id` (required, unique), `name`, `url` (required, absolute), `fingerprint` (pinned Server certificate SHA-256; `""` until pairing), and `auto_pair` (`true` only for the Local Server). Unknown profile keys and duplicate ids are rejected. |
 | `active_server` | string | first profile | The `id` of the profile that receives every Utterance. Exactly one profile is active; there is no automatic fallback. Defaults to the first profile when omitted. |
 | `server_url` | URL | `https://localhost:8765` | **Deprecated.** Full URL of a single Server. When no `servers` list exists it migrates into one active profile (`Default Server`); once `servers` exists it no longer decides routing, but it must still be a valid URL when present. |
-| `hotkey` | string | `Ctrl+Shift+Space` | Global toggle/hold key. |
-| `hotkey_backend` | `auto`\|`portal`\|`x11` | `auto` | Linux session backend. See [Wayland](wayland.md). |
-| `cancel_hotkey` | string | `Esc` | Aborts the current utterance without injecting. |
-| `trigger` | `toggle`\|`hold` | `toggle` | `toggle` = press to start, press again to stop; `hold` = push-to-talk. |
+| `hotkey` | string | `Ctrl+Shift+Space` | Global toggle key. |
+| `hotkey_backend` | `auto`\|`portal`\|`x11`\|`external` | `auto` | Linux session backend. `external` grabs no keys and relies on a compositor keybinding that runs `kitsune-client toggle`. See [Wayland](wayland.md). |
+| `cancel_hotkey` | string | `Ctrl+Shift+Q` | Aborts the current utterance without injecting. |
+| `trigger` | `toggle` | `toggle` | Press to start, press again to stop. Push-to-talk was removed; a legacy `hold` value is accepted and loaded as `toggle`. |
 | `max_recording_seconds` | number | `300` | Hard stop for an utterance; keep in step with `server.max_audio_seconds`. |
 | `min_recording_seconds` | number | `0.3` | Utterances shorter than this are discarded as accidental taps. |
 | `timeout_seconds` | number | `0` | Request timeout. `0` = `max(30 s, 2 × audio length)`. |

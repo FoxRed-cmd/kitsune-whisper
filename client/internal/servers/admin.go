@@ -216,6 +216,11 @@ func adminRequest(
 		return nil, fmt.Errorf("servers: build the Admin API request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
+	if body != nil {
+		// FastAPI's strict content-type check reads a body without this header
+		// as raw bytes and rejects it before the endpoint's model sees it.
+		request.Header.Set("Content-Type", "application/json")
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("servers: reach %s: %w", profile.Name, err)

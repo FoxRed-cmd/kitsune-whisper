@@ -3,8 +3,10 @@ package servers_test
 import (
 	"context"
 	"errors"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
@@ -179,5 +181,33 @@ func TestProfileViewCarriesAutoPair(t *testing.T) {
 	}
 	if !view.Profiles[0].AutoPair {
 		t.Fatalf("the Local profile lost AutoPair: %+v", view.Profiles[0])
+	}
+}
+
+func TestEnsureLocalLeavesAnUnchangedPairedProfileOnDisk(t *testing.T) {
+	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:abc"}
+	service, store, _ := newLocalService(t, pair)
+	if _, err := service.EnsureLocal(context.Background(), ""); err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	path := store.Snapshot().Path
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+
+	time.Sleep(10 * time.Millisecond)
+	if _, err := service.EnsureLocal(context.Background(), ""); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if !after.ModTime().Equal(before.ModTime()) {
+		t.Fatalf("an unchanged profile rewrote the config: %v -> %v", before.ModTime(), after.ModTime())
+	}
+	if pair.calls != 1 {
+		t.Fatalf("pair calls = %d, want 1", pair.calls)
 	}
 }

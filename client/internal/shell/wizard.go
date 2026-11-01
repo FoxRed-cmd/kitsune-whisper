@@ -63,7 +63,20 @@ func (s *Shell) wizardView() wizard.View {
 	if s.opts.Wizard == nil {
 		return wizard.View{}
 	}
-	return s.opts.Wizard.View(s.wizardData())
+	view := s.opts.Wizard.View(s.wizardData())
+	if view.Step == wizard.StepHotkey && s.opts.GnomeShortcuts != nil {
+		offer := s.gnomeShortcutsView()
+		view.ShortcutOffer = wizard.ShortcutOffer{
+			Enabled:   offer.Visible,
+			Installed: offer.Installed,
+			Title:     offer.Title,
+			Help:      offer.Help,
+			Add:       offer.Add,
+			Remove:    offer.Remove,
+			Error:     offer.Error,
+		}
+	}
+	return view
 }
 
 // wizardActiveStep returns the active wizard's step, or "" when it is hidden.
@@ -290,6 +303,10 @@ func (s *Shell) saveWizardHotkey(hotkey, trigger string) bool {
 		return false
 	}
 	if outcome.Written {
+		if warning := s.syncGnomeShortcuts(); warning != "" {
+			s.pushMessages(outcome.Notices, []string{warning})
+			return false
+		}
 		s.pushSettings()
 	}
 	if len(outcome.Errors) > 0 {

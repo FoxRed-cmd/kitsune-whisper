@@ -46,6 +46,25 @@ func TestViewShowsStepStatuses(t *testing.T) {
 	}
 }
 
+func TestViewShowsASoftStoppedServerAsStopped(t *testing.T) {
+	service := newService(t, tempState(t))
+	_ = service.Open()
+	stopped := trust.Status{State: trust.StateOnline, Stopped: true, ModelState: "stopped"}
+	view := service.View(wizard.Data{
+		Catalog: i18n.For(i18n.English),
+		Server:  stopped,
+		Servers: servers.View{Profiles: []servers.Profile{{
+			ID: "local", Name: "Local Server", Active: true, Health: stopped,
+		}}},
+	})
+	if view.ServerState != "Stopped" {
+		t.Fatalf("wizard server state = %q, want Stopped", view.ServerState)
+	}
+	if len(view.Server.Profiles) != 1 || view.Server.Profiles[0].Health != "Stopped" {
+		t.Fatalf("wizard profile health = %+v", view.Server.Profiles)
+	}
+}
+
 func TestViewTranslatesEveryWizardString(t *testing.T) {
 	for _, language := range []i18n.Lang{i18n.English, i18n.Russian} {
 		catalog := i18n.For(language)

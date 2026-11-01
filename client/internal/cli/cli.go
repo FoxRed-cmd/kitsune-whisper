@@ -27,6 +27,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/gnome"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
@@ -44,6 +45,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/browser"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/startup"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
@@ -61,6 +63,7 @@ var subcommands = map[string]bool{
 	"gui":                 true,
 	"settings":            true,
 	"toggle":              true,
+	"cancel":              true,
 	"transcribe-file":     true,
 	"record":              true,
 	"install-autostart":   true,
@@ -167,6 +170,8 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		}, stdout, stderr)
 	case "toggle":
 		return runToggle(rest[1:], cfg, *verbose, stderr)
+	case "cancel":
+		return runCancel(rest[1:], cfg, *verbose, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		fmt.Fprint(stderr, usage())
@@ -616,20 +621,27 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 				OnLog: func(message string) { logger.Warning("wizard: %s", message) },
 			})
 		}
+		clientLogPath := cfg.LogFile
+		if clientLogPath == "" {
+			clientLogPath = paths.LogFile()
+		}
 		sh = shell.New(shell.Options{
-			Runtime:     rt,
-			Desktop:     desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
-			Settings:    settingsService,
-			Servers:     serverService,
-			Wizard:      wizardService,
-			Spool:       newSpoolService(bootstrap.store, cfg, rt),
-			ApplyConfig: rt.Apply,
-			Send:        rt.Trigger,
-			Version:     Version,
-			Profile:     server.Name,
-			CheckServer: healthCheck,
-			Notifier:    shellNotifier{send: newNotifier(logger)},
-			Logger:      logger,
+			Runtime:        rt,
+			Desktop:        desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
+			Settings:       settingsService,
+			Servers:        serverService,
+			Wizard:         wizardService,
+			Spool:          newSpoolService(bootstrap.store, cfg, rt),
+			Startup:        startup.Default(),
+			GnomeShortcuts: newGnomeShortcuts(),
+			LogPath:        clientLogPath,
+			ApplyConfig:    rt.Apply,
+			Send:           rt.Trigger,
+			Version:        Version,
+			Profile:        server.Name,
+			CheckServer:    healthCheck,
+			Notifier:       shellNotifier{send: newNotifier(logger)},
+			Logger:         logger,
 		})
 	}
 
@@ -682,6 +694,23 @@ func runToggle(args []string, cfg config.ClientConfig, verbose bool, stderr io.W
 
 	if err := control.Send(paths.ControlSocket(), string(control.Toggle)); err != nil {
 		logger.Error("toggle: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// runCancel sends one cancel command to a running Client over the control
+// socket. A GNOME custom keybinding uses it to discard the current utterance.
+func runCancel(args []string, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client cancel")
+		return 2
+	}
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
+	if err := control.Send(paths.ControlSocket(), string(control.Cancel)); err != nil {
+		logger.Error("cancel: %v", err)
 		return 1
 	}
 	return 0
@@ -822,6 +851,21 @@ func buildAdapters(cfg config.ClientConfig, logger *logging.Logger, manager *tru
 // newSettingsService builds the Dictation settings service the Settings window
 // edits. A settings store that cannot be opened disables the screens but keeps
 // dictation running.
+// newGnomeShortcuts wires the GNOME custom-keybinding manager in a GNOME
+// Wayland session. Elsewhere there is no offer, and the session's native
+// backend stays in charge.
+func newGnomeShortcuts() shell.GnomeShortcuts {
+	if !gnome.SupportedCurrent() {
+		return nil
+	}
+	command, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	return gnome.New(gnome.Options{Command: command})
+}
+
+// newSettingsService builds the Dictation settings service.
 func newSettingsService(store *settings.Store, rt *runtime.Runtime, logger *logging.Logger) *dictation.Service {
 	if store == nil {
 		return nil
@@ -995,6 +1039,7 @@ func (p *profileTranscriber) Transcribe(ctx context.Context, audio []byte) (tran
 	if err != nil {
 		return transcribe.Transcription{}, err
 	}
+	p.logger.Debug("transcribe: profile %q, language %q", p.profile.Name, p.language)
 	return client.Transcribe(ctx, audio)
 }
 
@@ -1062,6 +1107,7 @@ Commands:
   gui [--hidden]               run the desktop shell with the Settings window and Tray
   settings                     ask the running Client to open the Settings window
   toggle                       trigger the running client via its control socket
+  cancel                       discard the current utterance over the control socket
   transcribe-file <path.wav>   transcribe a WAV file and print the text
   record                       capture from the microphone and print the text
   install-autostart            register the client to launch at login

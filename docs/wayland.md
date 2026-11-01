@@ -33,6 +33,23 @@ the native layer surface.
   bind error is treated as "hotkey unavailable" and the Client falls back to the
   external trigger (it never fails to start). The `.desktop` basename **must**
   equal the app-id exactly.
+- **GNOME custom keybindings** (the fallback when the portal binds but never
+  delivers): the Settings window offers **Add shortcuts to GNOME** next to the
+  Dictation hotkeys, and the first-run wizard offers it on the Hotkey step.
+  This writes two entries to GNOME's
+  `org.gnome.settings-daemon.plugins.media-keys` custom shortcuts: one runs
+  `kitsune-client toggle`, the other `kitsune-client cancel`. The Client switches
+  to `hotkey_backend: external` so the portal does not grab the same keys, and
+  later hotkey changes update the GNOME entries automatically. GNOME persists
+  the portal's assignments for the whole session even after the Client closes
+  its portal session, so adding or removing the custom shortcuts also clears
+  those assignments and asks GNOME to rebind; otherwise the portal would keep
+  swallowing `Ctrl+Shift+Space` and the new keybinding would never fire.
+  Removing them
+  keeps the Client on `hotkey_backend: external`, so the keys stop working
+  immediately instead of being grabbed again by the portal; pick the backend in
+  the Dictation form to return to the portal. GNOME's list is visible under
+  **Settings → Keyboard → Custom Shortcuts**.
 - **External trigger** (wlroots, or when the portal is unavailable): the Client
   listens on a local unix socket under `$XDG_RUNTIME_DIR` (which is mode `0700`).
   `kitsune-client toggle` sends start/stop. Bind it in your compositor, e.g.:

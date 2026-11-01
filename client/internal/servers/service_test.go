@@ -90,6 +90,14 @@ func newFakeServer(t *testing.T) *fakeServer {
 		},
 	}
 	fake.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The real Server runs FastAPI with strict content-type checking: a JSON
+		// body without the matching header is rejected as raw bytes, exactly as
+		// `body: Input should be a valid dictionary or object to extract fields from`.
+		if r.ContentLength != 0 && r.Header.Get("Content-Type") != "application/json" {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				"body: Input should be a valid dictionary or object to extract fields from")
+			return
+		}
 		if r.Method == http.MethodPost && r.URL.Path == "/pair" {
 			var body map[string]string
 			_ = json.NewDecoder(r.Body).Decode(&body)
