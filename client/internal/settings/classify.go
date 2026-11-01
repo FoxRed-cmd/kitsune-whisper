@@ -13,9 +13,11 @@ const (
 	ApplyRestart ApplyMode = "restart"
 )
 
-// Classification is advisory until #71 wires live apply into the runtime. The
-// Settings window can already show which changes will be hot and which need a
-// restart; for now every persisted change still takes effect on the next start.
+// Classification is the contract the Settings window and the runtime share:
+// the window shows a restart badge for every restart field, and the runtime
+// rebuilds its adapters for hot changes without restarting the process. A hot
+// field the shell itself renders (the interface language) is applied by the
+// shell without a runtime rebuild.
 //
 // hotFields lists the values the Dictation runtime will apply live per the
 // desktop spec: hotkey, cancel hotkey, trigger, microphone, language, initial
@@ -34,6 +36,7 @@ var hotFields = map[string]struct{}{
 	"client.trigger":               {},
 	"client.audio.device":          {},
 	"client.language":              {},
+	"client.ui_language":           {},
 	"client.initial_prompt":        {},
 	"client.paste":                 {},
 	"client.paste_shortcut":        {},

@@ -2,6 +2,7 @@ package shell_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 )
@@ -88,12 +90,21 @@ func (r *fakeRuntime) emit(status runtime.Status) {
 
 // fakeWindow records render and visibility calls.
 type fakeWindow struct {
-	mu      sync.Mutex
-	hidden  bool
-	shows   int
-	hides   int
-	updates []shell.Snapshot
-	onClose func()
+	mu       sync.Mutex
+	hidden   bool
+	shows    int
+	hides    int
+	updates  []shell.Snapshot
+	settings []dictation.View
+	messages []messageUpdate
+	levels   []float64
+	onClose  func()
+	onIntent func([]byte) error
+}
+
+type messageUpdate struct {
+	notices  []string
+	failures []string
 }
 
 func (w *fakeWindow) Show() {
@@ -116,6 +127,69 @@ func (w *fakeWindow) Update(snapshot shell.Snapshot) {
 
 func (w *fakeWindow) OnClose(handler func()) {
 	w.onClose = handler
+}
+
+func (w *fakeWindow) OnIntent(handler func([]byte) error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.onIntent = handler
+}
+
+func (w *fakeWindow) UpdateSettings(view dictation.View) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.settings = append(w.settings, view)
+}
+
+func (w *fakeWindow) UpdateMessages(notices, failures []string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.messages = append(w.messages, messageUpdate{notices: notices, failures: failures})
+}
+
+func (w *fakeWindow) UpdateLevel(level float64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.levels = append(w.levels, level)
+}
+
+func (w *fakeWindow) lastSettings() (dictation.View, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.settings) == 0 {
+		return dictation.View{}, false
+	}
+	return w.settings[len(w.settings)-1], true
+}
+
+func (w *fakeWindow) lastMessages() (messageUpdate, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.messages) == 0 {
+		return messageUpdate{}, false
+	}
+	return w.messages[len(w.messages)-1], true
+}
+
+func (w *fakeWindow) levelsSeen() []float64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]float64(nil), w.levels...)
+}
+
+func (w *fakeWindow) sendIntent(t *testing.T, intent shell.Intent) error {
+	t.Helper()
+	w.mu.Lock()
+	handler := w.onIntent
+	w.mu.Unlock()
+	if handler == nil {
+		t.Fatal("window has no intent handler")
+	}
+	payload, err := json.Marshal(intent)
+	if err != nil {
+		t.Fatalf("marshal intent: %v", err)
+	}
+	return handler(payload)
 }
 
 func (w *fakeWindow) counts() (shows, hides int) {
@@ -176,9 +250,10 @@ type fakeDesktop struct {
 	trayErr   error
 	runErr    error
 
-	window *fakeWindow
-	tray   *fakeTray
-	hidden bool
+	window  *fakeWindow
+	tray    *fakeTray
+	hidden  bool
+	initial dictation.View
 
 	quitCh    chan struct{}
 	quitOnce  sync.Once
@@ -191,17 +266,24 @@ func newFakeDesktop() *fakeDesktop {
 	return &fakeDesktop{quitCh: make(chan struct{})}
 }
 
-func (d *fakeDesktop) NewWindow(_ shell.Snapshot, hidden bool) (shell.Window, error) {
+func (d *fakeDesktop) NewWindow(_ shell.Snapshot, settings dictation.View, hidden bool) (shell.Window, error) {
 	if d.windowErr != nil {
 		return nil, d.windowErr
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.hidden = hidden
+	d.initial = settings
 	if d.window == nil {
 		d.window = &fakeWindow{hidden: hidden}
 	}
 	return d.window, nil
+}
+
+func (d *fakeDesktop) initialView() dictation.View {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.initial
 }
 
 func (d *fakeDesktop) NewTray(shell.Snapshot) (shell.Tray, error) {

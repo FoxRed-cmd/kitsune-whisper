@@ -6,6 +6,13 @@
 // with fakes and imports no UI or tray toolkit. A desktop shell drives the same
 // runtime the CLI does; the shell renders Status and reacts to phase changes
 // instead of owning the Dictation lifecycle itself.
+//
+// The adapters that can change at runtime (the hotkey source, the recorder,
+// the transcriber, the injector, the feedback, the Recording indicator, and
+// the cycle limits) are grouped in Adapters. Apply rebuilds that group from a
+// new configuration inside the same process: the Tray, the window, the
+// single-instance lock, the control socket, and every subscriber survive, so
+// the user does not restart the Client to pick up a hotkey or a microphone.
 package runtime
 
 import (
@@ -44,6 +51,12 @@ var (
 	// ErrStopped is returned by Start after Stop: Stop releases the adapters, so
 	// a stopped runtime cannot be started again. Create a new Runtime instead.
 	ErrStopped = errors.New("runtime: already stopped; create a new runtime")
+	// ErrNotRunning is returned by Apply when the Client is not running.
+	ErrNotRunning = errors.New("runtime: not running")
+	// ErrNoRebuild is returned by Apply when the build wired no rebuilder, so
+	// live changes are unavailable and the Settings window must ask for a
+	// restart.
+	ErrNoRebuild = errors.New("runtime: live apply is unavailable in this build")
 )
 
 // Status is the immutable snapshot a shell renders. Running reports the
@@ -64,11 +77,37 @@ type Logger interface {
 	Error(format string, args ...any)
 }
 
+// Adapters are the runtime's replaceable collaborators. Apply builds a fresh
+// set from the new configuration; everything else in the process stays.
+type Adapters struct {
+	// Hotkey is the global-hotkey source. It is optional.
+	Hotkey hotkey.Source
+	// Recorder is the microphone source.
+	Recorder cycle.Recorder
+	// Transcriber turns an Utterance into a Transcription.
+	Transcriber transcribe.Transcriber
+	// Injector places the Transcription into the focused field.
+	Injector cycle.Injector
+	// Spool saves failed utterances. It is optional.
+	Spool cycle.Spool
+	// Feedback receives every cycle cue (logging, Earcons). It is optional.
+	Feedback cycle.Feedback
+	// Indicator builds the Recording indicator once per generation. The send
+	// function feeds a Trigger into the cycle for the indicator's stop button.
+	// The returned Feedback is closed when the generation ends. It is optional.
+	Indicator func(send func(cycle.Trigger)) cycle.Feedback
+}
+
+// Rebuilder builds the adapters for a new configuration. It must not touch the
+// running adapters: the runtime keeps them until the new set is built and only
+// then stops the old generation. An error leaves the running Client untouched.
+type Rebuilder func(config.ClientConfig) (Adapters, error)
+
 // Options wires the runtime to its resolved configuration and adapters.
 //
 // Recorder, Transcriber, and Injector are required. Hotkey may be nil for a
 // control-socket-only runtime. Adapters that own resources implement Close and
-// are released by Stop.
+// are released by Stop or by a live Apply.
 type Options struct {
 	// Config is the resolved, validated Client configuration. The runtime
 	// derives the Dictation cycle timing limits from it.
@@ -93,6 +132,9 @@ type Options struct {
 	// The returned Feedback is closed by Stop when it implements Close. It is
 	// optional.
 	Indicator func(send func(cycle.Trigger)) cycle.Feedback
+	// Rebuild builds the adapters for Apply. Nil means the running Client can
+	// only pick changes up after a restart.
+	Rebuild Rebuilder
 	// ControlListener is an already-bound control socket. The runtime owns it
 	// and closes it on Stop. When nil, ControlPath is bound at Start and
 	// removed on Stop.
@@ -108,10 +150,49 @@ type Options struct {
 	Logger Logger
 }
 
+// initialAdapters converts the startup options into an Adapters value.
+func (o Options) initialAdapters() Adapters {
+	return Adapters{
+		Hotkey:      o.Hotkey,
+		Recorder:    o.Recorder,
+		Transcriber: o.Transcriber,
+		Injector:    o.Injector,
+		Spool:       o.Spool,
+		Feedback:    o.Feedback,
+		Indicator:   o.Indicator,
+	}
+}
+
+// generation is one set of adapters and the goroutines using them. Apply
+// replaces the generation; Stop ends the runtime.
+type generation struct {
+	adapters  Adapters
+	indicator cycle.Feedback
+	cancel    context.CancelFunc
+	done      chan struct{}
+}
+
+// close releases the resources the generation owns, after done is closed.
+func (g *generation) close() error {
+	if g == nil {
+		return nil
+	}
+	var err error
+	if closeErr := closeAdapter(g.indicator); closeErr != nil {
+		err = closeErr
+	}
+	if closeErr := closeAdapter(g.adapters.Recorder); closeErr != nil && err == nil {
+		err = fmt.Errorf("close microphone: %w", closeErr)
+	}
+	return err
+}
+
 // Runtime is the headless Client process.
 type Runtime struct {
 	opts Options
 	log  Logger
+
+	applyMu sync.Mutex
 
 	mu       sync.Mutex
 	running  bool
@@ -122,6 +203,7 @@ type Runtime struct {
 	cancel   context.CancelFunc
 	triggers chan cycle.Trigger
 	done     chan struct{}
+	gen      *generation
 	fatal    error
 	closeErr error
 	subs     map[int]chan Status
@@ -155,6 +237,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return err
 	}
+	cfg := r.opts.Config
 	runCtx, cancel := context.WithCancel(ctx)
 	triggers := make(chan cycle.Trigger)
 	done := make(chan struct{})
@@ -170,63 +253,128 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Unlock()
 	r.notify()
 
-	indicator := r.buildIndicator()
-
-	feedback := cycle.Feedback(phaseFeedback{rt: r, inner: r.opts.Feedback})
-	if indicator != nil {
-		feedback = feedbackGroup{feedback, indicator}
-	}
+	// Hold applyMu while publishing the initial generation so a caller that
+	// applies immediately after Start cannot be overwritten by it.
+	r.applyMu.Lock()
+	gen := r.startGeneration(runCtx, triggers, cfg, r.opts.initialAdapters())
+	r.mu.Lock()
+	r.gen = gen
+	r.mu.Unlock()
+	r.applyMu.Unlock()
 
 	listener, socketPath := r.listen()
-
-	core := cycle.New(cycle.Options{
-		Recorder:    r.opts.Recorder,
-		Transcriber: r.opts.Transcriber,
-		Injector:    r.opts.Injector,
-		Feedback:    feedback,
-		Spool:       r.opts.Spool,
-		Clock:       r.opts.Clock,
-		OnError:     func(err error) { r.recordError(err) },
-		Limits:      limitsFor(r.opts.Config),
-	})
-
-	var senders, cycles sync.WaitGroup
-
-	cycles.Add(1)
-	go func() {
-		defer cycles.Done()
-		_ = core.Run(runCtx, triggers)
-	}()
-
 	if listener != nil {
-		senders.Add(1)
 		go func() {
-			defer senders.Done()
 			server := control.NewCommandServer(listener, r.handleCommand)
 			if err := server.ServeCommands(runCtx); err != nil {
 				r.log.Warning("external trigger: %v", err)
 			}
 		}()
 	}
-	if r.opts.Hotkey != nil {
-		senders.Add(1)
+
+	go r.shutdown(runCtx, done, listener, socketPath)
+	return nil
+}
+
+// Apply rebuilds the adapters from cfg inside the running process and swaps
+// them in. The control socket, the Tray, the window, the single-instance lock,
+// and subscribers are untouched; only the hotkey source, the microphone, the
+// transcriber, the injector, the feedback, the Recording indicator, and the
+// cycle limits are replaced.
+//
+// A recording in progress is cancelled because its recorder is being released.
+// When the rebuild fails the running adapters keep working and the error is
+// returned so the caller can offer a restart instead.
+func (r *Runtime) Apply(cfg config.ClientConfig) error {
+	r.applyMu.Lock()
+	defer r.applyMu.Unlock()
+
+	r.mu.Lock()
+	running := r.running
+	runCtx := r.ctx
+	triggers := r.triggers
+	rebuild := r.opts.Rebuild
+	old := r.gen
+	r.mu.Unlock()
+	if !running || runCtx == nil || runCtx.Err() != nil {
+		return ErrNotRunning
+	}
+	if rebuild == nil {
+		return ErrNoRebuild
+	}
+	adapters, err := rebuild(cfg)
+	if err != nil {
+		return fmt.Errorf("runtime: apply: %w", err)
+	}
+	if err := validateAdapters(adapters); err != nil {
+		return fmt.Errorf("runtime: apply: %w", err)
+	}
+
+	// Stop the old generation first: two hotkey sources must never hold the
+	// same keys at once.
+	if old != nil {
+		old.cancel()
+		<-old.done
+		if err := old.close(); err != nil {
+			r.log.Warning("%v", err)
+		}
+	}
+	gen := r.startGeneration(runCtx, triggers, cfg, adapters)
+
+	r.mu.Lock()
+	r.gen = gen
+	r.opts.Config = cfg
+	r.phase = PhaseIdle
+	r.mu.Unlock()
+	r.notify()
+	r.log.Info("settings applied without a restart")
+	return nil
+}
+
+// startGeneration starts the Dictation cycle and the hotkey source for one set
+// of adapters.
+func (r *Runtime) startGeneration(runCtx context.Context, triggers chan cycle.Trigger, cfg config.ClientConfig, adapters Adapters) *generation {
+	genCtx, cancel := context.WithCancel(runCtx)
+	indicator := buildIndicator(adapters.Indicator, r.send)
+	feedback := cycle.Feedback(phaseFeedback{rt: r, inner: adapters.Feedback})
+	if indicator != nil {
+		feedback = feedbackGroup{feedback, indicator}
+	}
+	core := cycle.New(cycle.Options{
+		Recorder:    adapters.Recorder,
+		Transcriber: adapters.Transcriber,
+		Injector:    adapters.Injector,
+		Feedback:    feedback,
+		Spool:       adapters.Spool,
+		Clock:       r.opts.Clock,
+		OnError:     func(err error) { r.recordError(err) },
+		Limits:      limitsFor(cfg),
+	})
+
+	var waiting sync.WaitGroup
+	waiting.Add(1)
+	go func() {
+		defer waiting.Done()
+		_ = core.Run(genCtx, triggers)
+	}()
+	if adapters.Hotkey != nil {
+		waiting.Add(1)
 		go func() {
-			defer senders.Done()
-			err := r.opts.Hotkey.Run(runCtx, triggers)
-			if err == nil || runCtx.Err() != nil {
+			defer waiting.Done()
+			err := adapters.Hotkey.Run(genCtx, triggers)
+			if err == nil || genCtx.Err() != nil {
 				return
 			}
-			r.mu.Lock()
-			if r.fatal == nil {
-				r.fatal = err
-			}
-			r.mu.Unlock()
-			cancel()
+			r.fatalize(err)
 		}()
 	}
 
-	go r.shutdown(runCtx, cancel, done, indicator, listener, socketPath, &senders, &cycles)
-	return nil
+	done := make(chan struct{})
+	go func() {
+		waiting.Wait()
+		close(done)
+	}()
+	return &generation{adapters: adapters, indicator: indicator, cancel: cancel, done: done}
 }
 
 // Stop stops the runtime and releases the hotkey source, the microphone, the
@@ -299,29 +447,31 @@ func (r *Runtime) Subscribe() (<-chan Status, func()) {
 }
 
 // shutdown runs once per Start, after the run context is cancelled by Stop, a
-// fatal adapter error, or the caller's context. It waits for the senders before
-// releasing the adapters so no sender races with a released hotkey or socket.
-func (r *Runtime) shutdown(
-	runCtx context.Context,
-	cancel context.CancelFunc,
-	done chan struct{},
-	indicator cycle.Feedback,
-	listener net.Listener,
-	socketPath string,
-	senders, cycles *sync.WaitGroup,
-) {
+// fatal adapter error, or the caller's context. It waits for the current
+// generation before releasing it, so no goroutine races with a released
+// hotkey, recorder, or socket.
+func (r *Runtime) shutdown(runCtx context.Context, done chan struct{}, listener net.Listener, socketPath string) {
 	<-runCtx.Done()
-	cancel()
-	senders.Wait()
-	cycles.Wait()
+	r.mu.Lock()
+	cancel := r.cancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 
+	r.applyMu.Lock()
+	r.mu.Lock()
+	gen := r.gen
+	r.gen = nil
+	r.mu.Unlock()
 	var closeErr error
-	if err := closeAdapter(indicator); err != nil {
-		closeErr = err
+	if gen != nil {
+		gen.cancel()
+		<-gen.done
+		closeErr = gen.close()
 	}
-	if err := closeAdapter(r.opts.Recorder); err != nil && closeErr == nil {
-		closeErr = fmt.Errorf("close microphone: %w", err)
-	}
+	r.applyMu.Unlock()
+
 	if listener != nil {
 		_ = listener.Close()
 	}
@@ -343,11 +493,11 @@ func (r *Runtime) shutdown(
 }
 
 // buildIndicator asks the injected factory for the Recording indicator.
-func (r *Runtime) buildIndicator() cycle.Feedback {
-	if r.opts.Indicator == nil {
+func buildIndicator(factory func(send func(cycle.Trigger)) cycle.Feedback, send func(cycle.Trigger)) cycle.Feedback {
+	if factory == nil {
 		return nil
 	}
-	return r.opts.Indicator(r.send)
+	return factory(send)
 }
 
 // listen binds the control socket unless the caller supplied a listener.
@@ -400,6 +550,19 @@ func (r *Runtime) handleCommand(command control.Command) error {
 	return r.opts.OnSettings()
 }
 
+// fatalize stops the whole runtime after an unrecoverable adapter failure.
+func (r *Runtime) fatalize(err error) {
+	r.mu.Lock()
+	if r.fatal == nil {
+		r.fatal = err
+	}
+	cancel := r.cancel
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // recordError publishes a handled Dictation failure for the Tray's error
 // state. The message stays visible until the next cycle starts.
 func (r *Runtime) recordError(err error) {
@@ -447,6 +610,20 @@ func (r *Runtime) fatalError() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.fatal
+}
+
+// validateAdapters rejects an incomplete rebuild before it replaces working
+// adapters, so a factory bug cannot leave the cycle with nil ports.
+func validateAdapters(adapters Adapters) error {
+	switch {
+	case adapters.Recorder == nil:
+		return errors.New("recorder is required")
+	case adapters.Transcriber == nil:
+		return errors.New("transcriber is required")
+	case adapters.Injector == nil:
+		return errors.New("injector is required")
+	}
+	return nil
 }
 
 func validate(opts Options) error {

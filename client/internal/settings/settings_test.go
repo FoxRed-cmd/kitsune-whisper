@@ -660,6 +660,7 @@ func TestClassify(t *testing.T) {
 		"client.trigger",
 		"client.audio.device",
 		"client.language",
+		"client.ui_language",
 		"client.initial_prompt",
 		"client.paste",
 		"client.paste_shortcut",

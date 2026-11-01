@@ -26,6 +26,18 @@ func systemDefault() Device {
 	return Device{Index: -1, Name: "system default", IsDefault: true}
 }
 
+// ListDevices enumerates the capture devices through a short-lived backend.
+// It is the real implementation behind the Settings window's device list;
+// tests inject a fake lister instead. onLog receives backend diagnostics.
+func ListDevices(onLog func(string)) ([]Device, error) {
+	backend, err := newMalgoBackend(onLog)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = backend.Close() }()
+	return backend.Devices()
+}
+
 // SelectDevice resolves the configured selector against enumerated devices:
 // an empty selector picks the system default, a decimal picks by index, and
 // anything else is matched against the device name case-insensitively.

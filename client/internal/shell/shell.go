@@ -5,7 +5,9 @@
 //
 // A platform adapter supplies Window and Tray ports; the Wails adapter lives
 // behind the "desktop" build tag, so the package itself needs no display and is
-// tested with fakes.
+// tested with fakes. The Settings window renders a translated view produced by
+// the dictation service; a JSON intent comes back from the page, is validated
+// in Go, and the new view is pushed to the window.
 package shell
 
 import (
@@ -14,6 +16,8 @@ import (
 	"sync"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 )
 
@@ -44,11 +48,23 @@ type Window interface {
 	Show()
 	// Hide removes the window without stopping the Client.
 	Hide()
-	// Update renders the latest snapshot.
+	// Update renders the latest status snapshot.
 	Update(Snapshot)
+	// UpdateSettings renders the Dictation and General screens. It is called
+	// when the saved configuration or the language changes, not on every
+	// status update, so in-progress edits survive a phase change.
+	UpdateSettings(dictation.View)
+	// UpdateMessages renders validation and save messages without rebuilding
+	// the form, so a rejected hotkey keeps the other edited fields.
+	UpdateMessages(notices, failures []string)
+	// UpdateLevel renders the live microphone Input level in [0,1].
+	UpdateLevel(level float64)
 	// OnClose installs the handler called when the user closes the window. The
 	// handler runs off the UI thread.
 	OnClose(func())
+	// OnIntent installs the handler for one JSON intent from the page. The
+	// handler validates and applies it in Go; the page never decides.
+	OnIntent(func(payload []byte) error)
 }
 
 // Tray is the notification-area port.
@@ -64,8 +80,8 @@ type Tray interface {
 // falls back to the headless runtime.
 type Desktop interface {
 	// NewWindow creates the Settings window, initially hidden when hidden is
-	// true.
-	NewWindow(initial Snapshot, hidden bool) (Window, error)
+	// true, rendered from the status snapshot and the settings view.
+	NewWindow(initial Snapshot, settings dictation.View, hidden bool) (Window, error)
 	// NewTray creates the Tray image and menu.
 	NewTray(initial Snapshot) (Tray, error)
 	// Run runs the platform event loop until Quit.
@@ -103,6 +119,25 @@ const (
 	StateError State = "error"
 )
 
+// Labels are the translated strings the page and the Tray render. They travel
+// with the snapshot so a language switch updates both without a restart.
+type Labels struct {
+	State      string `json:"state"`
+	Status     string `json:"status"`
+	Start      string `json:"start"`
+	Stop       string `json:"stop"`
+	Settings   string `json:"settings"`
+	Restart    string `json:"restart"`
+	Quit       string `json:"quit"`
+	Phase      string `json:"phase"`
+	PhaseValue string `json:"phaseValue"`
+	Client     string `json:"client"`
+	Profile    string `json:"profile"`
+	Version    string `json:"version"`
+	Running    string `json:"running"`
+	Stopped    string `json:"stopped"`
+}
+
 // Snapshot is the one immutable status the window and the Tray render.
 type Snapshot struct {
 	Version string        `json:"version"`
@@ -111,9 +146,12 @@ type Snapshot struct {
 	Phase   runtime.Phase `json:"phase"`
 	State   State         `json:"state"`
 	Error   string        `json:"error,omitempty"`
+	Labels  Labels        `json:"labels"`
 }
 
-// NewSnapshot maps the runtime status onto the shell's render model.
+// NewSnapshot maps the runtime status onto the shell's render model with
+// English labels. The shell replaces them with the active catalog before
+// rendering.
 func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 	state := StateIdle
 	switch status.Phase {
@@ -125,7 +163,7 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 	if status.Error != "" && status.Phase == runtime.PhaseIdle {
 		state = StateError
 	}
-	return Snapshot{
+	snapshot := Snapshot{
 		Version: version,
 		Profile: server,
 		Running: status.Running,
@@ -133,20 +171,37 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 		State:   state,
 		Error:   status.Error,
 	}
+	snapshot.Labels = labelsFor(i18n.For(i18n.English), snapshot)
+	return snapshot
 }
 
-// Label is the human-readable state shown in the Tray and the window.
-func (s State) Label() string {
-	switch s {
-	case StateRecording:
-		return "Recording"
-	case StateProcessing:
-		return "Processing"
-	case StateError:
-		return "Error"
-	default:
-		return "Idle"
+// labelsFor renders the snapshot's strings in one catalog.
+func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
+	state := catalog.T("state." + string(snapshot.State))
+	return Labels{
+		State:      state,
+		Status:     catalog.T("tray.status", state),
+		Start:      catalog.T("tray.start"),
+		Stop:       catalog.T("tray.stop"),
+		Settings:   catalog.T("tray.settings"),
+		Restart:    catalog.T("tray.restart"),
+		Quit:       catalog.T("tray.quit"),
+		Phase:      catalog.T("status.phase"),
+		PhaseValue: phaseLabel(catalog, snapshot.Phase),
+		Client:     catalog.T("status.client"),
+		Profile:    catalog.T("status.profile"),
+		Version:    catalog.T("status.version"),
+		Running:    catalog.T("status.running"),
+		Stopped:    catalog.T("status.stopped"),
 	}
+}
+
+// phaseLabel translates the Dictation phase shown in the status card.
+func phaseLabel(catalog i18n.Catalog, phase runtime.Phase) string {
+	if phase == "" {
+		phase = runtime.PhaseIdle
+	}
+	return catalog.T("phase." + string(phase))
 }
 
 // Options wires the shell to its runtime, adapter, and user actions.
@@ -156,6 +211,9 @@ type Options struct {
 	// Desktop is the platform adapter. Nil means the build has no desktop
 	// shell; Run then degrades to the headless runtime.
 	Desktop Desktop
+	// Settings is the Dictation settings service. Nil renders a status-only
+	// window, which is what a build without a settings store gets.
+	Settings Settings
 	// Send feeds a Dictation trigger into the runtime.
 	Send func(cycle.Trigger)
 	// Version is shown in the window and the Tray tooltip.
@@ -171,10 +229,11 @@ type Shell struct {
 	opts Options
 	log  Logger
 
-	mu       sync.Mutex
-	snapshot Snapshot
-	window   Window
-	tray     Tray
+	mu        sync.Mutex
+	snapshot  Snapshot
+	window    Window
+	tray      Tray
+	levelTest dictation.LevelStream
 
 	quitCh    chan struct{}
 	restartCh chan struct{}
@@ -247,20 +306,25 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 // open creates the window and Tray independently. A failure in one logs one
 // warning and leaves the other (or the headless runtime) working.
 func (s *Shell) open(desktop Desktop, hidden bool) {
-	window, err := desktop.NewWindow(s.snapshot, hidden)
+	s.mu.Lock()
+	initial := s.snapshot
+	s.mu.Unlock()
+
+	window, err := desktop.NewWindow(initial, s.settingsView(), hidden)
 	if err != nil {
 		s.log.Warning("settings window unavailable: %v", err)
 	} else if window != nil {
 		window.OnClose(func() { window.Hide() })
-		window.Update(s.snapshot)
+		window.OnIntent(s.HandleIntent)
+		window.Update(initial)
 	}
 
-	tray, err := desktop.NewTray(s.snapshot)
+	tray, err := desktop.NewTray(initial)
 	if err != nil {
 		s.log.Warning("tray unavailable: %v", err)
 	} else if tray != nil {
 		tray.OnAction(s.handleAction)
-		tray.Update(s.snapshot)
+		tray.Update(initial)
 	}
 
 	s.mu.Lock()
@@ -302,6 +366,7 @@ func (s *Shell) watch(ctx context.Context, runtimeDone <-chan error, done chan<-
 			s.log.Warning("stopping the runtime: %v", err)
 		}
 	}
+	s.stopLevelTest()
 	if s.opts.Desktop != nil {
 		s.opts.Desktop.Quit()
 	}
@@ -315,7 +380,13 @@ func (s *Shell) consume(updates <-chan runtime.Status) {
 }
 
 func (s *Shell) update(status runtime.Status) {
+	// A level test holds the capture device; release it before a Dictation
+	// cycle needs the microphone.
+	if status.Phase == runtime.PhaseRecording {
+		s.stopLevelTest()
+	}
 	snapshot := NewSnapshot(status, s.opts.Version, s.opts.Profile)
+	snapshot.Labels = labelsFor(s.catalog(), snapshot)
 	s.mu.Lock()
 	s.snapshot = snapshot
 	window, tray := s.window, s.tray

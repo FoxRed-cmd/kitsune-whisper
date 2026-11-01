@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
@@ -82,7 +83,7 @@ type Options struct {
 
 // Logger writes leveled lines to a file and, selectively, to stderr.
 type Logger struct {
-	level   Level
+	level   atomic.Int32
 	file    *os.File
 	stderr  io.Writer
 	verbose bool
@@ -100,11 +101,11 @@ func New(opts Options) *Logger {
 		now = time.Now
 	}
 	logger := &Logger{
-		level:   opts.Level,
 		stderr:  opts.Stderr,
 		verbose: opts.Verbose,
 		now:     now,
 	}
+	logger.level.Store(int32(opts.Level))
 
 	path := opts.File
 	if path == "" {
@@ -121,6 +122,12 @@ func New(opts Options) *Logger {
 	}
 	logger.file = file
 	return logger
+}
+
+// SetLevel changes the minimum level while the Client runs, so a Settings
+// change to log_level applies without a restart.
+func (l *Logger) SetLevel(level Level) {
+	l.level.Store(int32(level))
 }
 
 // Close releases the log file. It is safe to call more than once.
@@ -150,7 +157,7 @@ func (l *Logger) Warning(format string, args ...any) { l.log(Warning, format, ar
 func (l *Logger) Error(format string, args ...any) { l.log(Error, format, args...) }
 
 func (l *Logger) log(level Level, format string, args ...any) {
-	if level < l.level {
+	if level < Level(l.level.Load()) {
 		return
 	}
 	line := fmt.Sprintf("%s %-7s %s\n", l.now().Format("2006-01-02T15:04:05.000Z07:00"), level, fmt.Sprintf(format, args...))

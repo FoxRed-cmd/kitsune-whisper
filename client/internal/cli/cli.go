@@ -25,6 +25,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
@@ -36,6 +37,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/restart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
@@ -142,7 +144,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	case "run":
 		return runClient(cfg, *verbose, stderr)
 	case "gui":
-		return runGUI(rest[1:], *hidden, cfg, *verbose, stderr)
+		return runGUI(rest[1:], *hidden, cfg, *verbose, *configPath, overrides, stderr)
 	case "settings":
 		return runSettings(rest[1:], cfg, *verbose, stderr)
 	case "transcribe-file":
@@ -276,7 +278,7 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 		return code
 	}
 	defer func() { _ = lock.Release() }()
-	return serve(cfg, verbose, false, false, lock, stderr)
+	return serve(cfg, serveOptions{verbose: verbose}, lock, stderr)
 }
 
 // runGUI starts the desktop shell: the Settings window plus the Tray. A second
@@ -284,7 +286,7 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 // second hidden launch (autostart) exits quietly. When the build has no
 // desktop adapter or the window/Tray cannot be created, the runtime keeps
 // dictating headlessly.
-func runGUI(args []string, hidden bool, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+func runGUI(args []string, hidden bool, cfg config.ClientConfig, verbose bool, configPath string, overrides map[string]any, stderr io.Writer) int {
 	if len(args) != 0 {
 		fmt.Fprintln(stderr, "usage: kitsune-client gui [--hidden]")
 		return 2
@@ -294,7 +296,13 @@ func runGUI(args []string, hidden bool, cfg config.ClientConfig, verbose bool, s
 		return code
 	}
 	defer func() { _ = lock.Release() }()
-	return serve(cfg, verbose, true, hidden, lock, stderr)
+	return serve(cfg, serveOptions{
+		verbose:    verbose,
+		gui:        true,
+		hidden:     hidden,
+		configPath: configPath,
+		overrides:  overrides,
+	}, lock, stderr)
 }
 
 // runSettings asks the running desktop shell to show the Settings window.
@@ -341,50 +349,28 @@ func acquireLock(gui, hidden bool, stderr io.Writer) (*instance.Lock, int) {
 	return nil, 0
 }
 
+// serveOptions are the launch parameters that stay out of the configuration.
+type serveOptions struct {
+	verbose bool
+	gui     bool
+	hidden  bool
+	// configPath is the explicit --config path, so the settings store reads and
+	// writes the same file the Client loaded.
+	configPath string
+	// overrides are the curated CLI flags, so the settings store reports them
+	// as locked fields.
+	overrides map[string]any
+}
+
 // serve builds the real adapters, starts the runtime, and either waits
 // headlessly or hands control to the desktop shell.
-func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lock, stderr io.Writer) int {
-	logger := newLogger(cfg, verbose, stderr)
+func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr io.Writer) int {
+	logger := newLogger(cfg, so.verbose, stderr)
 	defer func() { _ = logger.Close() }()
 
-	mode, err := hotkey.ParseMode(cfg.Trigger)
+	adapters, err := buildAdapters(cfg, logger)
 	if err != nil {
-		logger.Error("hotkey: %v", err)
-		return 1
-	}
-	source, err := hotkey.New(hotkey.Options{
-		Hotkey:       cfg.Hotkey,
-		CancelHotkey: cfg.CancelHotkey,
-		Mode:         mode,
-		Backend:      cfg.HotkeyBackend,
-		AppID:        hotkey.DefaultAppID,
-		Retry:        hotkey.RetryPolicy{Initial: 250 * time.Millisecond, Max: 5 * time.Second},
-		OnRetry: func(attempt int, err error) {
-			logger.Warning("hotkey: registration attempt %d failed: %v", attempt, err)
-		},
-		OnLog: func(message string) { logger.Info("%s", message) },
-	})
-	if err != nil {
-		logger.Error("hotkey: %v", err)
-		return 1
-	}
-
-	recorder, err := newRecorder(cfg, logger)
-	if err != nil {
-		logger.Error("capture init failed: %v", err)
-		return 1
-	}
-
-	injector, err := inject.New(inject.Options{
-		Paste:            cfg.Paste,
-		PasteShortcut:    cfg.PasteShortcut,
-		ClipboardRestore: cfg.ClipboardRestore,
-		WaylandTool:      cfg.WaylandTool,
-		OnLog:            func(message string) { logger.Debug("inject: %s", message) },
-	})
-	if err != nil {
-		logger.Error("injection init failed: %v", err)
-		_ = recorder.Close()
+		logger.Error("%v", err)
 		return 1
 	}
 
@@ -394,24 +380,22 @@ func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lo
 	var sh *shell.Shell
 	opts := runtime.Options{
 		Config:      cfg,
-		Hotkey:      source,
-		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg, logger),
-		Injector:    injector,
-		Spool:       newSpool(cfg, logger),
-		Feedback:    newFeedback(cfg, logger),
-		// The Recording indicator exists only for the interactive client;
-		// record and transcribe-file stay quiet. Runtime owns its lifetime.
-		Indicator: func(send func(cycle.Trigger)) cycle.Feedback {
-			if ind := newIndicator(cfg, logger, recorder, send); ind != nil {
-				return ind
-			}
-			return nil
+		Hotkey:      adapters.Hotkey,
+		Recorder:    adapters.Recorder,
+		Transcriber: adapters.Transcriber,
+		Injector:    adapters.Injector,
+		Spool:       adapters.Spool,
+		Feedback:    adapters.Feedback,
+		Indicator:   adapters.Indicator,
+		// A settings change rebuilds the adapters through the same factory the
+		// initial launch used, so hot changes never need a process restart.
+		Rebuild: func(next config.ClientConfig) (runtime.Adapters, error) {
+			return buildAdapters(next, logger)
 		},
 		ControlPath: paths.ControlSocket(),
 		Logger:      logger,
 	}
-	if gui {
+	if so.gui {
 		opts.OnSettings = func() error {
 			if sh == nil {
 				return errors.New("the Settings window is still starting")
@@ -421,26 +405,33 @@ func serve(cfg config.ClientConfig, verbose, gui, hidden bool, lock *instance.Lo
 	}
 	rt := runtime.New(opts)
 
-	if gui {
+	if so.gui {
+		var settingsService shell.Settings
+		if service := newSettingsService(rt, so, logger); service != nil {
+			settingsService = service
+		}
 		server, _ := cfg.ActiveProfile()
 		sh = shell.New(shell.Options{
-			Runtime: rt,
-			Desktop: wails.New(wails.Options{Version: Version, Logger: logger}),
-			Send:    rt.Trigger,
-			Version: Version,
-			Profile: server.Name,
-			Logger:  logger,
+			Runtime:  rt,
+			Desktop:  wails.New(wails.Options{Version: Version, Logger: logger}),
+			Settings: settingsService,
+			Send:     rt.Trigger,
+			Version:  Version,
+			Profile:  server.Name,
+			Logger:   logger,
 		})
 	}
 
 	if err := rt.Start(ctx); err != nil {
-		_ = recorder.Close()
+		if closer, ok := adapters.Recorder.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
 		logger.Error("%v", err)
 		return 1
 	}
 
 	if sh != nil {
-		err := sh.Run(ctx, hidden)
+		err := sh.Run(ctx, so.hidden)
 		// Restart must release the single-instance lock before the new process
 		// tries to acquire it.
 		if releaseErr := lock.Release(); releaseErr != nil {
@@ -550,6 +541,96 @@ func (f *cycleFeedback) Cue(cue cycle.Cue) {
 	if cue == cycle.CueStop || cue == cycle.CueError || cue == cycle.CueCancelled {
 		f.once.Do(func() { close(f.done) })
 	}
+}
+
+// buildAdapters builds every adapter the runtime owns from a configuration.
+// The initial launch and every live Apply use the same factory, so a hot
+// change rebuilds exactly what a restart would.
+func buildAdapters(cfg config.ClientConfig, logger *logging.Logger) (runtime.Adapters, error) {
+	if level, err := logging.ParseLevel(cfg.LogLevel); err == nil {
+		logger.SetLevel(level)
+	}
+	mode, err := hotkey.ParseMode(cfg.Trigger)
+	if err != nil {
+		return runtime.Adapters{}, fmt.Errorf("hotkey: %w", err)
+	}
+	source, err := hotkey.New(hotkey.Options{
+		Hotkey:       cfg.Hotkey,
+		CancelHotkey: cfg.CancelHotkey,
+		Mode:         mode,
+		Backend:      cfg.HotkeyBackend,
+		AppID:        hotkey.DefaultAppID,
+		Retry:        hotkey.RetryPolicy{Initial: 250 * time.Millisecond, Max: 5 * time.Second},
+		OnRetry: func(attempt int, err error) {
+			logger.Warning("hotkey: registration attempt %d failed: %v", attempt, err)
+		},
+		OnLog: func(message string) { logger.Info("%s", message) },
+	})
+	if err != nil {
+		return runtime.Adapters{}, fmt.Errorf("hotkey: %w", err)
+	}
+
+	recorder, err := newRecorder(cfg, logger)
+	if err != nil {
+		return runtime.Adapters{}, fmt.Errorf("capture init failed: %w", err)
+	}
+
+	injector, err := inject.New(inject.Options{
+		Paste:            cfg.Paste,
+		PasteShortcut:    cfg.PasteShortcut,
+		ClipboardRestore: cfg.ClipboardRestore,
+		WaylandTool:      cfg.WaylandTool,
+		OnLog:            func(message string) { logger.Debug("inject: %s", message) },
+	})
+	if err != nil {
+		_ = recorder.Close()
+		return runtime.Adapters{}, fmt.Errorf("injection init failed: %w", err)
+	}
+
+	return runtime.Adapters{
+		Hotkey:      source,
+		Recorder:    recorder,
+		Transcriber: newTranscriber(cfg, logger),
+		Injector:    injector,
+		Spool:       newSpool(cfg, logger),
+		Feedback:    newFeedback(cfg, logger),
+		// The Recording indicator exists only for the interactive client;
+		// record and transcribe-file stay quiet. The runtime owns its lifetime.
+		Indicator: func(send func(cycle.Trigger)) cycle.Feedback {
+			if ind := newIndicator(cfg, logger, recorder, send); ind != nil {
+				return ind
+			}
+			return nil
+		},
+	}, nil
+}
+
+// newSettingsService builds the Dictation settings service the Settings window
+// edits. A settings store that cannot be opened disables the screens but keeps
+// dictation running.
+func newSettingsService(rt *runtime.Runtime, so serveOptions, logger *logging.Logger) *dictation.Service {
+	store, err := settings.Open(settings.Options{
+		Path:         so.configPath,
+		CLIOverrides: so.overrides,
+	})
+	if err != nil {
+		logger.Warning("settings unavailable: %v", err)
+		return nil
+	}
+	return dictation.New(dictation.Options{
+		Store:   store,
+		Runtime: rt,
+		Devices: func() ([]mic.Device, error) {
+			return mic.ListDevices(func(message string) { logger.Debug("audio: %s", message) })
+		},
+		Recorders: func(device string) (dictation.Recorder, error) {
+			return mic.New(mic.Options{
+				Device: device,
+				OnLog:  func(message string) { logger.Debug("audio: %s", message) },
+			})
+		},
+		OnLog: func(message string) { logger.Warning("settings: %s", message) },
+	})
 }
 
 // newIndicator builds the Recording indicator for the interactive run command.
