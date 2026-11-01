@@ -18,6 +18,14 @@ from typing import Any, get_args
 
 from . import __version__, bundle, supervisor
 from .config import ConfigError, Device, ServerConfig, dump_config, load_config, resolve_config_file
+from .pairing import (
+    PAIRING_TTL_SECONDS,
+    PairingCodeStore,
+    PairingError,
+    format_expiry,
+    pairing_store_path,
+)
+from .store import ConfigStore
 from .trust import (
     CertificateError,
     DeviceStore,
@@ -109,6 +117,22 @@ def build_parser() -> argparse.ArgumentParser:
     device_commands.add_parser("list", help="list paired Devices")
     revoke = device_commands.add_parser("revoke", help="revoke a Device by id or name")
     revoke.add_argument("device_ref", metavar="ID_OR_NAME")
+    commands.add_parser(
+        "pair",
+        parents=[common],
+        help="generate a one-time Pairing code and print the certificate fingerprint",
+    )
+    expose = commands.add_parser(
+        "expose",
+        parents=[common],
+        help="turn LAN exposure on or off in the Server configuration (needs a restart)",
+    )
+    expose.add_argument("state", choices=("on", "off"), help="desired exposure")
+    expose.add_argument(
+        "--yes",
+        action="store_true",
+        help="confirm exposing the Server to the LAN",
+    )
     install = commands.add_parser(
         "install",
         parents=[common],
@@ -189,6 +213,15 @@ def _bundle_installer(
 
 def _models_dir(config: ServerConfig) -> Path:
     return Path(config.download_root).expanduser()
+
+
+def _config_store(args: argparse.Namespace) -> ConfigStore:
+    """The store the running Server uses for Admin API writes.
+
+    It pins the same file ``_load`` resolved, including an explicit
+    ``--config`` path, so an Admin API patch cannot silently edit another file.
+    """
+    return ConfigStore(path=getattr(args, "config", None))
 
 
 def _port_check(host: str, port: int) -> None:
@@ -273,6 +306,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _supervised(supervisor.restart, "restarted")
     if command == "devices":
         return _devices(args)
+    if command == "pair":
+        return _pair(args)
+    if command == "expose":
+        return _expose(args)
     if command == "install":
         return _install(args)
     if command == "uninstall":
@@ -296,7 +333,7 @@ def _start(args: argparse.Namespace) -> int:
         return 1
 
     try:
-        server_module.run_server(config, log_file=log_file)
+        server_module.run_server(config, log_file=log_file, config_store=_config_store(args))
     except server_module.PortInUseError as exc:
         server_module.record_failure(log_file, f"error: {exc}")
         return _fail(str(exc))
@@ -384,6 +421,79 @@ def _devices(args: argparse.Namespace) -> int:
     if not store.revoke(target.id):
         return _fail(f"Device {target.id!r} disappeared before it could be revoked")
     print(f"revoked Device {target.name} ({target.id}); its next request is rejected")
+    return 0
+
+
+def _pair(args: argparse.Namespace) -> int:
+    """Generate one Pairing code, for the local UI or a Docker Server."""
+    from .server import tls_paths
+
+    try:
+        config = _load(args)
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    try:
+        store = PairingCodeStore(pairing_store_path(config))
+        generated = store.generate()
+    except (PairingError, OSError) as exc:
+        return _fail(str(exc))
+
+    fingerprint = ""
+    if config.tls.enabled:
+        from .trust import load_or_create_certificate
+
+        try:
+            certificate = load_or_create_certificate(*tls_paths(config))
+        except CertificateError as exc:
+            return _fail(str(exc))
+        fingerprint = certificate.fingerprint
+
+    print(f"code:        {generated.code}")
+    print(f"expires:     {format_expiry(generated.expires_at)}")
+    print(f"fingerprint: {fingerprint or '(TLS is disabled)'}")
+    if not config.expose_to_network and config.bind_host == "127.0.0.1":
+        print(
+            "warning: server.expose_to_network is off, so another machine cannot reach "
+            "this Server; run 'kitsune-server expose on --yes' and restart"
+        )
+    print(f"the code is single use and expires in {int(PAIRING_TTL_SECONDS // 60)} minutes")
+    return 0
+
+
+def _expose(args: argparse.Namespace) -> int:
+    """Turn LAN exposure on or off, refusing to expose without confirmation."""
+    target = args.state == "on"
+    store = ConfigStore(path=getattr(args, "config", None))
+    try:
+        current = store.effective().expose_to_network
+    except ConfigError as exc:
+        print(f"config error: {exc}", file=sys.stderr)
+        return 1
+    if current == target:
+        print(f"server.expose_to_network is already {'on' if target else 'off'}")
+        return 0
+    if target and not args.yes:
+        print(
+            "warning: exposing the Server makes it reachable from your local network. "
+            "Audio and Device tokens stay protected by TLS and Device tokens, but any "
+            "machine on the LAN can attempt to reach the port.",
+            file=sys.stderr,
+        )
+        return _fail("refusing to expose the Server without confirmation; re-run with --yes")
+    try:
+        result = store.patch({"expose_to_network": target})
+    except (ConfigError, OSError) as exc:
+        return _fail(str(exc))
+    if not result.written:
+        print("the configuration already has the requested exposure")
+        return 0
+    print(f"server.expose_to_network = {str(target).lower()}")
+    if result.config.bind_host == "0.0.0.0":
+        print("the Server will bind 0.0.0.0 after a restart")
+    else:
+        print(f"the Server will bind {result.config.bind_host} after a restart")
+    print("restart required: restart the supervised Server to apply the change")
     return 0
 
 

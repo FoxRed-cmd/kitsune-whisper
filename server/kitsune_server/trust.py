@@ -155,7 +155,7 @@ def _generate(cert_file: Path, key_file: Path) -> Certificate:
     cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
 
     _ensure_parent(key_file)
-    _write_private(key_file, key_pem)
+    write_private(key_file, key_pem)
     _ensure_parent(cert_file)
     _write_public(cert_file, cert_pem)
     fingerprint = fingerprint_for_der(certificate.public_bytes(serialization.Encoding.DER))
@@ -204,7 +204,8 @@ def _atomic_write(path: Path, data: bytes, mode: int) -> None:
         raise
 
 
-def _write_private(path: Path, data: bytes) -> None:
+def write_private(path: Path, data: bytes) -> None:
+    """Write a private file atomically (mode ``0600``)."""
     _atomic_write(path, data, 0o600)
 
 
@@ -359,7 +360,7 @@ class DeviceStore:
             ]
         }
         try:
-            _write_private(
+            write_private(
                 self._path,
                 (json.dumps(document, indent=2, sort_keys=True) + "\n").encode("utf-8"),
             )
@@ -461,4 +462,5 @@ __all__ = [
     "load_certificate",
     "load_or_create_certificate",
     "new_token",
+    "write_private",
 ]

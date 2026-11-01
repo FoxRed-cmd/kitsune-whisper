@@ -133,3 +133,20 @@ Verified 2026-10-05 (Client log):
 
 Out of v1's Windows + Linux X11 scope; see ADR 0002 for the portal hotkey and
 `wtype`/`ydotool`/clipboard-only injection chain.
+
+## Two-machine pairing and revocation
+
+Run the Server on one machine and the Client on another on the same LAN. This is
+the flow issue #74 verifies by hand:
+
+1. On the Server host, run `kitsune-server expose on --yes` and restart the
+   Server. Check that `https://<server>:8765/health` answers from the laptop.
+2. In the Client's **Settings → Servers and Devices**, generate a Pairing code
+   (or run `kitsune-server pair` on the Server host) and note the fingerprint.
+3. On the laptop, enter `https://<server>:8765`, the code, and a Device name;
+   press **Pair**. The profile becomes active.
+4. Dictate once: the Server host's log shows the request and the laptop's Device
+   name. Restart both processes and dictate again without re-pairing.
+5. In the Devices list, revoke the laptop. Its next dictation shows the
+   "revoked, pair again" error and the Server returns `401`.
+6. Generate a new code and pair the laptop again; dictation works.

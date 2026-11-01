@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
@@ -52,10 +53,11 @@ type Window interface {
 	Hide()
 	// Update renders the latest status snapshot.
 	Update(Snapshot)
-	// UpdateSettings renders the Dictation and General screens. It is called
-	// when the saved configuration or the language changes, not on every
-	// status update, so in-progress edits survive a phase change.
-	UpdateSettings(dictation.View)
+	// UpdateSettings renders the Dictation, General, Servers, and Devices
+	// screens. It is called when the saved configuration, the Server profiles,
+	// or the language changes, not on every status update, so in-progress
+	// edits survive a phase change.
+	UpdateSettings(SettingsView)
 	// UpdateMessages renders validation and save messages without rebuilding
 	// the form, so a rejected hotkey keeps the other edited fields.
 	UpdateMessages(notices, failures []string)
@@ -83,7 +85,7 @@ type Tray interface {
 type Desktop interface {
 	// NewWindow creates the Settings window, initially hidden when hidden is
 	// true, rendered from the status snapshot and the settings view.
-	NewWindow(initial Snapshot, settings dictation.View, hidden bool) (Window, error)
+	NewWindow(initial Snapshot, settings SettingsView, hidden bool) (Window, error)
 	// NewTray creates the Tray image and menu.
 	NewTray(initial Snapshot) (Tray, error)
 	// Run runs the platform event loop until Quit.
@@ -233,6 +235,12 @@ type Options struct {
 	// Settings is the Dictation settings service. Nil renders a status-only
 	// window, which is what a build without a settings store gets.
 	Settings Settings
+	// Servers is the Server-profile and Device-management service. Nil renders
+	// no Servers or Devices screens.
+	Servers Servers
+	// ApplyConfig applies a newly saved profile list to the running runtime.
+	// Nil leaves the change for the next Client start.
+	ApplyConfig func(config.ClientConfig) error
 	// Send feeds a Dictation trigger into the runtime.
 	Send func(cycle.Trigger)
 	// Version is shown in the window and the Tray tooltip.
@@ -260,6 +268,7 @@ type Shell struct {
 	window        Window
 	tray          Tray
 	levelTest     dictation.LevelStream
+	devicesLoaded string
 
 	quitCh    chan struct{}
 	restartCh chan struct{}
@@ -448,11 +457,26 @@ func (s *Shell) updateServer(status trust.Status) {
 // renderLocked builds the snapshot from the stored Dictation and Server state.
 // s.mu must be held.
 func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
-	snapshot := NewSnapshot(s.runtimeStatus, s.opts.Version, s.opts.Profile)
+	snapshot := NewSnapshot(s.runtimeStatus, s.opts.Version, s.activeProfileName())
 	snapshot.Server = s.server
 	snapshot.Labels = labelsFor(s.catalog(), snapshot)
 	s.snapshot = snapshot
 	return snapshot, s.window, s.tray
+}
+
+// activeProfileName follows the profile list so pairing a Remote Server
+// updates the Tray immediately.
+func (s *Shell) activeProfileName() string {
+	if s.opts.Servers == nil {
+		return s.opts.Profile
+	}
+	view := s.opts.Servers.View()
+	for _, profile := range view.Profiles {
+		if profile.Active {
+			return profile.Name
+		}
+	}
+	return s.opts.Profile
 }
 
 // monitorServer probes the active Server once at startup and then on the slow
@@ -481,7 +505,45 @@ func (s *Shell) checkServer(ctx context.Context) {
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	s.updateServer(s.opts.CheckServer(checkCtx))
+	status := s.opts.CheckServer(checkCtx)
+	s.updateServer(status)
+	if status.State == trust.StateOnline {
+		go s.loadDevices(ctx)
+	}
+}
+
+// loadDevices refreshes the active profile's Devices once per profile after a
+// successful health check, then whenever the user asks.
+func (s *Shell) loadDevices(ctx context.Context) {
+	if s.opts.Servers == nil {
+		return
+	}
+	view := s.opts.Servers.View()
+	s.mu.Lock()
+	loaded := s.devicesLoaded
+	s.mu.Unlock()
+	if view.ActiveID == "" || loaded == view.ActiveID {
+		return
+	}
+	devicesCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if _, err := s.opts.Servers.LoadDevices(devicesCtx, view.ActiveID); err != nil {
+		s.log.Debug("servers: load Devices: %v", err)
+		s.pushSettings()
+		return
+	}
+	s.mu.Lock()
+	s.devicesLoaded = view.ActiveID
+	s.mu.Unlock()
+	s.pushSettings()
+}
+
+// resetDevices forgets the cached Device list so the next check or refresh
+// reloads it for a changed active profile.
+func (s *Shell) resetDevices() {
+	s.mu.Lock()
+	s.devicesLoaded = ""
+	s.mu.Unlock()
 }
 
 // Snapshot returns the latest rendered snapshot.

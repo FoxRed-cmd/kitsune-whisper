@@ -36,6 +36,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/restart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
@@ -382,6 +383,7 @@ type serveOptions struct {
 type trustBootstrap struct {
 	cfg     config.ClientConfig
 	manager *trust.Manager
+	tokens  *trust.TokenStore
 	store   *settings.Store
 }
 
@@ -407,14 +409,15 @@ func prepareTrust(
 	if store != nil {
 		pins = fingerprintWriter(store)
 	}
-	manager := trust.NewManager(trust.NewTokenStore(paths.TokenDir()), pins, logger)
+	tokens := trust.NewTokenStore(paths.TokenDir())
+	manager := trust.NewManager(tokens, pins, logger)
 	pairCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	ensured, err := manager.Ensure(pairCtx, cfg)
 	if err != nil {
 		logger.Warning("%v", err)
 	}
-	return trustBootstrap{cfg: ensured, manager: manager, store: store}
+	return trustBootstrap{cfg: ensured, manager: manager, tokens: tokens, store: store}
 }
 
 // fingerprintWriter persists a paired certificate fingerprint in the Server
@@ -454,12 +457,19 @@ func profilePatch(profiles []config.ServerProfile) ([]any, error) {
 // never changes routing and never surfaces the token. When the Local Server
 // was not running at startup, a later probe pairs it as soon as it answers,
 // so autostart order does not leave the Client permanently unpaired.
-func serverCheck(cfg config.ClientConfig, manager *trust.Manager) func(context.Context) trust.Status {
+func serverCheck(
+	cfg config.ClientConfig,
+	manager *trust.Manager,
+	store *settings.Store,
+) func(context.Context) trust.Status {
 	var mu sync.Mutex
 	current := cfg
 	return func(ctx context.Context) trust.Status {
 		mu.Lock()
 		defer mu.Unlock()
+		if store != nil {
+			current = store.Snapshot().Config
+		}
 		profile, ok := current.ActiveProfile()
 		if !ok {
 			return trust.Status{State: trust.StateUnknown}
@@ -538,14 +548,23 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			settingsService = service
 		}
 		server, _ := cfg.ActiveProfile()
+		var serverService shell.Servers
+		if bootstrap.store != nil {
+			serverService = servers.New(servers.Options{
+				Store:  bootstrap.store,
+				Tokens: bootstrap.tokens,
+			})
+		}
 		sh = shell.New(shell.Options{
 			Runtime:     rt,
 			Desktop:     wails.New(wails.Options{Version: Version, Logger: logger}),
 			Settings:    settingsService,
+			Servers:     serverService,
+			ApplyConfig: rt.Apply,
 			Send:        rt.Trigger,
 			Version:     Version,
 			Profile:     server.Name,
-			CheckServer: serverCheck(cfg, bootstrap.manager),
+			CheckServer: serverCheck(cfg, bootstrap.manager, bootstrap.store),
 			Logger:      logger,
 		})
 	}

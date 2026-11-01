@@ -246,7 +246,11 @@ def test_start_writes_a_port_conflict_to_the_log(
     log_file = tmp_path / "state" / "server.log"
     monkeypatch.setattr(server, "default_log_file", lambda: log_file)
 
-    def taken(config: ServerConfig, log_file: Path | None = None) -> None:
+    def taken(
+        config: ServerConfig,
+        log_file: Path | None = None,
+        config_store: object = None,
+    ) -> None:
         raise server.PortInUseError(
             "server.port 8765 is already in use on 127.0.0.1; change server.port"
         )
@@ -285,7 +289,12 @@ def test_main_reports_engine_load_error(
     path = tmp_path / "kitsune.yaml"
     path.write_text(yaml.safe_dump({"server": {"model": "small"}}), encoding="utf-8")
 
-    def boom(config: ServerConfig, *, log_file: Path | None = None) -> None:
+    def boom(
+        config: ServerConfig,
+        *,
+        log_file: Path | None = None,
+        config_store: object = None,
+    ) -> None:
         raise EngineLoadError("model unavailable")
 
     monkeypatch.setattr(server, "run_server", boom)

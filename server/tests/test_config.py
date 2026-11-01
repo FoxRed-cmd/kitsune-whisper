@@ -178,10 +178,10 @@ def test_legacy_lan_host_is_accepted(tmp_path: Path) -> None:
     assert config.bind_host == "192.168.1.10"
 
 
-def test_explicit_loopback_host_wins_over_exposure(tmp_path: Path) -> None:
+def test_exposure_wins_over_an_explicit_loopback_host(tmp_path: Path) -> None:
     write_config(tmp_path, {"host": "127.0.0.1", "expose_to_network": True})
 
-    assert load_config(env={}, cwd=tmp_path).bind_host == "127.0.0.1"
+    assert load_config(env={}, cwd=tmp_path).bind_host == "0.0.0.0"
 
 
 def test_expose_to_network_binds_all_interfaces(tmp_path: Path) -> None:
@@ -196,9 +196,9 @@ def test_default_bind_host_is_loopback(tmp_path: Path) -> None:
     assert config.bind_host == "127.0.0.1"
 
 
-def test_explicit_lan_host_is_used_when_exposed(tmp_path: Path) -> None:
+def test_explicit_lan_host_is_replaced_by_the_exposure_switch(tmp_path: Path) -> None:
     write_config(tmp_path, {"host": "192.168.1.10", "expose_to_network": True})
-    assert load_config(env={}, cwd=tmp_path).bind_host == "192.168.1.10"
+    assert load_config(env={}, cwd=tmp_path).bind_host == "0.0.0.0"
 
 
 @pytest.mark.parametrize(

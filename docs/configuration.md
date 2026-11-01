@@ -68,8 +68,8 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
-| `expose_to_network` | bool | `false` | LAN exposure switch. On = the Server binds `0.0.0.0` when `host` is left at its default; an explicit `host` wins. Off = loopback unless `host` is explicit. Needs a restart. |
-| `host` | string | `127.0.0.1` | Bind address. An explicit value always wins, including the legacy `host: 0.0.0.0`; prefer `expose_to_network: true`. A non-loopback `host` without that switch still works and logs a migration warning. |
+| `expose_to_network` | bool | `false` | LAN exposure switch. On = the Server binds `0.0.0.0`; off = it binds `host` (loopback unless that is explicit). Needs a restart. |
+| `host` | string | `127.0.0.1` | Bind address when `expose_to_network` is off. An explicit value is used as given, including the legacy `host: 0.0.0.0`; prefer `expose_to_network: true`. A non-loopback `host` without that switch still works and logs a migration warning. |
 | `port` | int | `8765` | Bind port (1–65535). The default moved from `8000` to `8765` for the desktop install; set `port: 8000` to keep an existing setup. |
 | `model` | string | `small` | Active model: a faster-whisper size name (`tiny`, `base`, `small`, `medium`, `large-v3`, `turbo`, `distil-large-v3`) **or** a path to a local CTranslate2 model directory. |
 | `device` | `auto`\|`cpu`\|`cuda` | `auto` | `auto` uses CTranslate2's CUDA detection and falls back to CPU. |
@@ -168,6 +168,43 @@ The next request from a revoked Device is rejected immediately, including in a
 running Server: the store notices the file changed and reloads it. On a Docker
 Server the store lives on the `kitsune-state` volume; run the same command
 inside the container (`docker exec <container> kitsune-server devices list`).
+
+Remote pairing uses a one-time **Pairing code**. Generate one on the Server
+host, or inside a Docker container:
+
+```sh
+kitsune-server pair
+```
+
+The command prints an 8-character code, its expiry, and the certificate
+fingerprint to check. The code is single use, valid for 10 minutes, and failed
+attempts are rate-limited. On the Client, open **Settings → Servers and Devices**,
+enter the Server address and the code, and press **Pair**. The Client pins the
+certificate, stores the Device token in the keychain, and makes the new profile
+active.
+
+The same screen lists trusted Devices with their last-seen time and revokes
+one. The Admin API endpoints behind it are
+`POST /admin/pairing-code`, `GET /admin/devices`, and
+`DELETE /admin/devices/{id}`; they require the same Device token as
+`/status`. Pairing itself is `POST /pair` with `{"code": "...", "name": "..."}`
+and needs no token. Wrong, expired, reused, and rate-limited codes return
+distinct `4xx` codes (`pairing_code_wrong`, `pairing_code_expired`,
+`pairing_code_reused`, `pairing_rate_limited`).
+
+LAN exposure is off by default. Turn it on deliberately; the change is written
+to the Server YAML and takes effect only after a restart:
+
+```sh
+kitsune-server expose on --yes
+kitsune-server expose off
+```
+
+`expose on` without `--yes` refuses and explains the change. The Settings
+window's **Servers and Devices** screen offers the same on/off buttons with a
+confirmation. The Admin API's
+`POST /admin/exposure` with `{"expose": true, "confirm": true}` writes the same
+setting and reports `restart_required`; it never rebinds a running listener.
 
 The Client keeps each token in the OS keychain (Windows Credential Manager,
 Linux Secret Service) and falls back to a file with mode `0600` under

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -269,5 +270,92 @@ func TestCheckServerDistinguishesCertificateProblems(t *testing.T) {
 	status = trust.CheckServer(context.Background(), profile, "ktn_good", time.Second)
 	if status.State != trust.StateOnline {
 		t.Fatalf("online status = %+v", status)
+	}
+}
+
+func TestPairRemoteRedeemsTheCodeAndPinsTheCertificate(t *testing.T) {
+	fingerprint := ""
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/pair" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		if body["code"] != "ABCD2345" {
+			t.Errorf("code = %q", body["code"])
+		}
+		if body["name"] != "Laptop" {
+			t.Errorf("name = %q", body["name"])
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(trust.Pairing{
+			Device:      trust.Device{ID: "dev-2", Name: "Laptop"},
+			Token:       "ktn_remote",
+			Fingerprint: fingerprint,
+		})
+	}))
+	t.Cleanup(server.Close)
+	fingerprint = trust.CertificateFingerprint(server.Certificate())
+
+	paired, err := trust.PairRemote(context.Background(), server.URL, "abcd-2345", "Laptop", "")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	if paired.Token != "ktn_remote" {
+		t.Fatalf("token = %q", paired.Token)
+	}
+	if paired.Fingerprint != fingerprint {
+		t.Fatalf("fingerprint = %q, want %q", paired.Fingerprint, fingerprint)
+	}
+}
+
+func TestPairRemoteRequiresACode(t *testing.T) {
+	_, err := trust.PairRemote(context.Background(), "https://192.0.2.10:8765", "  ", "Laptop", "")
+	if !errors.Is(err, trust.ErrPairingCodeRequired) {
+		t.Fatalf("err = %v, want ErrPairingCodeRequired", err)
+	}
+}
+
+func TestPairRemoteSurfacesTheServersDistinctCodeError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusGone)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]string{
+				"code":    "pairing_code_expired",
+				"message": "the Pairing code has expired after 10 minutes",
+			},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := trust.PairRemote(context.Background(), server.URL, "ABCD2345", "Laptop", "")
+	var failure *trust.PairingHTTPError
+	if !errors.As(err, &failure) {
+		t.Fatalf("err = %v, want PairingHTTPError", err)
+	}
+	if failure.Code != "pairing_code_expired" || failure.StatusCode != http.StatusGone {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if !strings.Contains(failure.Error(), "expired") {
+		t.Fatalf("failure = %v", failure)
+	}
+}
+
+func TestPairRemoteChecksAnExistingPinBeforeSendingTheCode(t *testing.T) {
+	calls := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(trust.Pairing{Token: "ktn_remote"})
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := trust.PairRemote(context.Background(), server.URL, "ABCD2345", "Laptop", "deadbeef")
+	if !errors.Is(err, trust.ErrFingerprintMismatch) {
+		t.Fatalf("err = %v, want a fingerprint mismatch", err)
+	}
+	if calls != 0 {
+		t.Fatalf("a pin mismatch reached /pair (calls = %d)", calls)
 	}
 }

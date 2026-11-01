@@ -14,7 +14,6 @@ import (
 	"sync"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
-	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -166,7 +165,7 @@ func (b *bridge) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 
 // NewWindow creates the Settings window. The initial page embeds the status
 // snapshot and the rendered screens so the first paint is correct.
-func (d *desktop) NewWindow(initial shell.Snapshot, settings dictation.View, hidden bool) (port shell.Window, err error) {
+func (d *desktop) NewWindow(initial shell.Snapshot, settings shell.SettingsView, hidden bool) (port shell.Window, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			port, err = nil, fmt.Errorf("wails window: %v", recovered)
@@ -239,12 +238,12 @@ func (w *window) Update(snapshot shell.Snapshot) {
 
 // settingsPayload is the view plus the HTML fragment rendered from it.
 type settingsPayload struct {
-	dictation.View
+	shell.SettingsView
 	HTML string `json:"html"`
 }
 
-func (w *window) UpdateSettings(view dictation.View) {
-	payload, err := json.Marshal(settingsPayload{View: view, HTML: shell.SettingsHTML(view)})
+func (w *window) UpdateSettings(view shell.SettingsView) {
+	payload, err := json.Marshal(settingsPayload{SettingsView: view, HTML: shell.SettingsHTML(view)})
 	if err != nil {
 		return
 	}

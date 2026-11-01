@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"html"
 	"strings"
+	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 )
 
 // Page renders the Settings window's initial HTML for a status snapshot and a
@@ -13,7 +15,7 @@ import (
 // snapshots arrive through renderStatus, renderSettings, renderMessages, and
 // setLevel. The page holds no routing, validation, or retry logic: it collects
 // values and sends one JSON intent, and Go decides.
-func Page(initial Snapshot, settings dictation.View) string {
+func Page(initial Snapshot, settings SettingsView) string {
 	title := settings.Title
 	if title == "" {
 		title = "kitsune-whisper"
@@ -41,19 +43,20 @@ func Page(initial Snapshot, settings dictation.View) string {
 	).Replace(pageHTML)
 }
 
-// SettingsHTML renders the General and Dictation screens into an HTML fragment.
-// Every string is escaped; the fragment is inserted into the page and also
-// pushed verbatim after a save or a language switch.
-func SettingsHTML(view dictation.View) string {
+// SettingsHTML renders the General, Dictation, Servers, and Devices screens
+// into an HTML fragment. Every string is escaped; the fragment is inserted
+// into the page and also pushed verbatim after a save or a language switch.
+func SettingsHTML(view SettingsView) string {
 	var out strings.Builder
 	for _, section := range view.Sections {
 		out.WriteString(`<section class="group" data-section="` + escape(section.ID) + `">`)
 		out.WriteString(`<h2>` + escape(section.Title) + `</h2>`)
 		for _, field := range section.Fields {
-			writeField(&out, field, view)
+			writeField(&out, field, view.View)
 		}
 		out.WriteString(`</section>`)
 	}
+	out.WriteString(serversHTML(view.Servers, view.Labels))
 	if view.DeviceError != "" {
 		out.WriteString(`<p class="device-error">` + escape(view.DeviceError) + `</p>`)
 	}
@@ -61,6 +64,98 @@ func SettingsHTML(view dictation.View) string {
 		out.WriteString(`<p class="config-path">` + escape(view.ConfigTitle) + `: <code>` + escape(view.ConfigPath) + `</code></p>`)
 	}
 	return out.String()
+}
+
+// serversHTML renders the Server profiles and the active profile's Devices.
+// Inputs have stable ids so the page can collect one pairing request without
+// rebuilding any other screen.
+func serversHTML(view servers.View, labels ServerLabels) string {
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="servers">`)
+	out.WriteString(`<h2>` + escape(labels.Title) + `</h2>`)
+	if len(view.Profiles) == 0 {
+		out.WriteString(`<p class="help">` + escape(labels.NoServers) + `</p>`)
+	} else {
+		out.WriteString(`<h3>` + escape(labels.Profiles) + `</h3>`)
+		for _, profile := range view.Profiles {
+			out.WriteString(`<div class="row" data-profile="` + escape(profile.ID) + `">`)
+			out.WriteString(`<strong>` + escape(profile.Name) + `</strong>`)
+			if profile.Active {
+				out.WriteString(`<span class="badge">` + escape(labels.Active) + `</span>`)
+			}
+			out.WriteString(`<code>` + escape(profile.URL) + `</code>`)
+			out.WriteString(`</div>`)
+		}
+	}
+	out.WriteString(`<h3>` + escape(labels.PairTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.PairHelp) + `</p>`)
+	out.WriteString(`<div class="field"><label for="server-address">` + escape(labels.Address) + `</label>`)
+	out.WriteString(`<input type="text" id="server-address" autocomplete="off" spellcheck="false" placeholder="desktop.local:8765"></div>`)
+	out.WriteString(`<div class="field"><label for="server-code">` + escape(labels.Code) + `</label>`)
+	out.WriteString(`<input type="text" id="server-code" autocomplete="off" spellcheck="false" maxlength="16"></div>`)
+	out.WriteString(`<div class="field"><label for="server-name">` + escape(labels.Name) + `</label>`)
+	out.WriteString(`<input type="text" id="server-name" autocomplete="off" spellcheck="false">`)
+	out.WriteString(`<p class="help">` + escape(labels.NameHelp) + `</p></div>`)
+	out.WriteString(`<button type="button" class="primary" data-action="pair-remote">` + escape(labels.Pair) + `</button>`)
+	out.WriteString(`</section>`)
+
+	out.WriteString(`<section class="group" data-section="exposure">`)
+	out.WriteString(`<h2>` + escape(labels.ExposureTitle) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(labels.ExposureHelp) + `</p>`)
+	if view.Exposure != nil {
+		state := labels.ExposureOffState
+		if view.Exposure.Expose {
+			state = labels.ExposureOnState
+		}
+		out.WriteString(`<p class="notice">` + escape(labels.ExposureTitle) + `: ` + escape(state) + `</p>`)
+	}
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="exposure" data-expose="on" data-confirm="` + escape(labels.ExposureConfirm) + `">` + escape(labels.ExposureOn) + `</button>`)
+	out.WriteString(`<button type="button" data-action="exposure" data-expose="off">` + escape(labels.ExposureOff) + `</button>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`</section>`)
+
+	out.WriteString(`<section class="group" data-section="devices">`)
+	out.WriteString(`<h2>` + escape(labels.Devices) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(labels.DevicesFor) + `</p>`)
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="refresh-devices">` + escape(labels.Refresh) + `</button>`)
+	out.WriteString(`<button type="button" data-action="pairing-code">` + escape(labels.GenerateCode) + `</button>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`<p class="help">` + escape(labels.CodeHelp) + `</p>`)
+	if view.PairingCode != nil {
+		out.WriteString(`<p class="pair-code" data-code="` + escape(view.PairingCode.Code) + `"><strong>` + escape(view.PairingCode.Code) + `</strong> · ` + escape(labels.CodeExpires) + `</p>`)
+		if view.PairingCode.Fingerprint != "" {
+			out.WriteString(`<p class="help">` + escape(labels.Fingerprint) + `: <code>` + escape(view.PairingCode.Fingerprint) + `</code></p>`)
+		}
+	}
+	if view.PairingError != "" {
+		out.WriteString(`<p class="failure">` + escape(view.PairingError) + `</p>`)
+	}
+	if view.DevicesError != "" {
+		out.WriteString(`<p class="failure">` + escape(view.DevicesError) + `</p>`)
+	}
+	if len(view.Devices) == 0 {
+		out.WriteString(`<p class="help">` + escape(labels.NoDevices) + `</p>`)
+	} else {
+		out.WriteString(`<table class="devices"><thead><tr><th>` + escape(labels.Name) + `</th><th>` + escape(labels.LastSeen) + `</th><th></th></tr></thead><tbody>`)
+		for _, device := range view.Devices {
+			out.WriteString(`<tr data-device="` + escape(device.ID) + `"><td>` + escape(device.Name) + `</td><td>`)
+			out.WriteString(escape(lastSeen(device.LastSeen, labels.Never)))
+			out.WriteString(`</td><td><button type="button" data-action="revoke-device" data-device-id="` + escape(device.ID) + `" data-confirm="` + escape(labels.RevokeConfirm) + `">` + escape(labels.Revoke) + `</button></td></tr>`)
+		}
+		out.WriteString(`</tbody></table>`)
+	}
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+// lastSeen renders a Device's last use in local time.
+func lastSeen(value *float64, never string) string {
+	if value == nil {
+		return never
+	}
+	return time.Unix(int64(*value), 0).Local().Format("2006-01-02 15:04")
 }
 
 func writeField(out *strings.Builder, field dictation.Field, view dictation.View) {
@@ -185,6 +280,15 @@ const pageHTML = `<!doctype html>
   .meter { height:10px; border-radius:999px; background:var(--line); overflow:hidden; margin-top:8px; }
   .meter-fill { height:100%; width:0; background:var(--accent); transition:width 60ms linear; }
   .device-error { color:#d6409f; }
+  .row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 0; border-top:1px solid var(--line); }
+  .row:first-of-type { border-top:none; }
+  .row code { color:var(--muted); overflow-wrap:anywhere; }
+  .actions-inline { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0; }
+  .pair-code { font-size:18px; letter-spacing:.08em; }
+  .devices { width:100%; border-collapse:collapse; margin-top:10px; }
+  .devices th, .devices td { text-align:left; padding:8px 6px; border-top:1px solid var(--line); }
+  .devices th { color:var(--muted); font-weight:600; border-top:none; }
+  .devices td:last-child { text-align:right; }
   .messages { margin-bottom:18px; }
   .notice { color:#2f9e44; margin:0 0 6px; }
   .failure { color:#d6409f; margin:0 0 6px; }
@@ -335,6 +439,23 @@ const pageHTML = `<!doctype html>
     parts.push(name);
     return parts.join("+");
   }
+  function pairRemote() {
+    function value(id) {
+      var el = document.getElementById(id);
+      return el ? el.value : "";
+    }
+    sendIntent({
+      action: "pair-remote",
+      address: value("server-address"),
+      code: value("server-code"),
+      name: value("server-name")
+    });
+  }
+  function revokeDevice(button) {
+    var message = button.dataset.confirm || "Revoke this Device?";
+    if (window.confirm && !window.confirm(message)) return;
+    sendIntent({ action: "revoke-device", device_id: button.dataset.deviceId || "" });
+  }
   document.addEventListener("click", function (event) {
     var button = event.target.closest ? event.target.closest("[data-action]") : null;
     if (!button) return;
@@ -347,6 +468,19 @@ const pageHTML = `<!doctype html>
     } else if (action === "stop-mic") {
       setLevel(0);
       sendIntent({ action: "stop-mic" });
+    } else if (action === "pair-remote") {
+      pairRemote();
+    } else if (action === "refresh-devices") {
+      sendIntent({ action: "refresh-devices" });
+    } else if (action === "revoke-device") {
+      revokeDevice(button);
+    } else if (action === "pairing-code") {
+      sendIntent({ action: "pairing-code" });
+    } else if (action === "exposure") {
+      var expose = button.dataset.expose || "off";
+      var exposureMessage = button.dataset.confirm || "";
+      if (expose === "on" && exposureMessage && window.confirm && !window.confirm(exposureMessage)) return;
+      sendIntent({ action: "exposure", value: expose });
     }
   });
   document.addEventListener("change", function (event) {

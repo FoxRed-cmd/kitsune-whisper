@@ -26,10 +26,18 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from . import __version__
 from .audio import AudioDecodeError, decode_audio
-from .config import ServerConfig, format_errors
+from .config import ConfigError, ServerConfig, format_errors
 from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
+from .pairing import (
+    ExpiredPairingCodeError,
+    PairingCodeStore,
+    PairingRateLimitedError,
+    ReusedPairingCodeError,
+    WrongPairingCodeError,
+)
 from .processor import ProcessingError, TextProcessor
+from .store import ConfigStore
 from .transcriber import Transcriber, resolve_workers
 from .trust import Certificate, DeviceStore
 from .trust import Device as TrustedDevice
@@ -100,6 +108,20 @@ class LocalPairRequest(BaseModel):
     name: str = Field(default="Local client", min_length=1, max_length=128)
 
 
+class RemotePairRequest(BaseModel):
+    """The body of the one-time Pairing code exchange."""
+
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="Device", min_length=1, max_length=128)
+
+
+class ExposureRequest(BaseModel):
+    """The body of the LAN exposure switch."""
+
+    expose: bool
+    confirm: bool = False
+
+
 def is_loopback_address(host: str | None) -> bool:
     """Return True when the HTTP peer is on the loopback interface."""
     if not host:
@@ -122,6 +144,8 @@ def create_app(
     cuda_device_count: int | None = None,
     devices: DeviceStore | None = None,
     certificate: Certificate | None = None,
+    pairing_codes: PairingCodeStore | None = None,
+    config_store: ConfigStore | None = None,
     version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
@@ -131,12 +155,16 @@ def create_app(
     ``devices`` is the Device store; ``None`` keeps an in-memory store for
     tests and throwaway Servers. ``certificate`` supplies the fingerprint the
     Client pins; it is absent when TLS is explicitly disabled.
+    ``pairing_codes`` holds the one-time Pairing codes; ``config_store`` is the
+    only writer of the Server YAML and backs the LAN exposure switch.
     """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
     app.state.transcriber = transcriber
     app.state.processor = processor
     app.state.devices = devices if devices is not None else DeviceStore()
+    app.state.pairing_codes = pairing_codes if pairing_codes is not None else PairingCodeStore()
+    app.state.config_store = config_store
     app.state.certificate = certificate
     app.state.version = version
     if cuda_device_count is None:
@@ -270,6 +298,11 @@ def create_app(
             },
             "gpu": gpu.as_dict(),
             "tls_fingerprint": certificate.fingerprint if certificate is not None else "",
+            "network": {
+                "expose_to_network": config.expose_to_network,
+                "bind_host": config.bind_host,
+                "port": config.port,
+            },
             "auth": {
                 "anonymous": config.allow_anonymous,
                 "device": device.name if device else None,
@@ -301,6 +334,117 @@ def create_app(
             "device": device.as_dict(),
             "token": token,
             "fingerprint": certificate.fingerprint if certificate is not None else "",
+        }
+
+    @app.post("/pair", status_code=201)
+    async def pair_remote(request: Request, payload: RemotePairRequest) -> dict[str, Any]:
+        """Redeem a one-time Pairing code for a Remote Device token.
+
+        The failures stay distinct so the Client can say whether the code was
+        wrong, expired, already used, or the peer is asking too often.
+        """
+        peer = request.client.host if request.client is not None else None
+        name = payload.name.strip() or "Device"
+        try:
+            app.state.pairing_codes.redeem(payload.code, peer)
+        except PairingRateLimitedError as exc:
+            raise ApiError(
+                429,
+                "pairing_rate_limited",
+                str(exc),
+                {"Retry-After": str(exc.retry_after)},
+            ) from exc
+        except ExpiredPairingCodeError as exc:
+            raise ApiError(410, "pairing_code_expired", str(exc)) from exc
+        except ReusedPairingCodeError as exc:
+            raise ApiError(409, "pairing_code_reused", str(exc)) from exc
+        except WrongPairingCodeError as exc:
+            raise ApiError(401, "pairing_code_wrong", str(exc)) from exc
+        device, token = app.state.devices.create(name, peer)
+        certificate = app.state.certificate
+        return {
+            "device": device.as_dict(),
+            "token": token,
+            "fingerprint": certificate.fingerprint if certificate is not None else "",
+        }
+
+    @app.post("/admin/pairing-code", status_code=201)
+    async def create_pairing_code(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Generate one Pairing code for a new Device.
+
+        Any trusted Device may ask, because every Device is already fully
+        trusted in v1 (ADR 0008). The local Settings window is the normal path.
+        """
+        del device  # authentication is the only requirement
+        code = app.state.pairing_codes.generate()
+        certificate = app.state.certificate
+        return {
+            "code": code.code,
+            "expires_at": code.expires_at,
+            "fingerprint": certificate.fingerprint if certificate is not None else "",
+        }
+
+    @app.get("/admin/devices")
+    async def list_devices(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """List trusted Devices with names, timestamps, and last addresses."""
+        del device
+        return {"devices": [item.as_dict() for item in app.state.devices.list()]}
+
+    @app.delete("/admin/devices/{device_id}", status_code=204)
+    async def revoke_device(
+        device_id: str,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> None:
+        """Revoke one Device; its next request is unauthorised."""
+        del device
+        if not app.state.devices.revoke(device_id):
+            raise ApiError(
+                404,
+                "not_found",
+                f"no Device has id {device_id!r}; list Devices and try again",
+            )
+
+    @app.post("/admin/exposure")
+    async def set_exposure(
+        payload: ExposureRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Turn LAN exposure on or off in the Server YAML.
+
+        A change never rebinds the running listener: the response reports that
+        a restart is required, so the Server owner sees the effect only after a
+        deliberate restart (ADR 0008 and the desktop spec).
+        """
+        del device
+        if payload.expose and not payload.confirm:
+            raise ApiError(
+                400,
+                "confirmation_required",
+                "exposing the Server to the LAN requires an explicit confirmation; "
+                "send confirm: true after warning the user",
+            )
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot write its configuration; change "
+                "server.expose_to_network in kitsune.yaml and restart the Server",
+            )
+        try:
+            result = store.patch({"expose_to_network": payload.expose})
+        except ConfigError as exc:
+            raise ApiError(400, "bad_request", str(exc)) from exc
+        return {
+            "expose_to_network": result.config.expose_to_network,
+            "bind_host": result.config.bind_host,
+            "changed": bool(result.changed),
+            "written": result.written,
+            "restart_required": list(result.restart_required),
         }
 
     @app.post("/transcribe", dependencies=[Depends(authenticate)])

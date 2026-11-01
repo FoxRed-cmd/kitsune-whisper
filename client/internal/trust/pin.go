@@ -23,7 +23,25 @@ var (
 	ErrCertificateNotPinned = errors.New("trust: the Server certificate is not pinned; pair this profile first")
 	// ErrNotLoopback means local auto-pairing was pointed at a remote address.
 	ErrNotLoopback = errors.New("trust: local auto-pairing is available only for loopback addresses")
+	// ErrPairingCodeRequired means a Remote pairing request had no code.
+	ErrPairingCodeRequired = errors.New("trust: enter the Pairing code shown on the Server")
 )
+
+// PairingHTTPError is a rejected Pairing code or another Server refusal. Code
+// is the Server's stable error code (for example pairing_code_expired), so the
+// Settings window can show the distinct, actionable message unchanged.
+type PairingHTTPError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *PairingHTTPError) Error() string {
+	if e.Code == "" {
+		return fmt.Sprintf("trust: Server %d: %s", e.StatusCode, e.Message)
+	}
+	return fmt.Sprintf("trust: Server %d %s: %s", e.StatusCode, e.Code, e.Message)
+}
 
 // FingerprintMismatchError reports both fingerprints so the message can tell
 // the user that the Server identity changed. Neither value is secret.

@@ -8,92 +8,140 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 )
 
-func sampleView() dictation.View {
-	return dictation.View{
-		Language:    i18n.Russian,
-		Title:       "kitsune-whisper",
-		ConfigTitle: "Файл настроек",
-		ConfigPath:  "/home/user/.config/kitsune-whisper/kitsune.yaml",
-		Subtitle:    "Приватная диктовка в локальной сети",
-		Actions: dictation.Actions{
-			Save:              "Сохранить",
-			Restart:           "Перезапустить клиент",
-			Test:              "Проверить",
-			Stop:              "Остановить",
-			Level:             "Уровень входа",
-			RestartHint:       "Чтобы применить изменения с пометкой «Нужен перезапуск», перезапустите клиент.",
-			HotkeyPlaceholder: "Нажмите сочетание",
-		},
-		Sections: []dictation.Section{
-			{
-				ID:    "general",
-				Title: "Общие",
-				Fields: []dictation.Field{{
-					Path:   "client.ui_language",
-					Label:  "Язык интерфейса",
-					Kind:   dictation.KindSelect,
-					Value:  "ru",
-					Source: "file", SourceLabel: "Сохранено",
-					Mode: settings.ApplyHot,
-					Options: []dictation.Option{
-						{Value: "auto", Label: "Системный"},
-						{Value: "en", Label: "Английский"},
-						{Value: "ru", Label: "Русский"},
-					},
-				}},
+func sampleView() shell.SettingsView {
+	return shell.SettingsView{
+		View: dictation.View{
+			Language:    i18n.Russian,
+			Title:       "kitsune-whisper",
+			ConfigTitle: "Файл настроек",
+			ConfigPath:  "/home/user/.config/kitsune-whisper/kitsune.yaml",
+			Subtitle:    "Приватная диктовка в локальной сети",
+			Actions: dictation.Actions{
+				Save:              "Сохранить",
+				Restart:           "Перезапустить клиент",
+				Test:              "Проверить",
+				Stop:              "Остановить",
+				Level:             "Уровень входа",
+				RestartHint:       "Чтобы применить изменения с пометкой «Нужен перезапуск», перезапустите клиент.",
+				HotkeyPlaceholder: "Нажмите сочетание",
 			},
-			{
-				ID:    "dictation",
-				Title: "Диктовка",
-				Fields: []dictation.Field{
-					{
-						Path:   "client.hotkey",
-						Label:  "Горячая клавиша диктовки",
-						Help:   "Нажмите сочетание в поле.",
-						Kind:   dictation.KindHotkey,
-						Value:  "Ctrl+Alt+D",
+			Sections: []dictation.Section{
+				{
+					ID:    "general",
+					Title: "Общие",
+					Fields: []dictation.Field{{
+						Path:   "client.ui_language",
+						Label:  "Язык интерфейса",
+						Kind:   dictation.KindSelect,
+						Value:  "ru",
 						Source: "file", SourceLabel: "Сохранено",
 						Mode: settings.ApplyHot,
-					},
-					{
-						Path:    "client.hotkey_backend",
-						Label:   "Бэкенд сеанса",
-						Kind:    dictation.KindSelect,
-						Value:   "x11",
-						Source:  "default",
-						Mode:    settings.ApplyRestart,
-						Badge:   "Нужен перезапуск",
-						Options: []dictation.Option{{Value: "auto", Label: "Автоматически"}, {Value: "x11", Label: "X11"}},
-					},
-					{
-						Path:        "client.audio.device",
-						Label:       "Микрофон",
-						Kind:        dictation.KindMicrophone,
-						Value:       "1",
-						Source:      "environment",
-						SourceLabel: "Окружение",
-						Locked:      true,
-						LockReason:  "Заблокировано переменной окружения KITSUNE_CLIENT_AUDIO__DEVICE",
-						Mode:        settings.ApplyHot,
-						Options:     []dictation.Option{{Value: "", Label: "Системный по умолчанию"}, {Value: "1", Label: "USB Yeti"}},
-					},
-					{
-						Path:   "client.feedback.earcons",
-						Label:  "Звуковые сигналы",
-						Kind:   dictation.KindToggle,
-						Value:  "true",
-						Source: "file", SourceLabel: "Сохранено",
-						Mode: settings.ApplyHot,
+						Options: []dictation.Option{
+							{Value: "auto", Label: "Системный"},
+							{Value: "en", Label: "Английский"},
+							{Value: "ru", Label: "Русский"},
+						},
+					}},
+				},
+				{
+					ID:    "dictation",
+					Title: "Диктовка",
+					Fields: []dictation.Field{
+						{
+							Path:   "client.hotkey",
+							Label:  "Горячая клавиша диктовки",
+							Help:   "Нажмите сочетание в поле.",
+							Kind:   dictation.KindHotkey,
+							Value:  "Ctrl+Alt+D",
+							Source: "file", SourceLabel: "Сохранено",
+							Mode: settings.ApplyHot,
+						},
+						{
+							Path:    "client.hotkey_backend",
+							Label:   "Бэкенд сеанса",
+							Kind:    dictation.KindSelect,
+							Value:   "x11",
+							Source:  "default",
+							Mode:    settings.ApplyRestart,
+							Badge:   "Нужен перезапуск",
+							Options: []dictation.Option{{Value: "auto", Label: "Автоматически"}, {Value: "x11", Label: "X11"}},
+						},
+						{
+							Path:        "client.audio.device",
+							Label:       "Микрофон",
+							Kind:        dictation.KindMicrophone,
+							Value:       "1",
+							Source:      "environment",
+							SourceLabel: "Окружение",
+							Locked:      true,
+							LockReason:  "Заблокировано переменной окружения KITSUNE_CLIENT_AUDIO__DEVICE",
+							Mode:        settings.ApplyHot,
+							Options:     []dictation.Option{{Value: "", Label: "Системный по умолчанию"}, {Value: "1", Label: "USB Yeti"}},
+						},
+						{
+							Path:   "client.feedback.earcons",
+							Label:  "Звуковые сигналы",
+							Kind:   dictation.KindToggle,
+							Value:  "true",
+							Source: "file", SourceLabel: "Сохранено",
+							Mode: settings.ApplyHot,
+						},
 					},
 				},
 			},
 		},
+		Servers: servers.View{
+			Profiles: []servers.Profile{
+				{ID: "local", Name: "Local Server", URL: "https://localhost:8765", Active: true},
+				{ID: "remote-desktop", Name: "Desktop", URL: "https://desktop.local:8765"},
+			},
+			ActiveID: "local",
+			Devices: []servers.Device{
+				{ID: "dev-1", Name: "Laptop", CreatedAt: 1.0, LastSeen: ptrFloat(1_700_000_000)},
+				{ID: "dev-2", Name: "Tablet", CreatedAt: 2.0},
+			},
+			PairingCode: &servers.PairingCode{Code: "ABCD2345", ExpiresAt: 1234},
+		},
+		Labels: shell.ServerLabels{
+			Title:            "Серверы и устройства",
+			Profiles:         "Профили серверов",
+			Active:           "Активный",
+			PairTitle:        "Добавить удалённый сервер",
+			PairHelp:         "Введите адрес и код.",
+			Address:          "Адрес сервера",
+			Code:             "Код сопряжения",
+			Name:             "Имя устройства",
+			NameHelp:         "Имя в списке устройств.",
+			Pair:             "Сопрячь",
+			Devices:          "Устройства",
+			DevicesFor:       "Устройства активного профиля.",
+			Refresh:          "Обновить устройства",
+			GenerateCode:     "Создать код сопряжения",
+			CodeHelp:         "Код одноразовый.",
+			CodeExpires:      "действует 10 минут",
+			NoDevices:        "Нет устройств.",
+			LastSeen:         "Последняя активность",
+			Never:            "Никогда",
+			Revoke:           "Отозвать",
+			RevokeConfirm:    "Отозвать устройство?",
+			NoServers:        "Нет профилей.",
+			ExposureTitle:    "Доступ из локальной сети",
+			ExposureHelp:     "Разрешить клиентам из сети.",
+			ExposureOn:       "Разрешить доступ из сети",
+			ExposureOff:      "Запретить доступ из сети",
+			ExposureConfirm:  "Разрешить доступ из сети?",
+			ExposureOnState:  "включён",
+			ExposureOffState: "выключен",
+		},
 	}
 }
+
+func ptrFloat(value float64) *float64 { return &value }
 
 func TestPageRendersTheInitialSnapshot(t *testing.T) {
 	page := shell.Page(shell.Snapshot{
@@ -192,7 +240,7 @@ func TestSettingsHTMLEscapesHostileText(t *testing.T) {
 			}},
 		}},
 	}
-	html := shell.SettingsHTML(view)
+	html := shell.SettingsHTML(shell.SettingsView{View: view})
 	if strings.Contains(html, hostile) {
 		t.Fatal("settings fragment embedded unescaped text")
 	}
@@ -205,7 +253,7 @@ func TestSettingsHTMLEscapesHostileText(t *testing.T) {
 }
 
 func TestPageHidesTheActionsWithoutSettings(t *testing.T) {
-	page := shell.Page(shell.Snapshot{}, dictation.View{})
+	page := shell.Page(shell.Snapshot{}, shell.SettingsView{})
 	if !strings.Contains(page, `<footer id="actions" style="display:none">`) {
 		t.Fatal("a status-only page offers empty save and restart buttons")
 	}
@@ -220,7 +268,7 @@ func TestPageKeepsErrorTextInsideTheScript(t *testing.T) {
 	page := shell.Page(shell.Snapshot{
 		State: shell.StateError,
 		Error: hostile,
-	}, dictation.View{})
+	}, shell.SettingsView{})
 
 	// The literal terminator from the snapshot must not appear inside the
 	// embedded JSON: the only closing script tags are the page's own.
@@ -280,5 +328,49 @@ func TestPageUpdatesTheWindowChromeOnALanguageSwitch(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("settings renderer does not update the window chrome: missing %q", want)
 		}
+	}
+}
+
+func TestPageRendersServersDevicesAndPairing(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	for _, want := range []string{
+		"Серверы и устройства",
+		"Local Server",
+		"Desktop",
+		"https://localhost:8765",
+		`data-action="pair-remote"`,
+		`id="server-address"`,
+		`id="server-code"`,
+		"Устройства",
+		"Laptop",
+		"Tablet",
+		"Никогда",
+		"ABCD2345",
+		`data-action="refresh-devices"`,
+		`data-action="pairing-code"`,
+		`data-action="revoke-device"`,
+		`data-action="exposure"`,
+		`data-expose="on"`,
+		`data-device-id="dev-1"`,
+		`data-confirm="Отозвать устройство?"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestServerFieldsEscapeHostileValues(t *testing.T) {
+	const hostile = `</section><img src=x onerror="alert(1)">&`
+	view := sampleView()
+	view.Servers.Profiles = []servers.Profile{{ID: hostile, Name: hostile, URL: hostile}}
+	view.Servers.Devices = []servers.Device{{ID: hostile, Name: hostile}}
+	view.Servers.PairingCode = &servers.PairingCode{Code: hostile}
+	html := shell.SettingsHTML(view)
+	if strings.Contains(html, "<img") {
+		t.Fatal("Servers screen allowed an image injection")
+	}
+	if !strings.Contains(html, "&lt;/section&gt;") {
+		t.Fatal("Servers screen did not escape a hostile value")
 	}
 }

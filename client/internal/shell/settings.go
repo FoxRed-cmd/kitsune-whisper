@@ -1,12 +1,17 @@
 package shell
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 )
 
 // Settings is the Dictation settings service the window renders and edits.
@@ -17,6 +22,105 @@ type Settings interface {
 	Save(patch map[string]any) (dictation.Outcome, error)
 	ValidateHotkey(path, value string) error
 	StartLevelTest(device string) (dictation.LevelStream, error)
+}
+
+// Servers is the Server-profile and Device-management service the window
+// renders. *servers.Service implements it.
+type Servers interface {
+	View() servers.View
+	Config() config.ClientConfig
+	AddRemote(ctx context.Context, address, code, name string) (servers.Profile, error)
+	LoadDevices(ctx context.Context, profileID string) ([]servers.Device, error)
+	RevokeDevice(ctx context.Context, profileID, deviceID string) error
+	GenerateCode(ctx context.Context, profileID string) (servers.PairingCode, error)
+	SetExposure(ctx context.Context, profileID string, expose bool) (servers.ExposureResult, error)
+}
+
+// ServerLabels are the translated strings for the Servers and Devices screens.
+type ServerLabels struct {
+	Title            string `json:"title"`
+	Profiles         string `json:"profiles"`
+	Active           string `json:"active"`
+	PairTitle        string `json:"pairTitle"`
+	PairHelp         string `json:"pairHelp"`
+	Address          string `json:"address"`
+	Code             string `json:"code"`
+	Name             string `json:"name"`
+	NameHelp         string `json:"nameHelp"`
+	Pair             string `json:"pair"`
+	Devices          string `json:"devices"`
+	DevicesFor       string `json:"devicesFor"`
+	Refresh          string `json:"refresh"`
+	GenerateCode     string `json:"generateCode"`
+	CodeHelp         string `json:"codeHelp"`
+	CodeExpires      string `json:"codeExpires"`
+	Fingerprint      string `json:"fingerprint"`
+	NoDevices        string `json:"noDevices"`
+	LastSeen         string `json:"lastSeen"`
+	Never            string `json:"never"`
+	Revoke           string `json:"revoke"`
+	RevokeConfirm    string `json:"revokeConfirm"`
+	NoServers        string `json:"noServers"`
+	ExposureTitle    string `json:"exposureTitle"`
+	ExposureHelp     string `json:"exposureHelp"`
+	ExposureOn       string `json:"exposureOn"`
+	ExposureOff      string `json:"exposureOff"`
+	ExposureConfirm  string `json:"exposureConfirm"`
+	ExposureOnState  string `json:"exposureOnState"`
+	ExposureOffState string `json:"exposureOffState"`
+}
+
+// SettingsView is everything the Settings window renders: the Dictation and
+// General screens plus the Servers and Devices screens.
+type SettingsView struct {
+	dictation.View
+	Servers servers.View `json:"servers"`
+	Labels  ServerLabels `json:"serverLabels"`
+}
+
+func (s *Shell) serversView() servers.View {
+	if s.opts.Servers == nil {
+		return servers.View{}
+	}
+	return s.opts.Servers.View()
+}
+
+// serverLabels translates the Servers and Devices screens in the active
+// interface language.
+func (s *Shell) serverLabels() ServerLabels {
+	catalog := s.catalog()
+	return ServerLabels{
+		Title:            catalog.T("section.servers"),
+		Profiles:         catalog.T("server.profiles"),
+		Active:           catalog.T("server.active"),
+		PairTitle:        catalog.T("server.pairTitle"),
+		PairHelp:         catalog.T("server.pairHelp"),
+		Address:          catalog.T("server.address"),
+		Code:             catalog.T("server.code"),
+		Name:             catalog.T("server.name"),
+		NameHelp:         catalog.T("help.server.name"),
+		Pair:             catalog.T("action.pair"),
+		Devices:          catalog.T("server.devices"),
+		DevicesFor:       catalog.T("server.devicesFor"),
+		Refresh:          catalog.T("action.refreshDevices"),
+		GenerateCode:     catalog.T("action.generateCode"),
+		CodeHelp:         catalog.T("server.codeHelp"),
+		CodeExpires:      catalog.T("server.codeExpires"),
+		Fingerprint:      catalog.T("server.fingerprint"),
+		NoDevices:        catalog.T("server.noDevices"),
+		LastSeen:         catalog.T("server.lastSeen"),
+		Never:            catalog.T("server.never"),
+		Revoke:           catalog.T("action.revoke"),
+		RevokeConfirm:    catalog.T("server.revokeConfirm"),
+		NoServers:        catalog.T("server.noServers"),
+		ExposureTitle:    catalog.T("server.exposureTitle"),
+		ExposureHelp:     catalog.T("server.exposureHelp"),
+		ExposureOn:       catalog.T("server.exposureOn"),
+		ExposureOff:      catalog.T("server.exposureOff"),
+		ExposureConfirm:  catalog.T("server.exposureConfirm"),
+		ExposureOnState:  catalog.T("server.exposureStateOn"),
+		ExposureOffState: catalog.T("server.exposureStateOff"),
+	}
 }
 
 // catalog returns the active user-interface catalog, falling back to English
@@ -30,7 +134,16 @@ func (s *Shell) catalog() i18n.Catalog {
 
 // settingsView renders the Settings screens, or a translated empty view when
 // no settings service is wired.
-func (s *Shell) settingsView() dictation.View {
+func (s *Shell) settingsView() SettingsView {
+	view := SettingsView{
+		View:    s.dictationView(),
+		Servers: s.serversView(),
+		Labels:  s.serverLabels(),
+	}
+	return view
+}
+
+func (s *Shell) dictationView() dictation.View {
 	if s.opts.Settings == nil {
 		catalog := i18n.For(i18n.English)
 		return dictation.View{
@@ -55,22 +168,33 @@ type Intent struct {
 	Value string `json:"value,omitempty"`
 	// Device is the microphone selector for ActionTestMic.
 	Device string `json:"device,omitempty"`
+	// Address, Code, and Name carry a Remote pairing request.
+	Address string `json:"address,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Name    string `json:"name,omitempty"`
+	// DeviceID selects the Device to revoke.
+	DeviceID string `json:"device_id,omitempty"`
 }
 
 // Intent actions.
 const (
-	IntentSave     = "save"
-	IntentValidate = "validate"
-	IntentTestMic  = "test-mic"
-	IntentStopMic  = "stop-mic"
-	IntentRestart  = "restart"
+	IntentSave           = "save"
+	IntentValidate       = "validate"
+	IntentTestMic        = "test-mic"
+	IntentStopMic        = "stop-mic"
+	IntentRestart        = "restart"
+	IntentPairRemote     = "pair-remote"
+	IntentRefreshDevices = "refresh-devices"
+	IntentRevokeDevice   = "revoke-device"
+	IntentPairingCode    = "pairing-code"
+	IntentExposure       = "exposure"
 )
 
 // HandleIntent applies one page intent. Validation failures are shown in the
 // window rather than returned as errors; an error means the intent itself was
 // malformed or no settings service is available.
 func (s *Shell) HandleIntent(payload []byte) error {
-	if s.opts.Settings == nil {
+	if s.opts.Settings == nil && s.opts.Servers == nil {
 		return errors.New("settings are not available in this build")
 	}
 	var intent Intent
@@ -79,6 +203,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 	}
 	switch intent.Action {
 	case IntentSave:
+		if s.opts.Settings == nil {
+			return errors.New("settings are not available in this build")
+		}
 		patch := map[string]any{}
 		if len(intent.Patch) > 0 {
 			if err := json.Unmarshal(intent.Patch, &patch); err != nil {
@@ -88,6 +215,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		s.save(patch)
 		return nil
 	case IntentValidate:
+		if s.opts.Settings == nil {
+			return errors.New("settings are not available in this build")
+		}
 		if err := s.opts.Settings.ValidateHotkey(intent.Path, intent.Value); err != nil {
 			s.pushMessages(nil, []string{err.Error()})
 			return nil
@@ -95,18 +225,169 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		s.pushMessages(nil, nil)
 		return nil
 	case IntentTestMic:
+		if s.opts.Settings == nil {
+			return errors.New("settings are not available in this build")
+		}
 		s.startLevelTest(intent.Device)
 		return nil
 	case IntentStopMic:
+		if s.opts.Settings == nil {
+			return errors.New("settings are not available in this build")
+		}
 		s.stopLevelTest()
 		s.pushMessages(nil, nil)
 		return nil
 	case IntentRestart:
 		s.requestRestart()
 		return nil
+	case IntentPairRemote:
+		s.pairRemote(intent)
+		return nil
+	case IntentRefreshDevices:
+		s.refreshDevices()
+		return nil
+	case IntentRevokeDevice:
+		s.revokeDevice(intent.DeviceID)
+		return nil
+	case IntentPairingCode:
+		s.generatePairingCode()
+		return nil
+	case IntentExposure:
+		s.setExposure(intent.Value)
+		return nil
 	default:
 		return fmt.Errorf("settings intent: unknown action %q", intent.Action)
 	}
+}
+
+// pairRemote adds a Remote Server profile and applies it to the running
+// Client. A pairing failure keeps the typed address and code on screen and
+// shows the Server's distinct message.
+func (s *Shell) pairRemote(intent Intent) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	profile, err := s.opts.Servers.AddRemote(ctx, intent.Address, intent.Code, intent.Name)
+	if err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.pair", err.Error())})
+		s.pushSettings()
+		return
+	}
+	notices := []string{s.catalog().T("notice.server.paired", profile.Name)}
+	failures := []string{}
+	if s.opts.ApplyConfig != nil {
+		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
+			failures = append(failures, s.catalog().T("error.server.apply", err.Error()))
+		}
+	}
+	s.resetDevices()
+	s.pushSettings()
+	s.pushMessages(notices, failures)
+	s.update(s.opts.Runtime.Status())
+	if s.opts.CheckServer != nil {
+		go s.checkServer(context.Background())
+	}
+}
+
+// refreshDevices reloads the active profile's Device list on demand.
+func (s *Shell) refreshDevices() {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	view := s.opts.Servers.View()
+	if view.ActiveID == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.noProfile")})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	devices, err := s.opts.Servers.LoadDevices(ctx, view.ActiveID)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.server.devices", err.Error())})
+		return
+	}
+	s.mu.Lock()
+	s.devicesLoaded = view.ActiveID
+	s.mu.Unlock()
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.server.devices", len(devices))}, nil)
+}
+
+// revokeDevice revokes one Device and renders the refreshed list.
+func (s *Shell) revokeDevice(deviceID string) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	if strings.TrimSpace(deviceID) == "" {
+		return
+	}
+	view := s.opts.Servers.View()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.opts.Servers.RevokeDevice(ctx, view.ActiveID, deviceID); err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.revoke", err.Error())})
+		s.pushSettings()
+		return
+	}
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.server.revoked")}, nil)
+}
+
+// generatePairingCode asks the active Server for a new one-time code.
+func (s *Shell) generatePairingCode() {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	view := s.opts.Servers.View()
+	if view.ActiveID == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.noProfile")})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	code, err := s.opts.Servers.GenerateCode(ctx, view.ActiveID)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.server.code", err.Error())})
+		return
+	}
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.server.code", code.Code)}, nil)
+}
+
+// setExposure turns LAN exposure on or off after the page's confirmation.
+func (s *Shell) setExposure(value string) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	expose := value == "on"
+	view := s.opts.Servers.View()
+	if view.ActiveID == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.noProfile")})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	result, err := s.opts.Servers.SetExposure(ctx, view.ActiveID, expose)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.server.exposure", err.Error())})
+		return
+	}
+	s.pushSettings()
+	state := "off"
+	if result.Expose {
+		state = "on"
+	}
+	s.pushMessages([]string{s.catalog().T("notice.server.exposure", state)}, nil)
 }
 
 // save runs one settings save and pushes the resulting view and messages.

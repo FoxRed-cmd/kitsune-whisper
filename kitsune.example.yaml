@@ -7,9 +7,8 @@
 
 server:
   # The Server binds loopback by default. Set expose_to_network: true to accept
-  # Devices from the LAN; it then binds 0.0.0.0 when host is left at its default
-  # (needs a restart). The Docker image sets this via
-  # KITSUNE_SERVER_EXPOSE_TO_NETWORK=true.
+  # Devices from the LAN; it then binds 0.0.0.0 (needs a restart). On a native
+  # install use `kitsune-server expose on --yes`, or the Server settings API.
   #
   # Migration: an explicit host: 0.0.0.0 (the old way to expose the Server)
   # still works and logs a warning; prefer expose_to_network: true.

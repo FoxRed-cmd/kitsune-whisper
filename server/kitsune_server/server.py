@@ -17,7 +17,9 @@ from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_d
 from .engine import WhisperTranscriber
 from .gpu import detect_cuda_devices
 from .llm import OpenAITextProcessor
+from .pairing import PairingCodeStore, pairing_store_path
 from .processor import DisabledTextProcessor, TextProcessor
+from .store import ConfigStore
 from .transcriber import Transcriber
 from .trust import (
     CERT_FILENAME,
@@ -155,6 +157,14 @@ def build_trust(
     return certificate, store
 
 
+def build_pairing_codes(
+    config: ServerConfig,
+    *,
+    data_dir: Path | None = None,
+) -> PairingCodeStore:
+    return PairingCodeStore(pairing_store_path(config, data_dir=data_dir))
+
+
 def build_transcriber(
     config: ServerConfig,
     *,
@@ -175,11 +185,13 @@ def run_server(
     *,
     port_check: PortCheck = check_port_available,
     log_file: Path | None = None,
+    config_store: ConfigStore | None = None,
 ) -> None:
     configure_logging(config.log_level, log_file=log_file)
     # Fail before downloading or loading a model when the listener cannot bind.
     port_check(config.bind_host, config.port)
     certificate, devices = build_trust(config)
+    pairing_codes = build_pairing_codes(config)
     if certificate is not None:
         logger.info(
             "TLS certificate %s (fingerprint %s)",
@@ -215,6 +227,8 @@ def run_server(
         cuda_device_count=cuda_devices,
         devices=devices,
         certificate=certificate,
+        pairing_codes=pairing_codes,
+        config_store=config_store if config_store is not None else ConfigStore(),
     )
     if config.expose_to_network:
         logger.warning(

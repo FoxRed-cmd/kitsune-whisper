@@ -195,9 +195,18 @@ already pointed at.
 
 Every transcription and management request needs a Device token. The loopback
 auto-pairing path cannot see a Docker port forward as loopback, so a Docker
-Server pairs with a code from inside the container. That in-container flow is
-the next packaging step; until it lands, the health endpoint proves the Server
-is alive:
+Server pairs with a one-time code generated inside the container:
+
+```sh
+docker exec <container> kitsune-server pair
+```
+
+The command prints the code, its 10-minute expiry, and the certificate
+fingerprint. In the Client's **Settings → Servers and Devices**, enter
+`https://<host>:8765` and the code; the Client pins the certificate and stores
+the Device token. The store lives on the `kitsune-state` volume, so paired
+Devices survive a container restart. `GET /health` needs no token and reports
+`status` and `version` only:
 
 ```sh
 curl -k https://localhost:8765/health
@@ -236,8 +245,10 @@ client:
 
 On the same machine the Client auto-pairs with the Local Server over loopback:
 it receives a Device token, stores it in the OS keychain (or a `0600` file), and
-pins the certificate fingerprint into the profile. A remote Server needs its
-one-time Pairing code. Tokens never appear in this file or in the logs.
+pins the certificate fingerprint into the profile. A Remote Server is added in
+**Settings → Servers and Devices** with its address and a one-time Pairing code;
+the same screen lists and revokes trusted Devices. Tokens never appear in this
+file or in the logs.
 
 Restart the Client service after editing (`systemctl --user restart
 kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask

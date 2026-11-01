@@ -105,7 +105,9 @@ def test_start_is_the_default_command(
 ) -> None:
     captured: list[object] = []
 
-    def fake_run(config: object, *, log_file: Path | None = None) -> None:
+    def fake_run(
+        config: object, *, log_file: Path | None = None, config_store: object = None
+    ) -> None:
         captured.append((config, log_file))
 
     monkeypatch.setattr(server, "run_server", fake_run)
@@ -118,7 +120,9 @@ def test_start_is_the_default_command(
 def test_start_reports_a_port_conflict_as_one_actionable_line(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def occupied(config: object, *, log_file: Path | None = None) -> None:
+    def occupied(
+        config: object, *, log_file: Path | None = None, config_store: object = None
+    ) -> None:
         raise server.PortInUseError(
             "server.port 8765 is already in use on 127.0.0.1; change server.port"
         )

@@ -166,12 +166,11 @@ class ServerConfig(_StrictModel):
     def bind_host(self) -> str:
         """Address the HTTP listener binds to.
 
-        An explicitly configured ``host`` always wins, including the legacy
-        ``0.0.0.0``. Otherwise the ``expose_to_network`` switch decides: on
-        binds all interfaces, off stays on loopback.
+        ``expose_to_network`` decides the LAN switch: on binds all interfaces,
+        off keeps the configured address (loopback by default). A non-loopback
+        ``host`` without the switch still binds as given, which keeps the legacy
+        ``host: 0.0.0.0`` files working and logs a migration warning.
         """
-        if "host" in self.model_fields_set:
-            return self.host
         if self.expose_to_network:
             return "0.0.0.0"
         return self.host

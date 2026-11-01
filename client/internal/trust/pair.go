@@ -53,6 +53,51 @@ func PairLocal(ctx context.Context, baseURL, name, pinned string) (Pairing, erro
 	if !IsLoopbackURL(baseURL) {
 		return Pairing{}, ErrNotLoopback
 	}
+	if name == "" {
+		name = "Local client"
+	}
+	return pair(ctx, baseURL, "/pair/local", map[string]string{"name": name}, pinned)
+}
+
+// PairRemote redeems a one-time Pairing code at a Remote Server.
+//
+// The code is the only secret in the request; the long-lived Device token comes
+// back in the response. On HTTPS the leaf certificate is captured and pinned
+// exactly like local pairing: an existing pin must match before the code is
+// sent, and the endpoint's reported fingerprint must match the presented one.
+func PairRemote(
+	ctx context.Context, baseURL, code, name, pinned string,
+) (Pairing, error) {
+	code = normalizePairingCode(code)
+	if code == "" {
+		return Pairing{}, ErrPairingCodeRequired
+	}
+	if name == "" {
+		name = "Device"
+	}
+	return pair(
+		ctx,
+		baseURL,
+		"/pair",
+		map[string]string{"code": code, "name": name},
+		pinned,
+	)
+}
+
+func normalizePairingCode(code string) string {
+	normalized := strings.ToUpper(strings.TrimSpace(code))
+	normalized = strings.NewReplacer(" ", "", "-", "", "_", "").Replace(normalized)
+	return normalized
+}
+
+// pair performs one pairing POST against path. The caller has already applied
+// the loopback restriction, when one applies.
+func pair(
+	ctx context.Context,
+	baseURL, path string,
+	body map[string]string,
+	pinned string,
+) (Pairing, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
 		return Pairing{}, fmt.Errorf("trust: invalid Server URL: %w", err)
@@ -60,11 +105,8 @@ func PairLocal(ctx context.Context, baseURL, name, pinned string) (Pairing, erro
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return Pairing{}, fmt.Errorf("trust: unsupported Server URL scheme %q", parsed.Scheme)
 	}
-	if name == "" {
-		name = "Local client"
-	}
 	// With a pin already known, verify the peer before the pairing POST. A
-	// changed certificate must not mint a Device that the Client will then
+	// changed certificate must not mint a Device the Client will then
 	// refuse to use.
 	if parsed.Scheme == "https" && NormalizeFingerprint(pinned) != "" {
 		presented, err := probeFingerprint(ctx, parsed)
@@ -79,12 +121,12 @@ func PairLocal(ctx context.Context, baseURL, name, pinned string) (Pairing, erro
 		}
 	}
 
-	body, err := json.Marshal(map[string]string{"name": name})
+	payload, err := json.Marshal(body)
 	if err != nil {
 		return Pairing{}, fmt.Errorf("trust: build the pairing request: %w", err)
 	}
-	endpoint := strings.TrimRight(baseURL, "/") + "/pair/local"
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	requestURL := strings.TrimRight(baseURL, "/") + path
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, requestURL, bytes.NewReader(payload))
 	if err != nil {
 		return Pairing{}, fmt.Errorf("trust: build the pairing request: %w", err)
 	}
@@ -95,7 +137,7 @@ func PairLocal(ctx context.Context, baseURL, name, pinned string) (Pairing, erro
 		Timeout:   15 * time.Second,
 		Transport: pairingTransport,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
-			// Never follow a redirect away from the loopback endpoint.
+			// Never follow a redirect away from the pairing endpoint.
 			return http.ErrUseLastResponse
 		},
 	}
@@ -123,7 +165,7 @@ func PairLocal(ctx context.Context, baseURL, name, pinned string) (Pairing, erro
 		if !ok {
 			return Pairing{}, errors.New("trust: the Server presented no certificate")
 		}
-		if pinned != "" && NormalizeFingerprint(pinned) != presented {
+		if NormalizeFingerprint(pinned) != "" && NormalizeFingerprint(pinned) != presented {
 			return Pairing{}, &FingerprintMismatchError{
 				Pinned:    NormalizeFingerprint(pinned),
 				Presented: presented,
@@ -178,11 +220,15 @@ func serverError(status int, data []byte) error {
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
-		return fmt.Errorf("trust: Server %d %s: %s", status, envelope.Error.Code, envelope.Error.Message)
+		return &PairingHTTPError{
+			StatusCode: status,
+			Code:       envelope.Error.Code,
+			Message:    envelope.Error.Message,
+		}
 	}
 	message := strings.TrimSpace(string(data))
 	if message == "" {
 		message = http.StatusText(status)
 	}
-	return fmt.Errorf("trust: Server %d: %s", status, message)
+	return &PairingHTTPError{StatusCode: status, Message: message}
 }

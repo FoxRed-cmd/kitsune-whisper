@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
-	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
@@ -96,7 +95,7 @@ type fakeWindow struct {
 	shows    int
 	hides    int
 	updates  []shell.Snapshot
-	settings []dictation.View
+	settings []shell.SettingsView
 	messages []messageUpdate
 	levels   []float64
 	onClose  func()
@@ -136,7 +135,7 @@ func (w *fakeWindow) OnIntent(handler func([]byte) error) {
 	w.onIntent = handler
 }
 
-func (w *fakeWindow) UpdateSettings(view dictation.View) {
+func (w *fakeWindow) UpdateSettings(view shell.SettingsView) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.settings = append(w.settings, view)
@@ -154,11 +153,11 @@ func (w *fakeWindow) UpdateLevel(level float64) {
 	w.levels = append(w.levels, level)
 }
 
-func (w *fakeWindow) lastSettings() (dictation.View, bool) {
+func (w *fakeWindow) lastSettings() (shell.SettingsView, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if len(w.settings) == 0 {
-		return dictation.View{}, false
+		return shell.SettingsView{}, false
 	}
 	return w.settings[len(w.settings)-1], true
 }
@@ -254,7 +253,7 @@ type fakeDesktop struct {
 	window  *fakeWindow
 	tray    *fakeTray
 	hidden  bool
-	initial dictation.View
+	initial shell.SettingsView
 
 	quitCh    chan struct{}
 	quitOnce  sync.Once
@@ -267,7 +266,7 @@ func newFakeDesktop() *fakeDesktop {
 	return &fakeDesktop{quitCh: make(chan struct{})}
 }
 
-func (d *fakeDesktop) NewWindow(_ shell.Snapshot, settings dictation.View, hidden bool) (shell.Window, error) {
+func (d *fakeDesktop) NewWindow(_ shell.Snapshot, settings shell.SettingsView, hidden bool) (shell.Window, error) {
 	if d.windowErr != nil {
 		return nil, d.windowErr
 	}
@@ -281,7 +280,7 @@ func (d *fakeDesktop) NewWindow(_ shell.Snapshot, settings dictation.View, hidde
 	return d.window, nil
 }
 
-func (d *fakeDesktop) initialView() dictation.View {
+func (d *fakeDesktop) initialView() shell.SettingsView {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.initial

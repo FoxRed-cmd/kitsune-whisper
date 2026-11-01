@@ -103,6 +103,11 @@ kitsune-server status        # bundle version and supervisor state
 kitsune-server start         # serve in the foreground (what the supervisor runs)
 kitsune-server stop          # stop the supervised process
 kitsune-server restart       # restart the supervised process
+kitsune-server devices list  # list trusted Devices
+kitsune-server devices revoke <ID_OR_NAME>
+kitsune-server pair          # generate a one-time Pairing code and fingerprint
+kitsune-server expose on --yes  # allow LAN clients (takes effect after restart)
+kitsune-server expose off
 ```
 
 `stop`/`restart`/`status` drive `systemctl --user` or `schtasks` through an
