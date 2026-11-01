@@ -175,6 +175,7 @@ type harness struct {
 	ind      *fakeIndicator
 	sock     string
 	settings atomic.Int32
+	rebuild  func(config.ClientConfig) (runtime.Adapters, error)
 }
 
 // newHarness wires a runtime to fakes. The control socket lives in the test's
@@ -210,6 +211,12 @@ func newHarness(t *testing.T, transcriber *fakeTranscriber) *harness {
 		Indicator:   func(send func(cycle.Trigger)) cycle.Feedback { h.ind.send = send; return h.ind },
 		Clock:       nil,
 		Logger:      nil,
+		Rebuild: func(cfg config.ClientConfig) (runtime.Adapters, error) {
+			if h.rebuild == nil {
+				return runtime.Adapters{}, errors.New("no rebuild configured for this test")
+			}
+			return h.rebuild(cfg)
+		},
 	})
 	return h
 }
@@ -573,5 +580,152 @@ func TestContextCancellationStopsAndReleases(t *testing.T) {
 	// Stop after an external cancellation stays idempotent.
 	if err := h.rt.Stop(); err != nil {
 		t.Fatalf("stop after cancellation: %v", err)
+	}
+}
+
+// TestApplyRebuildsAdaptersWithoutRestartingTheClient proves that a save can
+// replace the hotkey source, the microphone, the injector, and the transcriber
+// inside the running process while the control socket and status survive.
+func TestApplyRebuildsAdaptersWithoutRestartingTheClient(t *testing.T) {
+	h := newHarness(t, nil)
+	newRecorder := &fakeRecorder{}
+	newHotkey := newFakeHotkey()
+	newInjector := &fakeInjector{}
+	newTranscriber := &fakeTranscriber{text: "after apply"}
+	var builtWith config.ClientConfig
+
+	h.rebuild = func(cfg config.ClientConfig) (runtime.Adapters, error) {
+		builtWith = cfg
+		return runtime.Adapters{
+			Hotkey:      newHotkey,
+			Recorder:    newRecorder,
+			Transcriber: newTranscriber,
+			Injector:    newInjector,
+			Spool:       h.spool,
+		}, nil
+	}
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	// Start a recording on the original adapters so Apply must cancel it.
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	waitFor(t, "the original recorder", func() bool {
+		starts, _, _, _ := h.recorder.counts()
+		return starts == 1
+	})
+
+	next := config.Default()
+	next.Hotkey = "Ctrl+Alt+K"
+	next.Trigger = "hold"
+	if err := h.rt.Apply(next); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if builtWith.Hotkey != "Ctrl+Alt+K" || builtWith.Trigger != "hold" {
+		t.Fatalf("rebuilder got %+v, want the new configuration", builtWith)
+	}
+
+	// The old adapters are released; the new hotkey is running.
+	select {
+	case <-h.hotkey.exited:
+	default:
+		t.Fatal("the old hotkey source is still running after Apply")
+	}
+	waitFor(t, "the new hotkey source", func() bool { return newHotkey.runs.Load() == 1 })
+	if _, _, _, closes := h.recorder.counts(); closes != 1 {
+		t.Fatalf("old recorder closes = %d, want 1", closes)
+	}
+	if got := h.ind.closeCount(); got != 1 {
+		t.Fatalf("old indicator closes = %d, want 1", got)
+	}
+
+	// The process, the control socket, and the status survived.
+	if status := h.rt.Status(); !status.Running || status.Phase != runtime.PhaseIdle {
+		t.Fatalf("status after apply = %+v, want running idle", status)
+	}
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("control socket after apply: %v", err)
+	}
+	waitFor(t, "the new recorder", func() bool {
+		starts, _, _, _ := newRecorder.counts()
+		return starts == 1
+	})
+	if err := control.Send(h.sock, string(control.Stop)); err != nil {
+		t.Fatalf("send stop: %v", err)
+	}
+	waitFor(t, "injection through the new adapters", func() bool { return newInjector.count() == 1 })
+	if got := newInjector.texts[0]; got != "after apply" {
+		t.Fatalf("injected %q with the new transcriber", got)
+	}
+}
+
+// TestApplyFailureKeepsTheRunningAdapters proves a rejected rebuild leaves the
+// Client dictating on its current adapters.
+func TestApplyFailureKeepsTheRunningAdapters(t *testing.T) {
+	h := newHarness(t, nil)
+	h.rebuild = func(config.ClientConfig) (runtime.Adapters, error) {
+		return runtime.Adapters{}, errors.New("hotkey grab failed")
+	}
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	err := h.rt.Apply(config.Default())
+	if err == nil || !strings.Contains(err.Error(), "hotkey grab failed") {
+		t.Fatalf("apply error = %v, want the rebuild failure", err)
+	}
+	select {
+	case <-h.hotkey.exited:
+		t.Fatal("the running hotkey source was released after a failed Apply")
+	default:
+	}
+	if _, _, _, closes := h.recorder.counts(); closes != 0 {
+		t.Fatalf("recorder closes = %d, want 0", closes)
+	}
+	if status := h.rt.Status(); !status.Running {
+		t.Fatalf("status = %+v, want still running", status)
+	}
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("control socket after a failed apply: %v", err)
+	}
+	waitFor(t, "the original recorder", func() bool {
+		starts, _, _, _ := h.recorder.counts()
+		return starts == 1
+	})
+}
+
+func TestApplyWithoutARebuilderIsReported(t *testing.T) {
+	rt := runtime.New(runtime.Options{
+		Config:      config.Default(),
+		Recorder:    &fakeRecorder{},
+		Transcriber: &fakeTranscriber{},
+		Injector:    &fakeInjector{},
+	})
+	if err := rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = rt.Stop() }()
+	if err := rt.Apply(config.Default()); !errors.Is(err, runtime.ErrNoRebuild) {
+		t.Fatalf("apply = %v, want ErrNoRebuild", err)
+	}
+}
+
+func TestApplyRequiresARunningRuntime(t *testing.T) {
+	h := newHarness(t, nil)
+	if err := h.rt.Apply(config.Default()); !errors.Is(err, runtime.ErrNotRunning) {
+		t.Fatalf("apply before start = %v, want ErrNotRunning", err)
+	}
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := h.rt.Stop(); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if err := h.rt.Apply(config.Default()); !errors.Is(err, runtime.ErrNotRunning) {
+		t.Fatalf("apply after stop = %v, want ErrNotRunning", err)
 	}
 }

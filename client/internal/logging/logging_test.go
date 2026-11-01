@@ -102,3 +102,17 @@ func TestCloseIsIdempotent(t *testing.T) {
 	}
 	logger.Info("after close")
 }
+
+func TestSetLevelChangesTheFilterWhileRunning(t *testing.T) {
+	logger, path := newLogger(t, logging.Options{Level: logging.Error})
+	logger.Info("before the change")
+	if strings.Contains(read(t, path), "before the change") {
+		t.Fatal("info line was written below the configured level")
+	}
+
+	logger.SetLevel(logging.Debug)
+	logger.Info("after the change")
+	if !strings.Contains(read(t, path), "after the change") {
+		t.Fatal("SetLevel did not lower the filter")
+	}
+}
