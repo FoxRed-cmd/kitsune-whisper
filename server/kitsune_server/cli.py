@@ -173,6 +173,13 @@ def _models_dir(config: ServerConfig) -> Path:
     return Path(config.download_root).expanduser()
 
 
+def _absolute_config(path: str | None) -> str | None:
+    """Pin the config path: the supervisor's working directory is not the shell's."""
+    if not path:
+        return None
+    return str(Path(path).expanduser().resolve())
+
+
 def _current_user() -> str:
     if os.name != "nt":
         return ""
@@ -321,7 +328,7 @@ def _install(args: argparse.Namespace) -> int:
             env,
             supervisor.SupervisorOptions(
                 invocation=bundle.supervisor_invocation(
-                    layout, config=getattr(args, "config", None)
+                    layout, config=_absolute_config(getattr(args, "config", None))
                 ),
                 user=_current_user(),
             ),

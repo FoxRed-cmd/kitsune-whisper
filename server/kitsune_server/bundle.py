@@ -371,6 +371,11 @@ class BundleInstaller:
                     f"runtime archive has no {self.layout.runtime_python}; "
                     "the pinned archive is not a standalone Python runtime"
                 )
+            if self.layout.is_windows and not (runtime / "pythonw.exe").is_file():
+                raise BundleError(
+                    "runtime archive has no pythonw.exe, so the Server cannot "
+                    "start hidden on Windows"
+                )
             if not self.layout.is_windows:
                 python.chmod(0o755)
             lib = stage / "lib"
@@ -430,6 +435,10 @@ class BundleInstaller:
         os.replace(stage, self.layout.root)
 
     def _finish(self, manifest: Manifest, *, source: str) -> Manifest:
+        if not self.layout.is_windows:
+            # A transport that drops the executable bit must not leave a
+            # launcher that cannot start its runtime.
+            self.layout.python.chmod(0o755)
         installed = replace(
             manifest,
             source=source,

@@ -114,11 +114,20 @@ def bundle_artifact_bytes(
     return buffer.getvalue()
 
 
-def runtime_archive_bytes() -> bytes:
+def runtime_archive_bytes(
+    *,
+    windows: bool = False,
+    with_pythonw: bool = True,
+) -> bytes:
     """A python-build-standalone style archive with one top-level ``python/``."""
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
-        add_bytes(archive, "python/bin/python3", b"#!/bin/sh\n", 0o755)
+        if windows:
+            add_bytes(archive, "python/python.exe", b"\x00", 0o755)
+            if with_pythonw:
+                add_bytes(archive, "python/pythonw.exe", b"\x00", 0o755)
+        else:
+            add_bytes(archive, "python/bin/python3", b"#!/bin/sh\n", 0o755)
         add_bytes(archive, "python/lib/python3.11/os.py", b"", 0o644)
     return buffer.getvalue()
 
@@ -232,6 +241,28 @@ def test_install_from_artifact_rejects_an_unknown_format(tmp_path: Path) -> None
         )
 
 
+def test_install_restores_the_runtime_executable_bit(tmp_path: Path) -> None:
+    paths = layout(tmp_path)
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        add_bytes(archive, "runtime/bin/python3", b"#!/bin/sh\n", 0o644)
+        add_bytes(archive, "lib/kitsune_server/__init__.py", b"", 0o644)
+        add_bytes(
+            archive,
+            "bundle.json",
+            Manifest(version=__version__).to_json().encode(),
+            0o644,
+        )
+    payload = buffer.getvalue()
+    subject = installer(paths, download=FakeDownloader(payload))
+
+    subject.install(
+        ArtifactSource(location="https://example.test/bundle.tar.gz", sha256=digest(payload))
+    )
+
+    assert paths.python.stat().st_mode & stat.S_IXUSR
+
+
 def test_install_from_artifact_accepts_a_local_file(tmp_path: Path) -> None:
     paths = layout(tmp_path)
     artifact = tmp_path / "kitsune-server.tar.gz"
@@ -282,6 +313,25 @@ def test_install_from_a_pinned_runtime_and_wheelhouse(tmp_path: Path) -> None:
     assert f"kitsune-server=={__version__}" in args
     assert manifest.source == "runtime"
     assert manifest.python == "3.11"
+
+
+def test_runtime_install_requires_pythonw_for_a_hidden_windows_start(
+    tmp_path: Path,
+) -> None:
+    paths = layout(tmp_path, "windows")
+    payload = runtime_archive_bytes(windows=True, with_pythonw=False)
+    wheelhouse = tmp_path / "wheelhouse"
+    wheelhouse.mkdir()
+    subject = installer(paths, download=FakeDownloader(payload), run=RecordingRunner())
+
+    with pytest.raises(BundleError, match="pythonw"):
+        subject.install(
+            RuntimeSource(
+                url="https://example.test/python.tar.gz",
+                sha256=digest(payload),
+                wheelhouse=wheelhouse,
+            )
+        )
 
 
 def test_runtime_install_requires_a_wheelhouse(tmp_path: Path) -> None:

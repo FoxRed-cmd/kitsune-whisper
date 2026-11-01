@@ -176,6 +176,22 @@ def test_install_stops_an_installed_but_stopped_unit_before_replacing(
     assert f"systemctl --user stop {supervisor.UNIT_NAME}" in wiring.runner.commands
 
 
+def test_install_pins_an_absolute_config_path_in_the_unit(
+    tmp_path: Path, wiring: Wiring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = build_artifact(tmp_path)
+    config = tmp_path / "kitsune.yaml"
+    config.write_text(yaml.safe_dump({"server": {"port": 9123}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert cli.main([*install_args(artifact), "--config", "kitsune.yaml"]) == 0
+
+    unit = supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).read_text(encoding="utf-8")
+    assert f"--config {config}" in unit
+
+
 def test_install_requires_a_checksummed_source(
     wiring: Wiring, capsys: pytest.CaptureFixture[str]
 ) -> None:
