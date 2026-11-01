@@ -652,6 +652,23 @@ class ModelManager:
             self._downloads.pop(name, None)
             return freed
 
+    def unload(self) -> bool:
+        """Release the loaded model without touching the active model choice.
+
+        A soft-stop (#77) uses this; ``ensure_loaded`` loads the same active
+        model again on ``start`` or the next transcription. The idle monitor
+        and an explicit stop therefore share one authoritative unload path.
+        """
+        with self._lock:
+            if self._transcriber is None:
+                return False
+            self._transcriber = None
+            if self._state == "loaded":
+                self._state = "cold"
+            self._error = ""
+            logger.info("unloaded %s", self._active_model)
+            return True
+
     # -- idle unload -------------------------------------------------------
 
     def touch(self) -> None:

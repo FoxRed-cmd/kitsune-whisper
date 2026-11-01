@@ -97,6 +97,20 @@ type View struct {
 	PairingError string `json:"pairing_error,omitempty"`
 	// Exposure is the last requested LAN exposure change, if any.
 	Exposure *ExposureResult `json:"exposure,omitempty"`
+	// Config is the active profile's redacted Server configuration, loaded on
+	// demand by the Diagnostics screen.
+	Config *ServerConfig `json:"config,omitempty"`
+	// ConfigError is why the last configuration read or patch failed, or "".
+	ConfigError string `json:"config_error,omitempty"`
+	// Logs is the active profile's log tail, loaded on demand.
+	Logs *ServerLog `json:"logs,omitempty"`
+	// LogsError is why the last log read failed, or "".
+	LogsError string `json:"logs_error,omitempty"`
+	// Lifecycle is the active profile's model state after start, stop, or
+	// restart, if any.
+	Lifecycle *ServerLifecycle `json:"lifecycle,omitempty"`
+	// LifecycleError is why the last lifecycle action failed, or "".
+	LifecycleError string `json:"lifecycle_error,omitempty"`
 	// Models is the active profile's Model catalog and lifecycle state, or nil
 	// until LoadModels succeeds.
 	Models *ModelsView `json:"models,omitempty"`
@@ -124,17 +138,26 @@ type Options struct {
 type Service struct {
 	opts Options
 
-	mu           sync.Mutex
-	devicesFor   string
-	devices      []Device
-	devicesError string
-	pairingCode  *PairingCode
-	pairingError string
-	exposure     *ExposureResult
-	health       map[string]trust.Status
-	modelsFor    string
-	models       *ModelsView
-	modelsError  string
+	mu             sync.Mutex
+	devicesFor     string
+	devices        []Device
+	devicesError   string
+	pairingCode    *PairingCode
+	pairingError   string
+	exposure       *ExposureResult
+	health         map[string]trust.Status
+	modelsFor      string
+	models         *ModelsView
+	modelsError    string
+	configFor      string
+	config         *ServerConfig
+	configError    string
+	logsFor        string
+	logs           *ServerLog
+	logsError      string
+	lifecycleFor   string
+	lifecycle      *ServerLifecycle
+	lifecycleError string
 }
 
 // New builds a Service. It performs no I/O.
@@ -183,6 +206,18 @@ func (s *Service) View() View {
 	if s.modelsFor != "" && s.modelsFor == view.ActiveID {
 		view.Models = s.models
 		view.ModelsError = s.modelsError
+	}
+	if s.configFor != "" && s.configFor == view.ActiveID {
+		view.Config = s.config
+		view.ConfigError = s.configError
+	}
+	if s.logsFor != "" && s.logsFor == view.ActiveID {
+		view.Logs = s.logs
+		view.LogsError = s.logsError
+	}
+	if s.lifecycleFor != "" && s.lifecycleFor == view.ActiveID {
+		view.Lifecycle = s.lifecycle
+		view.LifecycleError = s.lifecycleError
 	}
 	return view
 }

@@ -109,6 +109,89 @@ func setExposure(
 	return result, nil
 }
 
+func fetchServerConfig(
+	ctx context.Context,
+	profile config.ServerProfile,
+	token string,
+	timeout time.Duration,
+) (ServerConfig, error) {
+	data, err := adminRequest(ctx, profile, token, http.MethodGet, "/admin/config", nil, timeout)
+	if err != nil {
+		return ServerConfig{}, err
+	}
+	var result ServerConfig
+	if err := json.Unmarshal(data, &result); err != nil {
+		return ServerConfig{}, fmt.Errorf("servers: decode the Server configuration: %w", err)
+	}
+	return result, nil
+}
+
+func patchServerConfig(
+	ctx context.Context,
+	profile config.ServerProfile,
+	token string,
+	patch map[string]any,
+	timeout time.Duration,
+) (ServerConfigPatch, error) {
+	body, err := json.Marshal(map[string]any{"patch": patch})
+	if err != nil {
+		return ServerConfigPatch{}, fmt.Errorf("servers: build the configuration patch: %w", err)
+	}
+	data, err := adminRequest(ctx, profile, token, http.MethodPatch, "/admin/config", body, timeout)
+	if err != nil {
+		return ServerConfigPatch{}, err
+	}
+	var result ServerConfigPatch
+	if err := json.Unmarshal(data, &result); err != nil {
+		return ServerConfigPatch{}, fmt.Errorf("servers: decode the configuration patch: %w", err)
+	}
+	return result, nil
+}
+
+func fetchServerLogs(
+	ctx context.Context,
+	profile config.ServerProfile,
+	token string,
+	tail int,
+	timeout time.Duration,
+) (ServerLog, error) {
+	if tail <= 0 {
+		tail = 200
+	}
+	path := fmt.Sprintf("/admin/logs?tail=%d", tail)
+	data, err := adminRequest(ctx, profile, token, http.MethodGet, path, nil, timeout)
+	if err != nil {
+		return ServerLog{}, err
+	}
+	var result ServerLog
+	if err := json.Unmarshal(data, &result); err != nil {
+		return ServerLog{}, fmt.Errorf("servers: decode the Server log: %w", err)
+	}
+	return result, nil
+}
+
+func serverLifecycle(
+	ctx context.Context,
+	profile config.ServerProfile,
+	token, action string,
+	timeout time.Duration,
+) (ServerLifecycle, error) {
+	data, err := adminRequest(
+		ctx, profile, token, http.MethodPost, "/admin/"+action, nil, timeout,
+	)
+	if err != nil {
+		return ServerLifecycle{}, err
+	}
+	var result ServerLifecycle
+	if err := json.Unmarshal(data, &result); err != nil {
+		return ServerLifecycle{}, fmt.Errorf("servers: decode the %s result: %w", action, err)
+	}
+	if action == "restart" {
+		result.Restarting = true
+	}
+	return result, nil
+}
+
 func adminRequest(
 	ctx context.Context,
 	profile config.ServerProfile,

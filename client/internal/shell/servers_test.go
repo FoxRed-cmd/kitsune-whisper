@@ -39,6 +39,23 @@ type fakeServers struct {
 
 	modelsView servers.ModelsView
 	modelErr   error
+
+	config          servers.ServerConfig
+	logs            servers.ServerLog
+	lifecycleResult servers.ServerLifecycle
+	configCalls     []string
+	logCalls        []string
+	patchCalls      []string
+	patched         map[string]any
+	restartCalls    []string
+	stopCalls       []string
+	startCalls      []string
+	patchErr        error
+	restartErr      error
+	stopErr         error
+	startErr        error
+	logErr          error
+	configErr       error
 }
 
 func newFakeServers() *fakeServers {
@@ -815,4 +832,96 @@ func TestModelFailureIsShownAsOneTranslatedError(t *testing.T) {
 	if res := <-done; res.err != nil {
 		t.Fatalf("run: %v", res.err)
 	}
+}
+
+func (f *fakeServers) LoadConfig(_ context.Context, profileID string) (servers.ServerConfig, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.configCalls = append(f.configCalls, profileID)
+	if f.configErr != nil {
+		f.view.ConfigError = f.configErr.Error()
+		return servers.ServerConfig{}, f.configErr
+	}
+	config := f.config
+	f.view.Config = &config
+	f.view.ConfigError = ""
+	return config, nil
+}
+
+func (f *fakeServers) PatchConfig(
+	_ context.Context, profileID string, patch map[string]any,
+) (servers.ServerConfigPatch, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.patchCalls = append(f.patchCalls, profileID)
+	f.patched = patch
+	if f.patchErr != nil {
+		f.view.ConfigError = f.patchErr.Error()
+		return servers.ServerConfigPatch{}, f.patchErr
+	}
+	config := f.config
+	config.Config = map[string]any{"port": patch["port"], "processing": config.Config["processing"]}
+	f.view.Config = &config
+	return servers.ServerConfigPatch{
+		ServerConfig:    config,
+		Changed:         []string{"server.port"},
+		RestartRequired: []string{"server.port"},
+		Written:         true,
+	}, nil
+}
+
+func (f *fakeServers) LoadLogs(_ context.Context, profileID string, _ int) (servers.ServerLog, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.logCalls = append(f.logCalls, profileID)
+	if f.logErr != nil {
+		f.view.LogsError = f.logErr.Error()
+		return servers.ServerLog{}, f.logErr
+	}
+	logs := f.logs
+	f.view.Logs = &logs
+	f.view.LogsError = ""
+	return logs, nil
+}
+
+func (f *fakeServers) Restart(_ context.Context, profileID string) (servers.ServerLifecycle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.restartCalls = append(f.restartCalls, profileID)
+	if f.restartErr != nil {
+		f.view.LifecycleError = f.restartErr.Error()
+		return servers.ServerLifecycle{}, f.restartErr
+	}
+	result := servers.ServerLifecycle{Restarting: true, ModelState: "loading"}
+	f.view.Lifecycle = &result
+	return result, nil
+}
+
+func (f *fakeServers) Stop(_ context.Context, profileID string) (servers.ServerLifecycle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stopCalls = append(f.stopCalls, profileID)
+	if f.stopErr != nil {
+		f.view.LifecycleError = f.stopErr.Error()
+		return servers.ServerLifecycle{}, f.stopErr
+	}
+	result := servers.ServerLifecycle{Stopped: true, ModelState: "stopped"}
+	f.view.Lifecycle = &result
+	return result, nil
+}
+
+func (f *fakeServers) Start(_ context.Context, profileID string) (servers.ServerLifecycle, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.startCalls = append(f.startCalls, profileID)
+	if f.startErr != nil {
+		f.view.LifecycleError = f.startErr.Error()
+		return servers.ServerLifecycle{}, f.startErr
+	}
+	result := f.lifecycleResult
+	if result.ModelState == "" {
+		result = servers.ServerLifecycle{Loaded: true, ModelState: "loaded"}
+	}
+	f.view.Lifecycle = &result
+	return result, nil
 }

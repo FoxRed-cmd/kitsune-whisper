@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import logging
+import os
 import socket
 import sys
 import time
@@ -16,7 +17,8 @@ import uvicorn
 from .app import create_app
 from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
 from .engine import WhisperTranscriber
-from .gpu import detect_cuda_devices
+from .gpu import detect_cuda_devices, resolve_engine
+from .lifecycle import RESTART_EXIT_CODE, Lifecycle, LifecycleError, lifecycle_state_path
 from .llm import OpenAITextProcessor
 from .models import (
     FileModelStorage,
@@ -28,7 +30,7 @@ from .models import (
 from .pairing import PairingCodeStore, pairing_store_path
 from .processor import DisabledTextProcessor, TextProcessor
 from .store import ConfigStore
-from .transcriber import Transcriber
+from .transcriber import EngineInfo, Transcriber
 from .trust import (
     CERT_FILENAME,
     KEY_FILENAME,
@@ -181,6 +183,34 @@ def build_transcriber(
     return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
 
 
+def build_soft_stop(
+    config: ServerConfig,
+    *,
+    info: EngineInfo,
+    state_path: Path | str | None = None,
+) -> Lifecycle:
+    """The persisted soft-stop flag; the ModelManager owns the model itself."""
+    return Lifecycle(
+        _no_model_load,
+        info=info,
+        state_path=state_path if state_path is not None else lifecycle_state_path(),
+    )
+
+
+def _no_model_load() -> Transcriber:
+    raise LifecycleError("the model lifecycle is managed by the model manager")
+
+
+def exit_for_restart() -> None:
+    """Exit with the supervisor-visible restart code (ADR 0007)."""
+    logger.warning(
+        "restarting: exiting with %s so the supervisor starts the Server again",
+        RESTART_EXIT_CODE,
+    )
+    logging.shutdown()
+    os._exit(RESTART_EXIT_CODE)
+
+
 def build_model_manager(
     config: ServerConfig,
     *,
@@ -234,8 +264,18 @@ def run_server(
     # Validate the override catalog before downloading or loading a model, so a
     # bad catalog fails with a config error instead of after a costly load.
     ModelCatalog.load(config)
-    transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
-    info = transcriber.info
+    resolved_info = resolve_engine(config, cuda_device_count=cuda_devices)
+    lifecycle = build_soft_stop(config, info=resolved_info)
+    if lifecycle.stopped:
+        logger.warning(
+            "Server is soft-stopped: the model is not loaded and /transcribe returns 503 "
+            "until POST /admin/start"
+        )
+        transcriber: Transcriber | None = None
+        info = resolved_info
+    else:
+        transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
+        info = transcriber.info
     resolved_note = (
         " (resolved from auto)" if "auto" in (config.device, config.compute_type) else ""
     )
@@ -252,7 +292,7 @@ def run_server(
     models = build_model_manager(config, transcriber=transcriber, cuda_device_count=cuda_devices)
     app = create_app(
         config,
-        transcriber,
+        transcriber if transcriber is not None else lifecycle,
         processor,
         cuda_device_count=cuda_devices,
         devices=devices,
@@ -260,6 +300,9 @@ def run_server(
         pairing_codes=pairing_codes,
         config_store=config_store if config_store is not None else ConfigStore(),
         models=models,
+        lifecycle=lifecycle,
+        log_file=log_file if log_file is not None else default_log_file(),
+        restart=exit_for_restart,
     )
     if config.expose_to_network:
         logger.warning(

@@ -115,6 +115,10 @@ const (
 	ActionSettings Action = "settings"
 	// ActionRestart re-executes the Client.
 	ActionRestart Action = "restart"
+	// ActionServerRestart asks the active Server profile to restart.
+	ActionServerRestart Action = "server-restart"
+	// ActionServerStop soft-stops the active Server profile.
+	ActionServerStop Action = "server-stop"
 	// ActionQuit stops the Client.
 	ActionQuit Action = "quit"
 )
@@ -174,24 +178,28 @@ const (
 // Labels are the translated strings the page and the Tray render. They travel
 // with the snapshot so a language switch updates both without a restart.
 type Labels struct {
-	State        string `json:"state"`
-	Status       string `json:"status"`
-	Start        string `json:"start"`
-	Stop         string `json:"stop"`
-	Settings     string `json:"settings"`
-	Restart      string `json:"restart"`
-	Quit         string `json:"quit"`
-	Phase        string `json:"phase"`
-	PhaseValue   string `json:"phaseValue"`
-	Client       string `json:"client"`
-	Profile      string `json:"profile"`
-	Version      string `json:"version"`
-	Running      string `json:"running"`
-	Stopped      string `json:"stopped"`
-	Server       string `json:"server"`
-	ServerState  string `json:"serverState"`
-	Profiles     string `json:"profiles"`
-	OpenSettings string `json:"openSettings"`
+	State         string `json:"state"`
+	Status        string `json:"status"`
+	Start         string `json:"start"`
+	Stop          string `json:"stop"`
+	Settings      string `json:"settings"`
+	Restart       string `json:"restart"`
+	Quit          string `json:"quit"`
+	Phase         string `json:"phase"`
+	PhaseValue    string `json:"phaseValue"`
+	Client        string `json:"client"`
+	Profile       string `json:"profile"`
+	Version       string `json:"version"`
+	Running       string `json:"running"`
+	Stopped       string `json:"stopped"`
+	Server        string `json:"server"`
+	ServerState   string `json:"serverState"`
+	Profiles      string `json:"profiles"`
+	OpenSettings  string `json:"openSettings"`
+	ServerRestart string `json:"serverRestart"`
+	ServerStop    string `json:"serverStop"`
+	ServerStart   string `json:"serverStart"`
+	ModelState    string `json:"modelState"`
 }
 
 // ProfileState is one Server profile as the Tray lists it.
@@ -219,7 +227,9 @@ type Snapshot struct {
 	// Profiles lists every Server profile with its advisory health, for the
 	// Tray's profile submenu.
 	Profiles []ProfileState `json:"profiles,omitempty"`
-	Labels   Labels         `json:"labels"`
+	// ModelState is the active Server's loaded/cold/stopped state, when known.
+	ModelState string `json:"modelState,omitempty"`
+	Labels     Labels `json:"labels"`
 }
 
 // NewSnapshot maps the runtime status onto the shell's render model with
@@ -253,25 +263,37 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 	state := catalog.T("state." + string(snapshot.State))
 	return Labels{
-		State:        state,
-		Status:       catalog.T("tray.status", state),
-		Start:        catalog.T("tray.start"),
-		Stop:         catalog.T("tray.stop"),
-		Settings:     catalog.T("tray.settings"),
-		Restart:      catalog.T("tray.restart"),
-		Quit:         catalog.T("tray.quit"),
-		Phase:        catalog.T("status.phase"),
-		PhaseValue:   phaseLabel(catalog, snapshot.Phase),
-		Client:       catalog.T("status.client"),
-		Profile:      catalog.T("status.profile"),
-		Version:      catalog.T("status.version"),
-		Running:      catalog.T("status.running"),
-		Stopped:      catalog.T("status.stopped"),
-		Server:       catalog.T("status.server"),
-		ServerState:  serverStateLabel(catalog, snapshot.Server.State),
-		Profiles:     catalog.T("tray.profiles"),
-		OpenSettings: catalog.T("action.openSettings"),
+		State:         state,
+		Status:        catalog.T("tray.status", state),
+		Start:         catalog.T("tray.start"),
+		Stop:          catalog.T("tray.stop"),
+		Settings:      catalog.T("tray.settings"),
+		Restart:       catalog.T("tray.restart"),
+		Quit:          catalog.T("tray.quit"),
+		Phase:         catalog.T("status.phase"),
+		PhaseValue:    phaseLabel(catalog, snapshot.Phase),
+		Client:        catalog.T("status.client"),
+		Profile:       catalog.T("status.profile"),
+		Version:       catalog.T("status.version"),
+		Running:       catalog.T("status.running"),
+		Stopped:       catalog.T("status.stopped"),
+		Server:        catalog.T("status.server"),
+		ServerState:   serverStateLabel(catalog, snapshot.Server.State),
+		Profiles:      catalog.T("tray.profiles"),
+		OpenSettings:  catalog.T("action.openSettings"),
+		ServerRestart: catalog.T("tray.serverRestart"),
+		ServerStop:    catalog.T("tray.serverStop"),
+		ServerStart:   catalog.T("tray.serverStart"),
+		ModelState:    modelLifecycleLabel(catalog, snapshot.ModelState),
 	}
+}
+
+// modelStateLabel translates the active Server's model state shown in the Tray.
+func modelLifecycleLabel(catalog i18n.Catalog, state string) string {
+	if state == "" {
+		return ""
+	}
+	return catalog.T("state.model." + state)
 }
 
 // serverStateLabel translates the Server reachability/auth state shown next to
@@ -320,6 +342,12 @@ type Options struct {
 	CheckServer func(context.Context) trust.Status
 	// CheckInterval is the slow health probe interval; 0 uses 30 seconds.
 	CheckInterval time.Duration
+	// RestartPollInterval is the delay between health probes after a Server
+	// restart; 0 uses 500 milliseconds. Tests shorten it.
+	RestartPollInterval time.Duration
+	// RestartPollAttempts bounds how long the Client waits for a restarted
+	// Server to become ready; 0 uses 20 attempts.
+	RestartPollAttempts int
 	// Notifier raises the one user-facing error of a failed Dictation cycle.
 	// Nil keeps the error in the window and the Tray only.
 	Notifier Notifier
@@ -582,6 +610,11 @@ func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 		snapshot.ErrorAction = ActionSettings
 	}
 	snapshot.Profiles = s.profileStatesLocked()
+	if s.opts.Servers != nil {
+		if lifecycle := s.opts.Servers.View().Lifecycle; lifecycle != nil {
+			snapshot.ModelState = lifecycle.ModelState
+		}
+	}
 	snapshot.Labels = labelsFor(s.catalog(), snapshot)
 	s.snapshot = snapshot
 	return snapshot, s.window, s.tray
@@ -614,13 +647,7 @@ func (s *Shell) activeProfileName() string {
 	if s.opts.Servers == nil {
 		return s.opts.Profile
 	}
-	view := s.opts.Servers.View()
-	for _, profile := range view.Profiles {
-		if profile.Active {
-			return profile.Name
-		}
-	}
-	return s.opts.Profile
+	return activeProfileName(s.opts.Servers.View(), s.opts.Profile)
 }
 
 // monitorServer probes the active Server once at startup and then on the slow
@@ -811,6 +838,10 @@ func (s *Shell) handleAction(action Action) {
 		}
 	case ActionRestart:
 		s.requestRestart()
+	case ActionServerRestart:
+		s.runServerAction(actionServerRestart)
+	case ActionServerStop:
+		s.runServerAction(actionServerStop)
 	case ActionQuit:
 		s.requestQuit()
 	}

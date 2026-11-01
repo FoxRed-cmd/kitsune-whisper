@@ -37,6 +37,12 @@ type Servers interface {
 	RevokeDevice(ctx context.Context, profileID, deviceID string) error
 	GenerateCode(ctx context.Context, profileID string) (servers.PairingCode, error)
 	SetExposure(ctx context.Context, profileID string, expose bool) (servers.ExposureResult, error)
+	LoadConfig(ctx context.Context, profileID string) (servers.ServerConfig, error)
+	PatchConfig(ctx context.Context, profileID string, patch map[string]any) (servers.ServerConfigPatch, error)
+	LoadLogs(ctx context.Context, profileID string, tail int) (servers.ServerLog, error)
+	Restart(ctx context.Context, profileID string) (servers.ServerLifecycle, error)
+	Stop(ctx context.Context, profileID string) (servers.ServerLifecycle, error)
+	Start(ctx context.Context, profileID string) (servers.ServerLifecycle, error)
 	LoadModels(ctx context.Context, profileID string) (servers.ModelsView, error)
 	DownloadModel(ctx context.Context, profileID, model string) (servers.ModelsView, error)
 	CancelDownload(ctx context.Context, profileID, model string) (servers.ModelsView, error)
@@ -82,6 +88,40 @@ type ServerLabels struct {
 	ExposureConfirm  string            `json:"exposureConfirm"`
 	ExposureOnState  string            `json:"exposureOnState"`
 	ExposureOffState string            `json:"exposureOffState"`
+
+	ManagementTitle  string `json:"managementTitle"`
+	ManagementHelp   string `json:"managementHelp"`
+	RestartServer    string `json:"restartServer"`
+	StopServer       string `json:"stopServer"`
+	StartServer      string `json:"startServer"`
+	ModelState       string `json:"modelState"`
+	SettingsTitle    string `json:"settingsTitle"`
+	SettingsHelp     string `json:"settingsHelp"`
+	SaveSettings     string `json:"saveSettings"`
+	AdvancedValue    string `json:"advancedValue"`
+	Source           string `json:"source"`
+	ModeRestart      string `json:"modeRestart"`
+	ModeHot          string `json:"modeHot"`
+	Locked           string `json:"locked"`
+	LogsTitle        string `json:"logsTitle"`
+	LogsHelp         string `json:"logsHelp"`
+	LogPath          string `json:"logPath"`
+	LogTruncated     string `json:"logTruncated"`
+	NoLogs           string `json:"noLogs"`
+	LoadLogs         string `json:"loadLogs"`
+	CopyLogs         string `json:"copyLogs"`
+	DiagnosticsTitle string `json:"diagnosticsTitle"`
+	DiagnosticsHelp  string `json:"diagnosticsHelp"`
+	ClientVersion    string `json:"clientVersion"`
+	ServerVersion    string `json:"serverVersion"`
+	ServerState      string `json:"serverState"`
+	DiagnosticsFor   string `json:"diagnosticsFor"`
+	Redacted         string `json:"redacted"`
+	ConfigPath       string `json:"configPath"`
+	ConfigTitle      string `json:"configTitle"`
+	CopyDiagnostics  string `json:"copyDiagnostics"`
+	RefreshDiag      string `json:"refreshDiagnostics"`
+	Unavailable      string `json:"unavailable"`
 }
 
 // ModelLabels are the translated strings for the Model catalog screen.
@@ -136,7 +176,10 @@ type ModelLabels struct {
 // General screens plus the Servers, Devices, Spool, and Models screens.
 type SettingsView struct {
 	dictation.View
-	Servers     servers.View `json:"servers"`
+	Servers     servers.View    `json:"servers"`
+	Diagnostics DiagnosticsView `json:"diagnostics"`
+	// ModelState is the translated lifecycle state of the active Server.
+	ModelState  string       `json:"modelState,omitempty"`
 	Labels      ServerLabels `json:"serverLabels"`
 	ModelLabels ModelLabels  `json:"modelLabels"`
 	Spool       SpoolView    `json:"spool"`
@@ -189,6 +232,40 @@ func (s *Shell) serverLabels() ServerLabels {
 		ExposureConfirm:  catalog.T("server.exposureConfirm"),
 		ExposureOnState:  catalog.T("server.exposureStateOn"),
 		ExposureOffState: catalog.T("server.exposureStateOff"),
+
+		ManagementTitle:  catalog.T("server.managementTitle"),
+		ManagementHelp:   catalog.T("server.managementHelp"),
+		RestartServer:    catalog.T("server.restart"),
+		StopServer:       catalog.T("server.stopSoft"),
+		StartServer:      catalog.T("server.start"),
+		ModelState:       catalog.T("server.modelState"),
+		SettingsTitle:    catalog.T("server.settingsTitle"),
+		SettingsHelp:     catalog.T("server.settingsHelp"),
+		SaveSettings:     catalog.T("action.saveServer"),
+		AdvancedValue:    catalog.T("server.advancedValue"),
+		Source:           catalog.T("server.source"),
+		ModeRestart:      catalog.T("server.modeRestart"),
+		ModeHot:          catalog.T("server.modeHot"),
+		Locked:           catalog.T("server.locked"),
+		LogsTitle:        catalog.T("server.logsTitle"),
+		LogsHelp:         catalog.T("server.logsHelp"),
+		LogPath:          catalog.T("server.logPath"),
+		LogTruncated:     catalog.T("server.logTruncated"),
+		NoLogs:           catalog.T("server.noLogs"),
+		LoadLogs:         catalog.T("action.loadLogs"),
+		CopyLogs:         catalog.T("action.copyLogs"),
+		DiagnosticsTitle: catalog.T("diagnostics.title"),
+		DiagnosticsHelp:  catalog.T("diagnostics.help"),
+		ClientVersion:    catalog.T("diagnostics.clientVersion"),
+		ServerVersion:    catalog.T("diagnostics.serverVersion"),
+		ServerState:      catalog.T("diagnostics.serverState"),
+		DiagnosticsFor:   catalog.T("diagnostics.profile"),
+		Redacted:         catalog.T("diagnostics.redacted"),
+		ConfigPath:       catalog.T("diagnostics.configPath"),
+		ConfigTitle:      catalog.T("diagnostics.config"),
+		CopyDiagnostics:  catalog.T("action.copyDiagnostics"),
+		RefreshDiag:      catalog.T("action.refreshDiagnostics"),
+		Unavailable:      catalog.T("diagnostics.unavailable"),
 	}
 }
 
@@ -273,9 +350,16 @@ func (s *Shell) catalog() i18n.Catalog {
 // settingsView renders the Settings screens, or a translated empty view when
 // no settings service is wired.
 func (s *Shell) settingsView() SettingsView {
+	serverView := s.serversView()
+	modelState := ""
+	if serverView.Lifecycle != nil {
+		modelState = modelLifecycleLabel(s.catalog(), serverView.Lifecycle.ModelState)
+	}
 	view := SettingsView{
 		View:        s.dictationView(),
-		Servers:     s.serversView(),
+		Servers:     serverView,
+		Diagnostics: s.diagnosticsView(serverView),
+		ModelState:  modelState,
 		Labels:      s.serverLabels(),
 		ModelLabels: s.modelLabels(),
 		Spool:       s.spoolView(),
@@ -322,32 +406,40 @@ type Intent struct {
 	Model string `json:"model,omitempty"`
 	// Seconds carries the idle unload timeout.
 	Seconds int `json:"seconds,omitempty"`
+	// Tail is the number of log lines for ActionLoadLogs; 0 uses 200.
+	Tail int `json:"tail,omitempty"`
 }
 
 // Intent actions.
 const (
-	IntentSave           = "save"
-	IntentValidate       = "validate"
-	IntentTestMic        = "test-mic"
-	IntentStopMic        = "stop-mic"
-	IntentRestart        = "restart"
-	IntentPairRemote     = "pair-remote"
-	IntentRefreshDevices = "refresh-devices"
-	IntentRevokeDevice   = "revoke-device"
-	IntentPairingCode    = "pairing-code"
-	IntentExposure       = "exposure"
-	IntentUseProfile     = "use-profile"
-	IntentRefreshServers = "refresh-servers"
-	IntentSpoolRetry     = "spool-retry"
-	IntentSpoolCopy      = "spool-copy"
-	IntentSpoolInsert    = "spool-insert"
-	IntentSpoolDelete    = "spool-delete"
-	IntentLoadModels     = "load-models"
-	IntentDownloadModel  = "download-model"
-	IntentCancelDownload = "cancel-download"
-	IntentActivateModel  = "activate-model"
-	IntentDeleteModel    = "delete-model"
-	IntentIdleTimeout    = "idle-timeout"
+	IntentSave               = "save"
+	IntentValidate           = "validate"
+	IntentTestMic            = "test-mic"
+	IntentStopMic            = "stop-mic"
+	IntentRestart            = "restart"
+	IntentPairRemote         = "pair-remote"
+	IntentRefreshDevices     = "refresh-devices"
+	IntentRevokeDevice       = "revoke-device"
+	IntentPairingCode        = "pairing-code"
+	IntentExposure           = "exposure"
+	IntentUseProfile         = "use-profile"
+	IntentRefreshServers     = "refresh-servers"
+	IntentSpoolRetry         = "spool-retry"
+	IntentSpoolCopy          = "spool-copy"
+	IntentSpoolInsert        = "spool-insert"
+	IntentSpoolDelete        = "spool-delete"
+	IntentLoadModels         = "load-models"
+	IntentDownloadModel      = "download-model"
+	IntentCancelDownload     = "cancel-download"
+	IntentActivateModel      = "activate-model"
+	IntentDeleteModel        = "delete-model"
+	IntentIdleTimeout        = "idle-timeout"
+	IntentSaveServer         = "save-server"
+	IntentRefreshDiagnostics = "refresh-diagnostics"
+	IntentLoadLogs           = "load-logs"
+	IntentServerRestart      = "server-restart"
+	IntentServerStop         = "server-stop"
+	IntentServerStart        = "server-start"
 )
 
 // HandleIntent applies one page intent. Validation failures are shown in the
@@ -450,6 +542,30 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentIdleTimeout:
 		s.setIdleTimeout(intent.Seconds)
+		return nil
+	case IntentSaveServer:
+		patch := map[string]any{}
+		if len(intent.Patch) > 0 {
+			if err := json.Unmarshal(intent.Patch, &patch); err != nil {
+				return fmt.Errorf("settings patch: %w", err)
+			}
+		}
+		s.saveServerSettings(patch)
+		return nil
+	case IntentRefreshDiagnostics:
+		s.refreshDiagnostics()
+		return nil
+	case IntentLoadLogs:
+		s.loadServerLogs(intent.Tail)
+		return nil
+	case IntentServerRestart:
+		s.runServerAction(actionServerRestart)
+		return nil
+	case IntentServerStop:
+		s.runServerAction(actionServerStop)
+		return nil
+	case IntentServerStart:
+		s.runServerAction(actionServerStart)
 		return nil
 	default:
 		return fmt.Errorf("settings intent: unknown action %q", intent.Action)

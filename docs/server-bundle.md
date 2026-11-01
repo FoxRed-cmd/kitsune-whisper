@@ -115,8 +115,10 @@ injectable runner; `status` always reports what it finds, and `stop`/`restart`
 exit non-zero with a one-line pointer to `kitsune-server install` when the
 supervisor is missing.
 
-Soft-stop through the Admin API (unload the model but keep serving) and the
-supervised self-exit restart land with #77. This ticket hard-stops the process.
+Soft-stop through the Admin API unloads the model while the Admin API keeps
+serving, and `POST /admin/restart` is a supervised self-exit with code `75`.
+`kitsune-server stop` remains the hard process stop and is available only on the
+Server host.
 
 ## Port preflight
 

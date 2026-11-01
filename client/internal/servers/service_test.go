@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -53,6 +54,11 @@ type fakeServer struct {
 	revoked     []string
 	names       []string
 	codeCalls   int
+
+	patched        map[string]any
+	configCalls    int
+	logsTail       int
+	lifecycleCalls []string
 
 	models     map[string]any
 	modelCalls []string
@@ -137,6 +143,67 @@ func newFakeServer(t *testing.T) *fakeServer {
 				"bind_host":         map[bool]string{true: "0.0.0.0", false: "127.0.0.1"}[expose],
 				"changed":           true,
 				"restart_required":  []string{"server.expose_to_network"},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/config":
+			fake.configCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"path": "/home/kim/.config/kitsune-whisper/kitsune.yaml",
+				"config": map[string]any{
+					"port":       8765,
+					"processing": map[string]any{"api_key": "***"},
+				},
+				"redacted": []string{"server.processing.api_key"},
+				"fields": map[string]any{
+					"server.port": map[string]any{
+						"value": 8765, "source": "file", "locked": false, "mode": "restart",
+					},
+				},
+			})
+		case r.Method == http.MethodPatch && r.URL.Path == "/admin/config":
+			var body struct {
+				Patch map[string]any `json:"patch"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if port, ok := body.Patch["port"].(float64); ok && port == 0 {
+				writeError(w, http.StatusBadRequest, "bad_request",
+					"server.port: Input should be greater than or equal to 1")
+				return
+			}
+			fake.patched = body.Patch
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"path": "/home/kim/.config/kitsune-whisper/kitsune.yaml",
+				"config": map[string]any{
+					"port":       9100,
+					"processing": map[string]any{"api_key": "***"},
+				},
+				"redacted":         []string{"server.processing.api_key"},
+				"fields":           map[string]any{},
+				"changed":          []string{"server.port"},
+				"hot_applied":      []string{},
+				"restart_required": []string{"server.port"},
+				"written":          true,
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/logs":
+			fake.logsTail, _ = strconv.Atoi(r.URL.Query().Get("tail"))
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"path":      "/home/kim/.local/state/kitsune-whisper/server.log",
+				"lines":     []string{"line 4", "line 5"},
+				"truncated": true,
+				"tail":      fake.logsTail,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/restart":
+			fake.lifecycleCalls = append(fake.lifecycleCalls, "restart")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{"restarting": true})
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/stop":
+			fake.lifecycleCalls = append(fake.lifecycleCalls, "stop")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"stopped": true, "loaded": false, "model": "small", "model_state": "stopped",
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/start":
+			fake.lifecycleCalls = append(fake.lifecycleCalls, "start")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"stopped": false, "loaded": true, "model": "small", "model_state": "loaded",
 			})
 		case r.Method == http.MethodGet && r.URL.Path == "/admin/models":
 			_ = json.NewEncoder(w).Encode(fake.models)

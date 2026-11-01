@@ -13,12 +13,14 @@ import functools
 import ipaddress
 import logging
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio.to_thread
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
@@ -30,6 +32,7 @@ from .audio import AudioDecodeError, decode_audio
 from .config import ConfigError, ServerConfig, format_errors
 from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
+from .lifecycle import Lifecycle, LifecycleError
 from .models import ModelError, ModelLoadError, ModelManager
 from .pairing import (
     ExpiredPairingCodeError,
@@ -39,12 +42,29 @@ from .pairing import (
     WrongPairingCodeError,
 )
 from .processor import ProcessingError, TextProcessor
+from .redact import redact_config, redact_value, strip_redacted
 from .store import ConfigStore
 from .transcriber import Transcriber, resolve_workers
 from .trust import Certificate, DeviceStore
 from .trust import Device as TrustedDevice
 
 logger = logging.getLogger("kitsune.server")
+
+# Fields this Server can apply to the running process without a restart. A
+# model change goes through /admin/models/activate (#76); idle unload is applied
+# through the model manager when one is present. Everything else is reported as
+# restart-required so the UI never promises a live change that did not happen.
+_APPLIED_HOT_FIELDS = frozenset(
+    {
+        "server.log_level",
+        "server.max_audio_seconds",
+        "server.max_upload_mb",
+        "server.decode.language",
+        "server.decode.initial_prompt",
+    }
+)
+
+MAX_LOG_TAIL = 1000
 
 
 class ApiError(Exception):
@@ -149,6 +169,12 @@ class IdleUnloadRequest(BaseModel):
     seconds: int = Field(ge=0)
 
 
+class ConfigPatchRequest(BaseModel):
+    """A partial ``server:``-shaped patch validated like startup."""
+
+    patch: dict[str, Any] = Field(default_factory=dict)
+
+
 def is_loopback_address(host: str | None) -> bool:
     """Return True when the HTTP peer is on the loopback interface."""
     if not host:
@@ -163,6 +189,98 @@ def is_loopback_address(host: str | None) -> bool:
         return False
 
 
+def _config_payload(store: ConfigStore) -> dict[str, Any]:
+    """The editable configuration with secrets masked and per-field metadata."""
+    config = store.effective()
+    document, redacted = redact_config(config)
+    fields: dict[str, Any] = {}
+    for path, state in store.states().items():
+        fields[path] = {
+            "value": redact_value(path, state.value),
+            "source": state.source,
+            "locked": state.locked,
+            "reason": state.reason,
+            "mode": state.mode,
+        }
+    return {
+        "path": str(store.target_path),
+        "config": document,
+        "redacted": redacted,
+        "fields": fields,
+    }
+
+
+def _tail_lines(path: Path, limit: int) -> tuple[list[str], bool]:
+    """Read the last ``limit`` lines, reporting whether older lines exist."""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        lines = deque((line.rstrip("\r\n") for line in handle), maxlen=limit + 1)
+    truncated = len(lines) > limit
+    if truncated:
+        lines.popleft()
+    return list(lines), truncated
+
+
+def _no_model_load() -> Transcriber:
+    """The model manager owns loading when one is present."""
+    raise LifecycleError("the model lifecycle is managed by the model manager")
+
+
+def _model_state(lifecycle: Lifecycle) -> str:
+    if lifecycle.stopped:
+        return "stopped"
+    if lifecycle.loaded:
+        return "loaded"
+    return "cold"
+
+
+def _lifecycle_payload(lifecycle: Lifecycle, manager: ModelManager | None = None) -> dict[str, Any]:
+    if manager is not None:
+        stopped = lifecycle.stopped
+        loaded = manager.current_transcriber() is not None
+        model = manager.active_model
+        state = "stopped" if stopped else manager.state
+    else:
+        stopped = lifecycle.stopped
+        loaded = lifecycle.loaded
+        model = lifecycle.info.model
+        state = _model_state(lifecycle)
+    return {
+        "stopped": stopped,
+        "loaded": loaded,
+        "model": model,
+        "model_state": state,
+    }
+
+
+def _apply_hot_config(
+    current: ServerConfig, updated: ServerConfig, paths: list[str]
+) -> ServerConfig:
+    """Copy only the fields the running Server applies; leave the rest alone.
+
+    ``authenticate`` and the listener read ``app.state.config``, so assigning
+    the whole patched config would silently apply restart-required values
+    (for example ``allow_anonymous``). The running view keeps the old values
+    until an actual restart.
+    """
+    applied = current.model_copy(deep=True)
+    decode_updates: dict[str, Any] = {}
+    for path in paths:
+        if path == "server.log_level":
+            applied.log_level = updated.log_level
+        elif path == "server.max_audio_seconds":
+            applied.max_audio_seconds = updated.max_audio_seconds
+        elif path == "server.max_upload_mb":
+            applied.max_upload_mb = updated.max_upload_mb
+        elif path == "server.idle_unload_seconds":
+            applied.idle_unload_seconds = updated.idle_unload_seconds
+        elif path.startswith("server.decode."):
+            field = path.removeprefix("server.decode.")
+            decode_updates[field] = getattr(updated.decode, field)
+    if decode_updates:
+        applied.decode = updated.decode.model_copy(update=decode_updates)
+    return applied
+
+
 def create_app(
     config: ServerConfig,
     transcriber: Transcriber,
@@ -174,6 +292,9 @@ def create_app(
     pairing_codes: PairingCodeStore | None = None,
     config_store: ConfigStore | None = None,
     models: ModelManager | None = None,
+    lifecycle: Lifecycle | None = None,
+    log_file: Path | None = None,
+    restart: Callable[[], None] | None = None,
     version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
@@ -187,7 +308,10 @@ def create_app(
     only writer of the Server YAML and backs the LAN exposure switch.
     ``models`` is the model lifecycle manager; ``None`` keeps the fixed
     ``transcriber`` and hides the Models Admin API, which is what the existing
-    transcription tests use.
+    transcription tests use. ``lifecycle`` persists the soft-stop flag; with a
+    ``models`` manager it never owns the Transcriber. ``log_file`` backs
+    ``GET /admin/logs`` and ``restart`` is the supervised self-exit action
+    (tests inject a recorder, production exits with the restart code).
     """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
@@ -199,6 +323,17 @@ def create_app(
     app.state.models = models
     app.state.certificate = certificate
     app.state.version = version
+    if lifecycle is None:
+        lifecycle = (
+            # The manager owns the Transcriber when it is present; the soft-stop
+            # wrapper must not keep a second reference that defeats an unload.
+            Lifecycle(_no_model_load, info=transcriber.info)
+            if models is not None
+            else Lifecycle.from_transcriber(transcriber)
+        )
+    app.state.lifecycle = lifecycle
+    app.state.log_file = Path(log_file).expanduser() if log_file is not None else None
+    app.state.restart = restart
     if cuda_device_count is None:
         cuda_device_count = detect_cuda_devices()
     app.state.cuda_device_count = cuda_device_count
@@ -270,7 +405,7 @@ def create_app(
         The failure message never says whether a token is unknown or revoked:
         the store cannot tell them apart, and neither should the response.
         """
-        if config.allow_anonymous:
+        if app.state.config.allow_anonymous:
             return None
         header = request.headers.get("authorization")
         unauthorized = {
@@ -312,28 +447,45 @@ def create_app(
         device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
     ) -> dict[str, Any]:
         """Authenticated status for the Tray, Settings, and diagnostics."""
+        active_config = app.state.config
+        lifecycle = app.state.lifecycle
+        manager = app.state.models
         info = transcriber.info
-        active = app.state.models
-        if active is not None:
-            active.maybe_unload()
-            current = active.current_transcriber()
+        model_state = _model_state(lifecycle)
+        model_name = info.model
+        model_path = ""
+        idle_unload_seconds = active_config.idle_unload_seconds
+        if manager is not None:
+            manager.maybe_unload()
+            current = manager.current_transcriber()
             if current is not None:
                 info = current.info
+            model_name = manager.active_model
+            model_path = manager.active_path
+            idle_unload_seconds = manager.idle_unload_seconds
+            model_state = manager.state
+        elif lifecycle.loaded:
+            info = lifecycle.info
+        if lifecycle.stopped:
+            model_state = "stopped"
+            model_name = manager.active_model if manager is not None else lifecycle.info.model
+        loaded = (
+            manager.current_transcriber() is not None if manager is not None else lifecycle.loaded
+        )
         capability = processor.info
-        gpu = gpu_status(config, cuda_device_count=app.state.cuda_device_count)
+        gpu = gpu_status(active_config, cuda_device_count=app.state.cuda_device_count)
         certificate = app.state.certificate
         return {
             "status": "ok",
             "version": app.state.version,
-            "model": active.active_model if active is not None else info.model,
-            "model_state": active.state if active is not None else "loaded",
-            "model_path": active.active_path if active is not None else "",
-            "idle_unload_seconds": (
-                active.idle_unload_seconds if active is not None else config.idle_unload_seconds
-            ),
+            "model": model_name,
+            "model_state": model_state,
+            "model_path": model_path,
+            "idle_unload_seconds": idle_unload_seconds,
             "device": info.device,
             "compute_type": info.compute_type,
-            "ready": bool(app.state.ready),
+            "ready": bool(app.state.ready) and not lifecycle.stopped,
+            "lifecycle": {"stopped": lifecycle.stopped, "loaded": loaded},
             "processing": {
                 "enabled": capability.enabled,
                 "refine": capability.refine,
@@ -342,12 +494,12 @@ def create_app(
             "gpu": gpu.as_dict(),
             "tls_fingerprint": certificate.fingerprint if certificate is not None else "",
             "network": {
-                "expose_to_network": config.expose_to_network,
-                "bind_host": config.bind_host,
-                "port": config.port,
+                "expose_to_network": active_config.expose_to_network,
+                "bind_host": active_config.bind_host,
+                "port": active_config.port,
             },
             "auth": {
-                "anonymous": config.allow_anonymous,
+                "anonymous": active_config.allow_anonymous,
                 "device": device.name if device else None,
             },
         }
@@ -490,6 +642,179 @@ def create_app(
             "restart_required": list(result.restart_required),
         }
 
+    @app.get("/admin/config")
+    async def read_config(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Read the effective Server configuration with secrets masked."""
+        del device
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot read its configuration; edit kitsune.yaml on the "
+                "Server host instead",
+            )
+        try:
+            payload = _config_payload(store)
+        except ConfigError as exc:
+            raise ApiError(409, "config_invalid", str(exc)) from exc
+        return payload
+
+    @app.patch("/admin/config")
+    async def patch_config(
+        payload: ConfigPatchRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Validate and atomically write a partial ``server:`` patch.
+
+        Validation is exactly startup's; nothing is written on failure. A
+        secret echoed back as the redaction placeholder is dropped, never
+        written over the real value. Only hot fields this Server actually
+        applies are reported as ``hot_applied``; everything else needs a
+        restart. Model activation has its own endpoint (#76).
+        """
+        del device
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot write its configuration; edit kitsune.yaml on the "
+                "Server host instead",
+            )
+        changes = strip_redacted(payload.patch)
+        if not changes:
+            try:
+                payload_out = _config_payload(store)
+            except ConfigError as exc:
+                raise ApiError(409, "config_invalid", str(exc)) from exc
+            return {
+                **payload_out,
+                "changed": [],
+                "hot_applied": [],
+                "restart_required": [],
+                "written": False,
+            }
+        try:
+            result = store.patch(changes)
+        except ConfigError as exc:
+            raise ApiError(400, "bad_request", str(exc)) from exc
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                f"the Server configuration could not be written: {exc}",
+            ) from exc
+        if "server.log_level" in result.changed:
+            logging.getLogger("kitsune").setLevel(result.config.log_level.upper())
+        hot = [path for path in result.changed if path in _APPLIED_HOT_FIELDS]
+        manager = app.state.models
+        if manager is not None and "server.idle_unload_seconds" in result.changed:
+            manager.set_idle_unload_seconds(result.config.idle_unload_seconds)
+            hot.append("server.idle_unload_seconds")
+        restart_required = [path for path in result.changed if path not in hot]
+        app.state.config = _apply_hot_config(app.state.config, result.config, hot)
+        payload_out = _config_payload(store)
+        return {
+            **payload_out,
+            "changed": list(result.changed),
+            "hot_applied": hot,
+            "restart_required": restart_required,
+            "written": result.written,
+        }
+
+    @app.get("/admin/logs")
+    async def read_logs(
+        tail: Annotated[int, Query(ge=1, le=MAX_LOG_TAIL)] = 200,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Return the last ``tail`` lines of the Server log file."""
+        del device
+        log_file = app.state.log_file
+        if log_file is None:
+            raise ApiError(
+                503,
+                "log_unavailable",
+                "this Server is not writing a log file; run it as a supervised "
+                "background process or set --log-file",
+            )
+        try:
+            lines, truncated = _tail_lines(log_file, tail)
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "log_unavailable",
+                f"the Server log {log_file} cannot be read: {exc}",
+            ) from exc
+        return {
+            "path": str(log_file),
+            "lines": lines,
+            "truncated": truncated,
+            "tail": tail,
+        }
+
+    @app.post("/admin/restart", status_code=202)
+    async def restart_server(
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Answer ``202``, then exit so the supervisor starts the Server again."""
+        del device
+        action = app.state.restart
+        if action is None:
+            raise ApiError(
+                503,
+                "restart_unavailable",
+                "this Server cannot restart itself; stop and start it on the Server host",
+            )
+        background.add_task(action)
+        return {"restarting": True}
+
+    @app.post("/admin/stop")
+    async def stop_server(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Soft-stop: unload the model, persist the state, keep the API alive."""
+        del device
+        lifecycle = app.state.lifecycle
+        manager = app.state.models
+        if manager is not None:
+            # The model manager is authoritative for the loaded Transcriber;
+            # the soft-stop wrapper only remembers the persisted flag.
+            await run_in_threadpool(manager.unload)
+            lifecycle.mark_stopped()
+        else:
+            lifecycle.stop()
+        logger.warning(
+            "Server soft-stopped: the model is unloaded and /transcribe returns 503 "
+            "until POST /admin/start"
+        )
+        return _lifecycle_payload(lifecycle, manager)
+
+    @app.post("/admin/start")
+    async def start_server(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Clear a soft-stop and load the model again."""
+        del device
+        lifecycle = app.state.lifecycle
+        manager = app.state.models
+        if manager is not None:
+            try:
+                await run_in_threadpool(manager.ensure_loaded)
+            except ModelLoadError as exc:
+                raise ApiError(503, "engine_load_failed", str(exc)) from exc
+            lifecycle.clear()
+        else:
+            try:
+                lifecycle.start()
+            except LifecycleError as exc:
+                raise ApiError(503, "engine_load_failed", str(exc)) from exc
+        logger.info("Server started: model %s is loaded", lifecycle.info.model)
+        return _lifecycle_payload(lifecycle, manager)
+
     def _require_models() -> ModelManager:
         manager = app.state.models
         if manager is None:
@@ -627,48 +952,62 @@ def create_app(
         refine: Annotated[bool, Form()] = False,
         summarize: Annotated[bool, Form()] = False,
     ) -> dict[str, Any]:
+        lifecycle = app.state.lifecycle
+        if lifecycle.stopped:
+            raise ApiError(
+                503,
+                "stopped",
+                "the Server is soft-stopped; start it through the Admin API",
+            )
+        active_config = app.state.config
+        manager = app.state.models
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
         try:
             active = transcriber
-            if app.state.models is not None:
+            if manager is not None:
                 try:
-                    active = await run_in_threadpool(app.state.models.ensure_loaded)
+                    active = await run_in_threadpool(manager.ensure_loaded)
                 except ModelLoadError as exc:
                     raise ApiError(503, "model_unavailable", str(exc)) from exc
-            max_bytes = int(config.max_upload_mb * 1024 * 1024)
+            else:
+                try:
+                    active = lifecycle.transcriber
+                except LifecycleError as exc:
+                    raise ApiError(503, "model_not_loaded", str(exc)) from exc
+            max_bytes = int(active_config.max_upload_mb * 1024 * 1024)
             declared_size = getattr(audio, "size", None)
             if declared_size is not None and declared_size > max_bytes:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"upload exceeds {config.max_upload_mb:g} MB",
+                    f"upload exceeds {active_config.max_upload_mb:g} MB",
                 )
             data = await audio.read()
             if len(data) > max_bytes:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"upload exceeds {config.max_upload_mb:g} MB",
+                    f"upload exceeds {active_config.max_upload_mb:g} MB",
                 )
             try:
                 clip = await run_in_threadpool(decode_audio, data)
             except AudioDecodeError as exc:
                 raise ApiError(415, "unsupported_media", f"could not decode audio: {exc}") from exc
-            if clip.duration > config.max_audio_seconds:
+            if clip.duration > active_config.max_audio_seconds:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"audio exceeds {config.max_audio_seconds} s",
+                    f"audio exceeds {active_config.max_audio_seconds} s",
                 )
             result = await run_in_threadpool(
                 active.transcribe,
                 clip,
-                language=_effective_language(language, config),
-                initial_prompt=_effective_prompt(initial_prompt, config),
+                language=_effective_language(language, active_config),
+                initial_prompt=_effective_prompt(initial_prompt, active_config),
             )
-            if app.state.models is not None:
-                app.state.models.touch()
+            if manager is not None:
+                manager.touch()
         finally:
             app.state.semaphore.release()
 
@@ -676,7 +1015,7 @@ def create_app(
         delivered = raw_text
         applied = {"refine": False, "summarize": False}
         warnings: list[str] = []
-        prompt_language = result.language if config.decode.task == "transcribe" else "en"
+        prompt_language = result.language if active_config.decode.task == "transcribe" else "en"
 
         # Fixed pipeline: Refine always precedes Summarize, each built on the
         # previous stage's delivered text.
