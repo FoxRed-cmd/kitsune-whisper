@@ -51,11 +51,35 @@ type fakeServer struct {
 	revoked     []string
 	names       []string
 	codeCalls   int
+
+	models     map[string]any
+	modelCalls []string
 }
 
 func newFakeServer(t *testing.T) *fakeServer {
 	t.Helper()
 	fake := &fakeServer{code: "ABCD2345", token: "ktn_remote", accepted: "ktn_remote"}
+	fake.models = map[string]any{
+		"device":              "cpu",
+		"recommended":         "base",
+		"state":               "loaded",
+		"active_model":        "small",
+		"active_path":         "",
+		"error":               "",
+		"idle_unload_seconds": 600,
+		"models": []map[string]any{
+			{
+				"name": "base", "disk_bytes": 145000000, "memory_bytes": 600000000,
+				"speed": "fast", "quality": "good", "recommended": true,
+				"installed": false, "installed_bytes": 0, "download": nil,
+			},
+			{
+				"name": "small", "disk_bytes": 484000000, "memory_bytes": 1300000000,
+				"speed": "balanced", "quality": "good", "recommended": false,
+				"installed": true, "installed_bytes": 484000000, "download": nil,
+			},
+		},
+	}
 	fake.Server = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost && r.URL.Path == "/pair" {
 			var body map[string]string
@@ -112,6 +136,53 @@ func newFakeServer(t *testing.T) *fakeServer {
 				"changed":           true,
 				"restart_required":  []string{"server.expose_to_network"},
 			})
+		case r.Method == http.MethodGet && r.URL.Path == "/admin/models":
+			_ = json.NewEncoder(w).Encode(fake.models)
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/models/download":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.modelCalls = append(fake.modelCalls, "download|"+body["model"])
+			fake.models["models"].([]map[string]any)[0]["download"] = map[string]any{
+				"model": body["model"], "state": "downloading",
+				"received_bytes": 10, "total_bytes": 100, "error": "",
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(fake.models)
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/models/cancel":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.modelCalls = append(fake.modelCalls, "cancel|"+body["model"])
+			fake.models["models"].([]map[string]any)[0]["download"] = map[string]any{
+				"model": body["model"], "state": "cancelled",
+				"received_bytes": 10, "total_bytes": 100, "error": "",
+			}
+			_ = json.NewEncoder(w).Encode(fake.models)
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/models/activate":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.modelCalls = append(fake.modelCalls, "activate|"+body["model"]+body["path"])
+			if body["model"] != "" {
+				fake.models["active_model"] = body["model"]
+				fake.models["active_path"] = ""
+			} else {
+				fake.models["active_model"] = body["path"]
+				fake.models["active_path"] = body["path"]
+			}
+			_ = json.NewEncoder(w).Encode(fake.models)
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/models/idle-unload":
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fake.modelCalls = append(fake.modelCalls, "idle")
+			fake.models["idle_unload_seconds"] = int(body["seconds"].(float64))
+			_ = json.NewEncoder(w).Encode(fake.models)
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/admin/models/"):
+			name := strings.TrimPrefix(r.URL.Path, "/admin/models/")
+			fake.modelCalls = append(fake.modelCalls, "delete|"+name)
+			if name == fake.models["active_model"] {
+				writeError(w, http.StatusConflict, "model_active", "the active model cannot be deleted")
+				return
+			}
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			writeError(w, http.StatusNotFound, "not_found", "not found")
 		}
@@ -377,5 +448,112 @@ func TestAdminCallsRequireAToken(t *testing.T) {
 	_, err := service.LoadDevices(context.Background(), "local")
 	if !errors.Is(err, servers.ErrNoToken) {
 		t.Fatalf("err = %v, want ErrNoToken", err)
+	}
+}
+
+func TestLoadModelsCachesTheCatalogForTheActiveProfile(t *testing.T) {
+	fake := newFakeServer(t)
+	service, _, _ := newService(t)
+	profile, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+
+	view, err := service.LoadModels(context.Background(), profile.ID)
+	if err != nil {
+		t.Fatalf("load models: %v", err)
+	}
+	if view.Recommended != "base" || view.ActiveModel != "small" || view.State != "loaded" {
+		t.Fatalf("view = %+v", view)
+	}
+	if len(view.Models) != 2 || !view.Models[0].Recommended || !view.Models[1].Installed {
+		t.Fatalf("models = %+v", view.Models)
+	}
+	if got := service.View(); got.Models == nil || got.Models.ActiveModel != "small" {
+		t.Fatalf("cached view = %+v", got.Models)
+	}
+}
+
+func TestModelActionsCallTheAdminAPIAndRefreshTheView(t *testing.T) {
+	fake := newFakeServer(t)
+	service, _, _ := newService(t)
+	profile, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+
+	downloading, err := service.DownloadModel(context.Background(), profile.ID, "base")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if downloading.Models[0].Download == nil || downloading.Models[0].Download.State != "downloading" {
+		t.Fatalf("download view = %+v", downloading)
+	}
+	if downloading.Models[0].Download.ReceivedBytes != 10 {
+		t.Fatalf("progress = %+v", downloading.Models[0].Download)
+	}
+
+	cancelled, err := service.CancelDownload(context.Background(), profile.ID, "base")
+	if err != nil {
+		t.Fatalf("cancel: %v", err)
+	}
+	if cancelled.Models[0].Download == nil || cancelled.Models[0].Download.State != "cancelled" {
+		t.Fatalf("cancel view = %+v", cancelled)
+	}
+
+	activated, err := service.ActivateModel(context.Background(), profile.ID, "base", "")
+	if err != nil {
+		t.Fatalf("activate: %v", err)
+	}
+	if activated.ActiveModel != "base" {
+		t.Fatalf("activate view = %+v", activated)
+	}
+	local, err := service.ActivateModel(context.Background(), profile.ID, "", "/models/ct2")
+	if err != nil {
+		t.Fatalf("activate local: %v", err)
+	}
+	if local.ActivePath != "/models/ct2" {
+		t.Fatalf("local view = %+v", local)
+	}
+
+	withIdle, err := service.SetIdleTimeout(context.Background(), profile.ID, 0)
+	if err != nil {
+		t.Fatalf("idle timeout: %v", err)
+	}
+	if withIdle.IdleUnloadSeconds != 0 {
+		t.Fatalf("idle = %d", withIdle.IdleUnloadSeconds)
+	}
+
+	if err := service.DeleteModel(context.Background(), profile.ID, "base"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(fake.modelCalls) != 6 {
+		t.Fatalf("calls = %v", fake.modelCalls)
+	}
+}
+
+func TestDeletingTheActiveModelSurfacesTheServersRefusal(t *testing.T) {
+	fake := newFakeServer(t)
+	service, _, _ := newService(t)
+	profile, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	if _, err := service.LoadModels(context.Background(), profile.ID); err != nil {
+		t.Fatalf("load models: %v", err)
+	}
+
+	err = service.DeleteModel(context.Background(), profile.ID, "small")
+
+	var adminErr *servers.AdminError
+	if !errors.As(err, &adminErr) || adminErr.Code != "model_active" {
+		t.Fatalf("err = %v, want the model_active AdminError", err)
+	}
+	view := service.View()
+	if view.ModelsError == "" {
+		t.Fatalf("the refusal was not cached for the window: %+v", view)
+	}
+	if view.Models == nil || len(view.Models.Models) == 0 {
+		t.Fatalf("the last catalog was lost after a failed action: %+v", view.Models)
 	}
 }

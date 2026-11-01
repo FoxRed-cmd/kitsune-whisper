@@ -93,6 +93,11 @@ type View struct {
 	PairingError string `json:"pairing_error,omitempty"`
 	// Exposure is the last requested LAN exposure change, if any.
 	Exposure *ExposureResult `json:"exposure,omitempty"`
+	// Models is the active profile's Model catalog and lifecycle state, or nil
+	// until LoadModels succeeds.
+	Models *ModelsView `json:"models,omitempty"`
+	// ModelsError is why the last Model catalog request failed, or "".
+	ModelsError string `json:"models_error,omitempty"`
 }
 
 // Options wires the service to the settings and token stores.
@@ -116,6 +121,9 @@ type Service struct {
 	pairingCode  *PairingCode
 	pairingError string
 	exposure     *ExposureResult
+	modelsFor    string
+	models       *ModelsView
+	modelsError  string
 }
 
 // New builds a Service. It performs no I/O.
@@ -155,6 +163,10 @@ func (s *Service) View() View {
 	if s.devicesFor != "" && s.devicesFor == view.ActiveID {
 		view.Devices = s.devices
 		view.DevicesError = s.devicesError
+	}
+	if s.modelsFor != "" && s.modelsFor == view.ActiveID {
+		view.Models = s.models
+		view.ModelsError = s.modelsError
 	}
 	return view
 }

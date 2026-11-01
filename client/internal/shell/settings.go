@@ -34,6 +34,12 @@ type Servers interface {
 	RevokeDevice(ctx context.Context, profileID, deviceID string) error
 	GenerateCode(ctx context.Context, profileID string) (servers.PairingCode, error)
 	SetExposure(ctx context.Context, profileID string, expose bool) (servers.ExposureResult, error)
+	LoadModels(ctx context.Context, profileID string) (servers.ModelsView, error)
+	DownloadModel(ctx context.Context, profileID, model string) (servers.ModelsView, error)
+	CancelDownload(ctx context.Context, profileID, model string) (servers.ModelsView, error)
+	ActivateModel(ctx context.Context, profileID, model, path string) (servers.ModelsView, error)
+	DeleteModel(ctx context.Context, profileID, model string) error
+	SetIdleTimeout(ctx context.Context, profileID string, seconds int) (servers.ModelsView, error)
 }
 
 // ServerLabels are the translated strings for the Servers and Devices screens.
@@ -70,12 +76,61 @@ type ServerLabels struct {
 	ExposureOffState string `json:"exposureOffState"`
 }
 
+// ModelLabels are the translated strings for the Model catalog screen.
+type ModelLabels struct {
+	Title             string `json:"title"`
+	Help              string `json:"help"`
+	Refresh           string `json:"refresh"`
+	NoCatalog         string `json:"noCatalog"`
+	Name              string `json:"name"`
+	Size              string `json:"size"`
+	Memory            string `json:"memory"`
+	Speed             string `json:"speed"`
+	Quality           string `json:"quality"`
+	Recommended       string `json:"recommended"`
+	Installed         string `json:"installed"`
+	Active            string `json:"active"`
+	State             string `json:"state"`
+	StateLoaded       string `json:"stateLoaded"`
+	StateCold         string `json:"stateCold"`
+	StateLoading      string `json:"stateLoading"`
+	StateFailed       string `json:"stateFailed"`
+	Download          string `json:"download"`
+	Cancel            string `json:"cancel"`
+	Activate          string `json:"activate"`
+	Delete            string `json:"delete"`
+	DeleteConfirm     string `json:"deleteConfirm"`
+	Queued            string `json:"queued"`
+	Downloading       string `json:"downloading"`
+	Verifying         string `json:"verifying"`
+	Done              string `json:"done"`
+	Cancelled         string `json:"cancelled"`
+	Failed            string `json:"failed"`
+	IdleTitle         string `json:"idleTitle"`
+	IdleHelp          string `json:"idleHelp"`
+	IdleLabel         string `json:"idleLabel"`
+	IdleSave          string `json:"idleSave"`
+	AdvancedTitle     string `json:"advancedTitle"`
+	AdvancedHelp      string `json:"advancedHelp"`
+	LocalPath         string `json:"localPath"`
+	LocalPathHint     string `json:"localPathHint"`
+	UseLocal          string `json:"useLocal"`
+	SpeedFast         string `json:"speedFast"`
+	SpeedBalanced     string `json:"speedBalanced"`
+	SpeedSlow         string `json:"speedSlow"`
+	QualityBasic      string `json:"qualityBasic"`
+	QualityGood       string `json:"qualityGood"`
+	QualityExcellent  string `json:"qualityExcellent"`
+	RecommendedDevice string `json:"recommendedDevice"`
+}
+
 // SettingsView is everything the Settings window renders: the Dictation and
-// General screens plus the Servers and Devices screens.
+// General screens plus the Servers, Devices, and Models screens.
 type SettingsView struct {
 	dictation.View
-	Servers servers.View `json:"servers"`
-	Labels  ServerLabels `json:"serverLabels"`
+	Servers     servers.View `json:"servers"`
+	Labels      ServerLabels `json:"serverLabels"`
+	ModelLabels ModelLabels  `json:"modelLabels"`
 }
 
 func (s *Shell) serversView() servers.View {
@@ -123,6 +178,57 @@ func (s *Shell) serverLabels() ServerLabels {
 	}
 }
 
+// modelLabels translates the Model catalog screen in the active language.
+func (s *Shell) modelLabels() ModelLabels {
+	catalog := s.catalog()
+	return ModelLabels{
+		Title:             catalog.T("section.models"),
+		Help:              catalog.T("model.help"),
+		Refresh:           catalog.T("action.refreshModels"),
+		NoCatalog:         catalog.T("model.noCatalog"),
+		Name:              catalog.T("model.name"),
+		Size:              catalog.T("model.size"),
+		Memory:            catalog.T("model.memory"),
+		Speed:             catalog.T("model.speed"),
+		Quality:           catalog.T("model.quality"),
+		Recommended:       catalog.T("model.recommended"),
+		Installed:         catalog.T("model.installed"),
+		Active:            catalog.T("model.active"),
+		State:             catalog.T("model.state"),
+		StateLoaded:       catalog.T("model.state.loaded"),
+		StateCold:         catalog.T("model.state.cold"),
+		StateLoading:      catalog.T("model.state.loading"),
+		StateFailed:       catalog.T("model.state.failed"),
+		Download:          catalog.T("action.downloadModel"),
+		Cancel:            catalog.T("action.cancelDownload"),
+		Activate:          catalog.T("action.activateModel"),
+		Delete:            catalog.T("action.deleteModel"),
+		DeleteConfirm:     catalog.T("model.deleteConfirm"),
+		Queued:            catalog.T("download.queued"),
+		Downloading:       catalog.T("download.downloading"),
+		Verifying:         catalog.T("download.verifying"),
+		Done:              catalog.T("download.done"),
+		Cancelled:         catalog.T("download.cancelled"),
+		Failed:            catalog.T("download.failed"),
+		IdleTitle:         catalog.T("model.idleTitle"),
+		IdleHelp:          catalog.T("model.idleHelp"),
+		IdleLabel:         catalog.T("model.idleLabel"),
+		IdleSave:          catalog.T("action.saveIdleTimeout"),
+		AdvancedTitle:     catalog.T("model.advancedTitle"),
+		AdvancedHelp:      catalog.T("model.advancedHelp"),
+		LocalPath:         catalog.T("model.localPath"),
+		LocalPathHint:     catalog.T("help.model.localPath"),
+		UseLocal:          catalog.T("action.useLocalModel"),
+		SpeedFast:         catalog.T("model.speed.fast"),
+		SpeedBalanced:     catalog.T("model.speed.balanced"),
+		SpeedSlow:         catalog.T("model.speed.slow"),
+		QualityBasic:      catalog.T("model.quality.basic"),
+		QualityGood:       catalog.T("model.quality.good"),
+		QualityExcellent:  catalog.T("model.quality.excellent"),
+		RecommendedDevice: catalog.T("model.recommendedDevice"),
+	}
+}
+
 // catalog returns the active user-interface catalog, falling back to English
 // when this build has no settings service.
 func (s *Shell) catalog() i18n.Catalog {
@@ -136,9 +242,10 @@ func (s *Shell) catalog() i18n.Catalog {
 // no settings service is wired.
 func (s *Shell) settingsView() SettingsView {
 	view := SettingsView{
-		View:    s.dictationView(),
-		Servers: s.serversView(),
-		Labels:  s.serverLabels(),
+		View:        s.dictationView(),
+		Servers:     s.serversView(),
+		Labels:      s.serverLabels(),
+		ModelLabels: s.modelLabels(),
 	}
 	return view
 }
@@ -174,6 +281,11 @@ type Intent struct {
 	Name    string `json:"name,omitempty"`
 	// DeviceID selects the Device to revoke.
 	DeviceID string `json:"device_id,omitempty"`
+	// Model names one catalog model; Path also carries a local CTranslate2
+	// directory for ActionActivateModel.
+	Model string `json:"model,omitempty"`
+	// Seconds carries the idle unload timeout.
+	Seconds int `json:"seconds,omitempty"`
 }
 
 // Intent actions.
@@ -188,6 +300,12 @@ const (
 	IntentRevokeDevice   = "revoke-device"
 	IntentPairingCode    = "pairing-code"
 	IntentExposure       = "exposure"
+	IntentLoadModels     = "load-models"
+	IntentDownloadModel  = "download-model"
+	IntentCancelDownload = "cancel-download"
+	IntentActivateModel  = "activate-model"
+	IntentDeleteModel    = "delete-model"
+	IntentIdleTimeout    = "idle-timeout"
 )
 
 // HandleIntent applies one page intent. Validation failures are shown in the
@@ -254,6 +372,24 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentExposure:
 		s.setExposure(intent.Value)
+		return nil
+	case IntentLoadModels:
+		s.loadModels()
+		return nil
+	case IntentDownloadModel:
+		s.downloadModel(intent.Model)
+		return nil
+	case IntentCancelDownload:
+		s.cancelDownload(intent.Model)
+		return nil
+	case IntentActivateModel:
+		s.activateModel(intent.Model, intent.Path)
+		return nil
+	case IntentDeleteModel:
+		s.deleteModel(intent.Model)
+		return nil
+	case IntentIdleTimeout:
+		s.setIdleTimeout(intent.Seconds)
 		return nil
 	default:
 		return fmt.Errorf("settings intent: unknown action %q", intent.Action)
@@ -388,6 +524,162 @@ func (s *Shell) setExposure(value string) {
 		state = "on"
 	}
 	s.pushMessages([]string{s.catalog().T("notice.server.exposure", state)}, nil)
+}
+
+// loadModels refreshes the active profile's Model catalog.
+func (s *Shell) loadModels() {
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	view, err := s.opts.Servers.LoadModels(ctx, profileID)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.model.load", err.Error())})
+		return
+	}
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.model.loaded", len(view.Models))}, nil)
+}
+
+// downloadModel queues one Model catalog download on the active profile.
+func (s *Shell) downloadModel(model string) {
+	if strings.TrimSpace(model) == "" {
+		return
+	}
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	view, err := s.opts.Servers.DownloadModel(ctx, profileID, model)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
+		return
+	}
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.model.download", model)}, modelWarnings(view))
+}
+
+// cancelDownload stops a queued or running download.
+func (s *Shell) cancelDownload(model string) {
+	if strings.TrimSpace(model) == "" {
+		return
+	}
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	view, err := s.opts.Servers.CancelDownload(ctx, profileID, model)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
+		return
+	}
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.model.cancelled", model)}, modelWarnings(view))
+}
+
+// activateModel swaps in a downloaded model or a local CTranslate2 directory.
+// The Server keeps the previous model when the new one fails to load.
+func (s *Shell) activateModel(model, path string) {
+	if strings.TrimSpace(model) == "" && strings.TrimSpace(path) == "" {
+		return
+	}
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	view, err := s.opts.Servers.ActivateModel(ctx, profileID, model, path)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
+		return
+	}
+	name := model
+	if path != "" {
+		name = path
+	}
+	s.pushSettings()
+	s.pushMessages(
+		[]string{s.catalog().T("notice.model.activated", name)},
+		modelWarnings(view),
+	)
+}
+
+// deleteModel removes an unused downloaded model.
+func (s *Shell) deleteModel(model string) {
+	if strings.TrimSpace(model) == "" {
+		return
+	}
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := s.opts.Servers.DeleteModel(ctx, profileID, model); err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
+		return
+	}
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.model.deleted", model)}, nil)
+}
+
+// setIdleTimeout changes how long the active model stays resident.
+func (s *Shell) setIdleTimeout(seconds int) {
+	if seconds < 0 {
+		s.pushMessages(nil, []string{s.catalog().T("error.model.idle")})
+		return
+	}
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	view, err := s.opts.Servers.SetIdleTimeout(ctx, profileID, seconds)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
+		return
+	}
+	s.pushSettings()
+	s.pushMessages(
+		[]string{s.catalog().T("notice.model.idle", seconds)},
+		modelWarnings(view),
+	)
+}
+
+// activeProfileForModels resolves the one profile the Models screen manages.
+func (s *Shell) activeProfileForModels() (string, bool) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return "", false
+	}
+	view := s.opts.Servers.View()
+	if view.ActiveID == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.noProfile")})
+		return "", false
+	}
+	return view.ActiveID, true
+}
+
+// modelWarnings surfaces a change the Server applied but could not persist.
+func modelWarnings(view servers.ModelsView) []string {
+	if view.Warning == "" {
+		return nil
+	}
+	return []string{view.Warning}
 }
 
 // save runs one settings save and pushes the resulting view and messages.

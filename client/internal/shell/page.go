@@ -3,6 +3,7 @@ package shell
 import (
 	"encoding/json"
 	"html"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,7 +57,7 @@ func SettingsHTML(view SettingsView) string {
 		}
 		out.WriteString(`</section>`)
 	}
-	out.WriteString(serversHTML(view.Servers, view.Labels))
+	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelLabels))
 	if view.DeviceError != "" {
 		out.WriteString(`<p class="device-error">` + escape(view.DeviceError) + `</p>`)
 	}
@@ -69,7 +70,7 @@ func SettingsHTML(view SettingsView) string {
 // serversHTML renders the Server profiles and the active profile's Devices.
 // Inputs have stable ids so the page can collect one pairing request without
 // rebuilding any other screen.
-func serversHTML(view servers.View, labels ServerLabels) string {
+func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group" data-section="servers">`)
 	out.WriteString(`<h2>` + escape(labels.Title) + `</h2>`)
@@ -147,7 +148,190 @@ func serversHTML(view servers.View, labels ServerLabels) string {
 		out.WriteString(`</tbody></table>`)
 	}
 	out.WriteString(`</section>`)
+	out.WriteString(modelsHTML(view.Models, view.ModelsError, modelLabels))
 	return out.String()
+}
+
+// modelsHTML renders the Model catalog, download progress, activation and
+// deletion actions, the idle timeout, and the local CTranslate2 directory.
+func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels) string {
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="models">`)
+	out.WriteString(`<h2>` + escape(labels.Title) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(labels.Help) + `</p>`)
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="load-models">` + escape(labels.Refresh) + `</button>`)
+	out.WriteString(`</div>`)
+	if view == nil {
+		if modelsError != "" {
+			out.WriteString(`<p class="failure">` + escape(modelsError) + `</p>`)
+		}
+		out.WriteString(`<p class="help">` + escape(labels.NoCatalog) + `</p>`)
+		out.WriteString(`</section>`)
+		return out.String()
+	}
+	if modelsError != "" {
+		out.WriteString(`<p class="failure">` + escape(modelsError) + `</p>`)
+	}
+	out.WriteString(`<p class="model-state">` + escape(labels.State) + `: <strong>` + escape(modelStateLabel(labels, view.State)) + `</strong>`)
+	if view.ActiveModel != "" {
+		out.WriteString(` · ` + escape(labels.Active) + `: <code>` + escape(view.ActiveModel) + `</code>`)
+	}
+	if view.ActivePath != "" {
+		out.WriteString(` (<code>` + escape(view.ActivePath) + `</code>)`)
+	}
+	if view.Error != "" {
+		out.WriteString(` · <span class="failure">` + escape(view.Error) + `</span>`)
+	}
+	out.WriteString(`</p>`)
+	if view.Recommended != "" {
+		out.WriteString(`<p class="help">` + escape(labels.RecommendedDevice) + `: <strong>` + escape(view.Recommended) + `</strong></p>`)
+	}
+	if len(view.Models) == 0 {
+		out.WriteString(`<p class="help">` + escape(labels.NoCatalog) + `</p>`)
+	} else {
+		out.WriteString(`<table class="models"><thead><tr><th>` + escape(labels.Name) + `</th><th>` + escape(labels.Size) + `</th><th>` + escape(labels.Memory) + `</th><th>` + escape(labels.Speed) + `</th><th>` + escape(labels.Quality) + `</th><th></th></tr></thead><tbody>`)
+		for _, model := range view.Models {
+			out.WriteString(`<tr data-model="` + escape(model.Name) + `"><td><strong>` + escape(model.Name) + `</strong>`)
+			if model.Recommended {
+				out.WriteString(` <span class="badge">` + escape(labels.Recommended) + `</span>`)
+			}
+			if model.Installed {
+				out.WriteString(` <span class="badge">` + escape(labels.Installed) + `</span>`)
+			}
+			if model.Name == view.ActiveModel {
+				out.WriteString(` <span class="badge active">` + escape(labels.Active) + `</span>`)
+			}
+			out.WriteString(`</td><td>` + escape(humanBytes(model.DiskBytes)) + `</td>`)
+			out.WriteString(`<td>` + escape(humanBytes(model.MemoryBytes)) + `</td>`)
+			out.WriteString(`<td>` + escape(speedLabel(labels, model.Speed)) + `</td>`)
+			out.WriteString(`<td>` + escape(qualityLabel(labels, model.Quality)) + `</td><td class="model-actions">`)
+			out.WriteString(modelActions(model, view, labels))
+			out.WriteString(`</td></tr>`)
+			if model.Download != nil {
+				out.WriteString(`<tr class="model-progress" data-model-progress="` + escape(model.Name) + `"><td colspan="6">` + escape(downloadLabel(labels, model.Download)) + `</td></tr>`)
+			}
+		}
+		out.WriteString(`</tbody></table>`)
+	}
+	out.WriteString(`<h3>` + escape(labels.IdleTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.IdleHelp) + `</p>`)
+	out.WriteString(`<div class="field"><label for="model-idle-seconds">` + escape(labels.IdleLabel) + `</label>`)
+	out.WriteString(`<input type="number" min="0" id="model-idle-seconds" value="` + escape(strconv.Itoa(view.IdleUnloadSeconds)) + `"></div>`)
+	out.WriteString(`<button type="button" data-action="idle-timeout">` + escape(labels.IdleSave) + `</button>`)
+	out.WriteString(`<h3>` + escape(labels.AdvancedTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.AdvancedHelp) + `</p>`)
+	out.WriteString(`<div class="field"><label for="model-local-path">` + escape(labels.LocalPath) + `</label>`)
+	out.WriteString(`<input type="text" id="model-local-path" autocomplete="off" spellcheck="false">`)
+	out.WriteString(`<p class="help">` + escape(labels.LocalPathHint) + `</p></div>`)
+	out.WriteString(`<button type="button" data-action="activate-local">` + escape(labels.UseLocal) + `</button>`)
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+// modelActions renders the one control a catalog row offers.
+func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLabels) string {
+	if downloadInProgress(model.Download) {
+		return `<button type="button" data-action="cancel-download" data-model="` + escape(model.Name) + `">` + escape(labels.Cancel) + `</button>`
+	}
+	if !model.Installed {
+		return `<button type="button" data-action="download-model" data-model="` + escape(model.Name) + `">` + escape(labels.Download) + `</button>`
+	}
+	if model.Name == view.ActiveModel {
+		return `<span class="badge active">` + escape(labels.Active) + `</span>`
+	}
+	var out strings.Builder
+	out.WriteString(`<button type="button" data-action="activate-model" data-model="` + escape(model.Name) + `">` + escape(labels.Activate) + `</button>`)
+	out.WriteString(` <button type="button" data-action="delete-model" data-model="` + escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `">` + escape(labels.Delete) + `</button>`)
+	return out.String()
+}
+
+// downloadInProgress reports a download the user can still cancel.
+func downloadInProgress(download *servers.ModelDownload) bool {
+	return download.InProgress()
+}
+
+// humanBytes matches the Server's catalog sizes without shipping translations
+// for every unit the way a full unit library would.
+func humanBytes(value int64) string {
+	if value <= 0 {
+		return "—"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	size := float64(value)
+	unit := 0
+	for size >= 1000 && unit < len(units)-1 {
+		size /= 1000
+		unit++
+	}
+	if unit == 0 {
+		return strconv.FormatInt(value, 10) + " B"
+	}
+	return strconv.FormatFloat(size, 'f', 1, 64) + " " + units[unit]
+}
+
+func modelStateLabel(labels ModelLabels, state string) string {
+	switch state {
+	case "loaded":
+		return labels.StateLoaded
+	case "cold":
+		return labels.StateCold
+	case "loading":
+		return labels.StateLoading
+	case "failed":
+		return labels.StateFailed
+	}
+	return state
+}
+
+func speedLabel(labels ModelLabels, speed string) string {
+	switch speed {
+	case "fast":
+		return labels.SpeedFast
+	case "balanced":
+		return labels.SpeedBalanced
+	case "slow":
+		return labels.SpeedSlow
+	}
+	return speed
+}
+
+func qualityLabel(labels ModelLabels, quality string) string {
+	switch quality {
+	case "basic":
+		return labels.QualityBasic
+	case "good":
+		return labels.QualityGood
+	case "excellent":
+		return labels.QualityExcellent
+	}
+	return quality
+}
+
+func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
+	state := download.State
+	switch state {
+	case "queued":
+		return labels.Queued
+	case "downloading":
+		if download.TotalBytes > 0 {
+			return labels.Downloading + " " + humanBytes(download.ReceivedBytes) +
+				" / " + humanBytes(download.TotalBytes)
+		}
+		return labels.Downloading + " " + humanBytes(download.ReceivedBytes)
+	case "verifying":
+		return labels.Verifying
+	case "done":
+		return labels.Done
+	case "cancelled":
+		return labels.Cancelled
+	case "failed":
+		if download.Error != "" {
+			return labels.Failed + ": " + download.Error
+		}
+		return labels.Failed
+	}
+	return state
 }
 
 // lastSeen renders a Device's last use in local time.
@@ -289,6 +473,13 @@ const pageHTML = `<!doctype html>
   .devices th, .devices td { text-align:left; padding:8px 6px; border-top:1px solid var(--line); }
   .devices th { color:var(--muted); font-weight:600; border-top:none; }
   .devices td:last-child { text-align:right; }
+  .models { width:100%; border-collapse:collapse; margin-top:10px; }
+  .models th, .models td { text-align:left; padding:8px 6px; border-top:1px solid var(--line); }
+  .models th { color:var(--muted); font-weight:600; border-top:none; }
+  .models .model-actions { text-align:right; white-space:nowrap; }
+  .models .model-progress td { color:var(--muted); font-size:13px; border-top:none; }
+  .badge.active { background:#4c6ef533; color:var(--accent); }
+  .model-state { margin:10px 0 0; }
   .messages { margin-bottom:18px; }
   .notice { color:#2f9e44; margin:0 0 6px; }
   .failure { color:#d6409f; margin:0 0 6px; }
@@ -481,6 +672,24 @@ const pageHTML = `<!doctype html>
       var exposureMessage = button.dataset.confirm || "";
       if (expose === "on" && exposureMessage && window.confirm && !window.confirm(exposureMessage)) return;
       sendIntent({ action: "exposure", value: expose });
+    } else if (action === "load-models") {
+      sendIntent({ action: "load-models" });
+    } else if (action === "download-model") {
+      sendIntent({ action: "download-model", model: button.dataset.model || "" });
+    } else if (action === "cancel-download") {
+      sendIntent({ action: "cancel-download", model: button.dataset.model || "" });
+    } else if (action === "activate-model") {
+      sendIntent({ action: "activate-model", model: button.dataset.model || "" });
+    } else if (action === "activate-local") {
+      var localPath = document.getElementById("model-local-path");
+      sendIntent({ action: "activate-model", path: localPath ? localPath.value : "" });
+    } else if (action === "delete-model") {
+      var deleteMessage = button.dataset.confirm || "Delete this model?";
+      if (window.confirm && !window.confirm(deleteMessage)) return;
+      sendIntent({ action: "delete-model", model: button.dataset.model || "" });
+    } else if (action === "idle-timeout") {
+      var idle = document.getElementById("model-idle-seconds");
+      sendIntent({ action: "idle-timeout", seconds: idle ? Number(idle.value) : 0 });
     }
   });
   document.addEventListener("change", function (event) {
