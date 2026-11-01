@@ -642,3 +642,59 @@ func TestSaveReportsClassificationPerChange(t *testing.T) {
 		}
 	}
 }
+
+func TestSaveAddsClientSectionToServerOnlyFile(t *testing.T) {
+	path := writeConfig(t, "# top\nserver:\n  # server note\n  model: tiny\n")
+	store := open(t, settings.Options{Path: path})
+
+	if _, err := store.Save(map[string]any{"hotkey": "Ctrl+Alt+K"}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	raw := string(readFile(t, path))
+	if !strings.Contains(raw, "# top") || !strings.Contains(raw, "# server note") {
+		t.Fatalf("comments lost:\n%s", raw)
+	}
+	var document map[string]map[string]any
+	if err := yaml.Unmarshal([]byte(raw), &document); err != nil {
+		t.Fatalf("saved file is not valid YAML: %v\n%s", err, raw)
+	}
+	if document["server"]["model"] != "tiny" {
+		t.Fatalf("server section = %v", document["server"])
+	}
+	if document["client"]["hotkey"] != "Ctrl+Alt+K" {
+		t.Fatalf("client section = %v", document["client"])
+	}
+}
+
+func TestSaveWritesThroughAMergeKey(t *testing.T) {
+	const document = `base: &base
+  hotkey: Ctrl+Alt+D
+  trigger: hold
+
+client:
+  <<: *base
+
+server:
+  model: tiny
+`
+	path := writeConfig(t, document)
+	store := open(t, settings.Options{Path: path})
+
+	result, err := store.Save(map[string]any{"trigger": "toggle"})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if result.BackupPath != "" {
+		t.Fatalf("merge-key save should be representable, backup = %q", result.BackupPath)
+	}
+	cfg, err := config.Load(config.LoadOptions{CLIConfig: path, Env: map[string]string{}})
+	if err != nil {
+		t.Fatalf("saved config is invalid: %v", err)
+	}
+	if cfg.Trigger != "toggle" || cfg.Hotkey != "Ctrl+Alt+D" {
+		t.Fatalf("config = %+v, want the explicit key to win over the merge key", cfg)
+	}
+	if raw := string(readFile(t, path)); !strings.Contains(raw, "<<: *base") {
+		t.Fatalf("merge key lost:\n%s", raw)
+	}
+}
