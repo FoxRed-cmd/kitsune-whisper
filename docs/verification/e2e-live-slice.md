@@ -45,6 +45,24 @@ Profiles: `local-cpu` (default), `local-gpu`, `docker-cpu`, `docker-gpu`,
 `--server-config` to use an existing `kitsune.yaml` instead. The harness always
 stops the Server it started (use `--keep` to leave it up).
 
+> **The `docker-*` profiles are a latency harness, not a parity test.** They
+> write a config with `tls.enabled: false` and `allow_anonymous: true` so the
+> timed requests need no certificate or Device token. They cannot catch an auth,
+> pairing, Admin API, restart, or persistence regression. For the authenticated
+> Docker contract use [`docker-smoke.md`](docker-smoke.md).
+
+## Docker parity smoke
+
+`scripts/docker_smoke.py` (wrapped by `scripts/docker-smoke.sh`) runs the
+authenticated flow against a real container: no unauthenticated access,
+`docker exec ... kitsune-server pair`, redemption, authenticated status, the
+model catalog and transcription, an Admin config write through the writable
+`/config` directory, soft-stop (`503` + container alive), restart (`202` +
+container restart), and recreation with the certificate, Devices, models,
+config, and soft-stop flag intact. See
+[`docker-smoke.md`](docker-smoke.md). It is opt-in (workflow dispatch/weekly),
+not part of PR CI, and requires Docker plus a model download.
+
 The exit code is non-zero if any check fails, so the harness can gate CI on a
 machine with the models cached.
 

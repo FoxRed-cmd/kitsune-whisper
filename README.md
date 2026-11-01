@@ -159,8 +159,15 @@ are in [`docs/install.md`](docs/install.md).
 ### 1. Server + local LLM (Docker)
 
 ```sh
-cp kitsune.example.yaml kitsune.yaml
+mkdir -p config
+cp kitsune.example.yaml config/kitsune.yaml
 ```
+
+The Server mounts `./config` as a **writable directory**, not a single file:
+the Admin API saves settings with an atomic rename inside that directory, so a
+read-only file mount would break config writes. The image sets
+`KITSUNE_CONFIG=/config/kitsune.yaml`, which `docker exec` also inherits, so
+pairing inside the container reads the same file as the Server.
 
 Turn the feature on in `kitsune.yaml` — the Server master switch
 (`server.processing.enabled` is `false` by default). A request then opts in with
@@ -180,11 +187,13 @@ those two and auto-enables their profiles):
 docker compose up -d server-gpu llama-gpu
 ```
 
-The Server reads `/config/kitsune.yaml` (bind-mounted from the file above), so
-restart it after later edits (`docker compose restart server-gpu`). The Client
+The Server reads `/config/kitsune.yaml` (the directory above), so restart it
+after later file edits (`docker compose restart server-gpu`). Hot settings such
+as `log_level` can also be changed from the Admin API/Settings window without a
+restart; the Server writes them back into `config/kitsune.yaml`. The Client
 reads the `client:` section from its own config (see [step 2](#2-client)); you can
-point it at this same file instead with `--config ./kitsune.yaml` or
-`KITSUNE_CONFIG=$PWD/kitsune.yaml`.
+point it at this same file instead with `--config ./config/kitsune.yaml` or
+`KITSUNE_CONFIG=$PWD/config/kitsune.yaml`.
 
 The first run downloads the Whisper `small` model and the Qwen3 GGUF into the
 shared `kitsune-models` volume; later runs reuse them. The Server listens on
@@ -195,18 +204,21 @@ already pointed at.
 
 Every transcription and management request needs a Device token. The loopback
 auto-pairing path cannot see a Docker port forward as loopback, so a Docker
-Server pairs with a one-time code generated inside the container:
+Server pairs with a one-time code generated inside the container (wait until
+`/health` answers first, so the Server and the CLI do not race on the
+certificate):
 
 ```sh
 docker exec <container> kitsune-server pair
 ```
 
-The command prints the code, its 10-minute expiry, and the certificate
-fingerprint. In the Client's **Settings → Servers and Devices**, enter
-`https://<host>:8765` and the code; the Client pins the certificate and stores
-the Device token. The store lives on the `kitsune-state` volume, so paired
-Devices survive a container restart. `GET /health` needs no token and reports
-`status` and `version` only:
+The command prints the config file it read, the code, its 10-minute expiry, and
+the certificate fingerprint. In the Client's **Settings → Servers and Devices**,
+enter `https://<host>:8765` (or your `KITSUNE_HOST_PORT`) and the code; the
+Client pins the certificate and stores the Device token. The Device and pairing
+stores, the TLS pair, the soft-stop flag, and the log live on the
+`kitsune-state` volume, so they survive a container restart and recreation.
+`GET /health` needs no token and reports `status` and `version` only:
 
 ```sh
 curl -k https://localhost:8765/health
@@ -297,6 +309,33 @@ The same Server also ships as a Docker image with two profiles:
 | `cpu` | `python:3.11-slim` | Any host; slower, no GPU needed |
 | `gpu` | `nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04` | NVIDIA GPU; near-instant |
 
+A dedicated host keeps three things outside the container:
+
+| Host | Container | Contents |
+| --- | --- | --- |
+| `./config/` (bind, writable) | `/config` | `kitsune.yaml`; the Admin API saves here. |
+| `kitsune-state` volume | `/state` | TLS cert/key, Devices, pairing codes, soft-stop flag, log. |
+| `kitsune-models` volume | `/models` | Whisper models and the optional llama.cpp GGUF. |
+
+The published port is `${KITSUNE_HOST_PORT:-8765}` on the host and `8765`
+inside the container; set `KITSUNE_HOST_PORT` in a `.env` next to
+`compose.yaml` if 8765 is taken. `restart: unless-stopped` is what makes the
+Client's restart (`202`, then exit `75`) bring the container back; a bare
+`docker run` needs `--restart unless-stopped` and `-v` mounts for `/models` and
+`/state`.
+
+**Soft-stop vs stopping the container.** `POST /admin/stop` (the Client's Stop)
+unloads the model and returns `503` for transcription while the process, the
+Admin API, and `/health` stay up; `/admin/start` reloads. `docker compose stop`
+or `docker stop` is a hard stop: `restart: unless-stopped` will not bring a
+manually stopped container back until you `docker compose start` it again.
+
+**`down` vs `down -v`.** `docker compose down` removes the container and keeps
+all three stores; the next `up` reuses the same certificate, Devices, models,
+and settings. `docker compose down -v` deletes the named volumes too — the
+certificate changes, so every Client must pair again, and the models are
+downloaded again. Use it only for a deliberate fresh start.
+
 An opt-in `llm` profile starts a bundled llama.cpp sidecar
 (`ghcr.io/ggml-org/llama.cpp:server` / `:server-cuda`) for local
 Refine/Summarize; start it with the matching Server
@@ -347,6 +386,7 @@ docker compose --profile gpu build
 
 - [`docs/install.md`](docs/install.md) — install, paths, autostart, upgrade/uninstall, hardware.
 - [`docs/configuration.md`](docs/configuration.md) — the full `kitsune.yaml` reference.
+- [`docs/verification/docker-smoke.md`](docs/verification/docker-smoke.md) — real-container parity smoke.
 - [`docs/wayland.md`](docs/wayland.md) — Wayland support matrix and known limitations.
 - [`docs/adr/`](docs/adr/) — architecture decisions; [`GLOSSARY.md`](GLOSSARY.md) — domain terms.
 
