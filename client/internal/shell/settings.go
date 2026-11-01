@@ -59,7 +59,6 @@ type ServerLabels struct {
 	Health           string            `json:"health"`
 	RefreshHealth    string            `json:"refreshHealth"`
 	Use              string            `json:"use"`
-	OpenSettings     string            `json:"openSettings"`
 	StateLabels      map[string]string `json:"stateLabels"`
 	PairTitle        string            `json:"pairTitle"`
 	PairHelp         string            `json:"pairHelp"`
@@ -116,6 +115,9 @@ type ServerLabels struct {
 	ServerVersion    string `json:"serverVersion"`
 	ServerState      string `json:"serverState"`
 	DiagnosticsFor   string `json:"diagnosticsFor"`
+	ModelName        string `json:"modelName"`
+	ModelPath        string `json:"modelPath"`
+	IdleUnload       string `json:"idleUnload"`
 	Redacted         string `json:"redacted"`
 	ConfigPath       string `json:"configPath"`
 	ConfigTitle      string `json:"configTitle"`
@@ -143,6 +145,7 @@ type ModelLabels struct {
 	StateCold         string `json:"stateCold"`
 	StateLoading      string `json:"stateLoading"`
 	StateFailed       string `json:"stateFailed"`
+	StateStopped      string `json:"stateStopped"`
 	Download          string `json:"download"`
 	Cancel            string `json:"cancel"`
 	Activate          string `json:"activate"`
@@ -203,7 +206,6 @@ func (s *Shell) serverLabels() ServerLabels {
 		Health:           catalog.T("server.health"),
 		RefreshHealth:    catalog.T("server.refreshHealth"),
 		Use:              catalog.T("server.use"),
-		OpenSettings:     catalog.T("action.openSettings"),
 		StateLabels:      serverStateLabels(catalog),
 		PairTitle:        catalog.T("server.pairTitle"),
 		PairHelp:         catalog.T("server.pairHelp"),
@@ -260,6 +262,9 @@ func (s *Shell) serverLabels() ServerLabels {
 		ServerVersion:    catalog.T("diagnostics.serverVersion"),
 		ServerState:      catalog.T("diagnostics.serverState"),
 		DiagnosticsFor:   catalog.T("diagnostics.profile"),
+		ModelName:        catalog.T("diagnostics.model"),
+		ModelPath:        catalog.T("diagnostics.modelPath"),
+		IdleUnload:       catalog.T("diagnostics.idleUnload"),
 		Redacted:         catalog.T("diagnostics.redacted"),
 		ConfigPath:       catalog.T("diagnostics.configPath"),
 		ConfigTitle:      catalog.T("diagnostics.config"),
@@ -308,6 +313,7 @@ func (s *Shell) modelLabels() ModelLabels {
 		StateCold:         catalog.T("model.state.cold"),
 		StateLoading:      catalog.T("model.state.loading"),
 		StateFailed:       catalog.T("model.state.failed"),
+		StateStopped:      catalog.T("model.state.stopped"),
 		Download:          catalog.T("action.downloadModel"),
 		Cancel:            catalog.T("action.cancelDownload"),
 		Activate:          catalog.T("action.activateModel"),
@@ -351,6 +357,24 @@ func (s *Shell) catalog() i18n.Catalog {
 // no settings service is wired.
 func (s *Shell) settingsView() SettingsView {
 	serverView := s.serversView()
+	s.mu.Lock()
+	live := s.server
+	s.mu.Unlock()
+	if live.ModelState != "" {
+		// Prefer the live /status body over a cached lifecycle result, so the
+		// page, the Tray, and Diagnostics all show the same model state.
+		lifecycle := servers.ServerLifecycle{}
+		if serverView.Lifecycle != nil {
+			lifecycle = *serverView.Lifecycle
+		}
+		lifecycle.Model = live.Model
+		lifecycle.ModelPath = live.ModelPath
+		lifecycle.IdleUnloadSeconds = live.IdleUnloadSeconds
+		lifecycle.ModelState = live.ModelState
+		lifecycle.Stopped = live.Stopped
+		lifecycle.Loaded = live.Loaded
+		serverView.Lifecycle = &lifecycle
+	}
 	modelState := ""
 	if serverView.Lifecycle != nil {
 		modelState = modelLifecycleLabel(s.catalog(), serverView.Lifecycle.ModelState)
@@ -437,6 +461,8 @@ const (
 	IntentSaveServer         = "save-server"
 	IntentRefreshDiagnostics = "refresh-diagnostics"
 	IntentLoadLogs           = "load-logs"
+	IntentCopyDiagnostics    = "copy-diagnostics"
+	IntentCopyLogs           = "copy-logs"
 	IntentServerRestart      = "server-restart"
 	IntentServerStop         = "server-stop"
 	IntentServerStart        = "server-start"
@@ -557,6 +583,12 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentLoadLogs:
 		s.loadServerLogs(intent.Tail)
+		return nil
+	case IntentCopyDiagnostics:
+		s.copyDiagnostics()
+		return nil
+	case IntentCopyLogs:
+		s.copyLogs()
 		return nil
 	case IntentServerRestart:
 		s.runServerAction(actionServerRestart)
@@ -740,16 +772,11 @@ func (s *Shell) refreshServers() {
 
 // loadModels refreshes the active profile's Model catalog.
 func (s *Shell) loadModels() {
-	profileID, ok := s.activeProfileForModels()
+	view, ok := s.runModelAction(20*time.Second, "error.model.load",
+		func(ctx context.Context, profileID string) (servers.ModelsView, error) {
+			return s.opts.Servers.LoadModels(ctx, profileID)
+		})
 	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	view, err := s.opts.Servers.LoadModels(ctx, profileID)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.model.load", err.Error())})
 		return
 	}
 	s.pushSettings()
@@ -761,16 +788,11 @@ func (s *Shell) downloadModel(model string) {
 	if strings.TrimSpace(model) == "" {
 		return
 	}
-	profileID, ok := s.activeProfileForModels()
+	view, ok := s.runModelAction(20*time.Second, "error.model.action",
+		func(ctx context.Context, profileID string) (servers.ModelsView, error) {
+			return s.opts.Servers.DownloadModel(ctx, profileID, model)
+		})
 	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	view, err := s.opts.Servers.DownloadModel(ctx, profileID, model)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
 		return
 	}
 	s.pushSettings()
@@ -782,16 +804,11 @@ func (s *Shell) cancelDownload(model string) {
 	if strings.TrimSpace(model) == "" {
 		return
 	}
-	profileID, ok := s.activeProfileForModels()
+	view, ok := s.runModelAction(20*time.Second, "error.model.action",
+		func(ctx context.Context, profileID string) (servers.ModelsView, error) {
+			return s.opts.Servers.CancelDownload(ctx, profileID, model)
+		})
 	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	view, err := s.opts.Servers.CancelDownload(ctx, profileID, model)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
 		return
 	}
 	s.pushSettings()
@@ -804,16 +821,13 @@ func (s *Shell) activateModel(model, path string) {
 	if strings.TrimSpace(model) == "" && strings.TrimSpace(path) == "" {
 		return
 	}
-	profileID, ok := s.activeProfileForModels()
+	// A large model can take minutes to load, so this call is not bounded by
+	// the ordinary Admin timeout.
+	view, ok := s.runModelAction(5*time.Minute, "error.model.action",
+		func(ctx context.Context, profileID string) (servers.ModelsView, error) {
+			return s.opts.Servers.ActivateModel(ctx, profileID, model, path)
+		})
 	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	defer cancel()
-	view, err := s.opts.Servers.ActivateModel(ctx, profileID, model, path)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
 		return
 	}
 	name := model
@@ -832,15 +846,11 @@ func (s *Shell) deleteModel(model string) {
 	if strings.TrimSpace(model) == "" {
 		return
 	}
-	profileID, ok := s.activeProfileForModels()
+	ok := s.runModelCall(20*time.Second, "error.model.action",
+		func(ctx context.Context, profileID string) error {
+			return s.opts.Servers.DeleteModel(ctx, profileID, model)
+		})
 	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	if err := s.opts.Servers.DeleteModel(ctx, profileID, model); err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
 		return
 	}
 	s.pushSettings()
@@ -853,16 +863,11 @@ func (s *Shell) setIdleTimeout(seconds int) {
 		s.pushMessages(nil, []string{s.catalog().T("error.model.idle")})
 		return
 	}
-	profileID, ok := s.activeProfileForModels()
+	view, ok := s.runModelAction(20*time.Second, "error.model.action",
+		func(ctx context.Context, profileID string) (servers.ModelsView, error) {
+			return s.opts.Servers.SetIdleTimeout(ctx, profileID, seconds)
+		})
 	if !ok {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	view, err := s.opts.Servers.SetIdleTimeout(ctx, profileID, seconds)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.model.action", err.Error())})
 		return
 	}
 	s.pushSettings()
@@ -870,6 +875,48 @@ func (s *Shell) setIdleTimeout(seconds int) {
 		[]string{s.catalog().T("notice.model.idle", seconds)},
 		modelWarnings(view),
 	)
+}
+
+// runModelAction runs one Model Admin call against the active profile. It is
+// the shared resolve-profile/context/error path for every Model button.
+func (s *Shell) runModelAction(
+	timeout time.Duration,
+	errorKey string,
+	action func(context.Context, string) (servers.ModelsView, error),
+) (servers.ModelsView, bool) {
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return servers.ModelsView{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	view, err := action(ctx, profileID)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T(errorKey, err.Error())})
+		return servers.ModelsView{}, false
+	}
+	return view, true
+}
+
+// runModelCall is runModelAction for a Model Admin call with no catalog body.
+func (s *Shell) runModelCall(
+	timeout time.Duration,
+	errorKey string,
+	action func(context.Context, string) error,
+) bool {
+	profileID, ok := s.activeProfileForModels()
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	if err := action(ctx, profileID); err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T(errorKey, err.Error())})
+		return false
+	}
+	return true
 }
 
 // activeProfileForModels resolves the one profile the Models screen manages.

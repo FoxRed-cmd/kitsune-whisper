@@ -32,7 +32,8 @@ import yaml
 
 from .config import ConfigError, ServerConfig
 from .gpu import resolve_engine
-from .transcriber import Transcriber
+from .lifecycle import Lifecycle
+from .transcriber import EngineInfo, Transcriber
 
 logger = logging.getLogger("kitsune.server")
 
@@ -84,6 +85,40 @@ class DownloadIntegrityError(ModelError):
 
 class ModelLoadError(ModelError):
     code = "model_load_failed"
+
+
+class ModelStoppedError(ModelError):
+    """The Server is soft-stopped and refuses transcription until started."""
+
+    code = "stopped"
+
+
+@dataclass(frozen=True)
+class ModelSnapshot:
+    """The one model payload every lifecycle endpoint and ``/status`` returns."""
+
+    model: str
+    state: str
+    path: str = ""
+    idle_unload_seconds: int = 0
+    stopped: bool = False
+    loaded: bool = False
+    error: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "stopped": self.stopped,
+            "loaded": self.loaded,
+            "model": self.model,
+            "model_state": self.state,
+            "model_path": self.path,
+            "idle_unload_seconds": self.idle_unload_seconds,
+            "model_error": self.error,
+        }
+
+    def lifecycle_dict(self) -> dict[str, bool]:
+        """The backward-compatible nested key ``GET /status`` already had."""
+        return {"stopped": self.stopped, "loaded": self.loaded}
 
 
 class CatalogError(ConfigError):
@@ -398,15 +433,18 @@ class ModelManager:
         clock: Callable[[], float] = time.monotonic,
         scheduler: Scheduler | None = None,
         cuda_device_count: int = 0,
+        soft_stop: Lifecycle | None = None,
     ) -> None:
         self.config = config
-        self._device = resolve_engine(config, cuda_device_count=cuda_device_count).device
+        self._resolved = resolve_engine(config, cuda_device_count=cuda_device_count)
+        self._device = self._resolved.device
         self._catalog = catalog or ModelCatalog.load(config)
         self._loader = loader or WhisperLoader(cuda_device_count=cuda_device_count)
         self._downloader = downloader or HttpModelDownloader()
         self._storage = storage or FileModelStorage(config.download_root)
         self._scheduler = scheduler or ThreadScheduler()
         self._clock = clock
+        self._soft_stop = soft_stop if soft_stop is not None else Lifecycle()
         self._lock = threading.RLock()
         self._transcriber = transcriber
         self._active_model = config.model
@@ -426,6 +464,69 @@ class ModelManager:
     @property
     def catalog(self) -> ModelCatalog:
         return self._catalog
+
+    @property
+    def soft_stop(self) -> Lifecycle:
+        """The persisted soft-stop flag this manager honours."""
+        return self._soft_stop
+
+    def info(self) -> EngineInfo:
+        """The active model's metadata, or the resolved config while unloaded."""
+        with self._lock:
+            if self._transcriber is not None:
+                return self._transcriber.info
+            return EngineInfo(
+                model=self._active_model,
+                device=self._resolved.device,
+                compute_type=self._resolved.compute_type,
+            )
+
+    def snapshot(self) -> ModelSnapshot:
+        """The one model payload every lifecycle endpoint reports.
+
+        ``state`` is ``stopped`` whenever the persisted flag is set, even
+        though the manager itself reports ``cold`` after an unload. An idle
+        unload is applied here too, so ``/status`` and every action observe the
+        same state.
+        """
+        self.maybe_unload()
+        with self._lock:
+            stopped = self._soft_stop.stopped
+            return ModelSnapshot(
+                model=self._active_model,
+                state="stopped" if stopped else self._state,
+                path=self._active_path,
+                idle_unload_seconds=self._idle,
+                stopped=stopped,
+                loaded=self._transcriber is not None and not stopped,
+                error=self._error,
+            )
+
+    def transcriber(self) -> Transcriber:
+        """Return the active Transcriber, loading it after an idle unload."""
+        if self._soft_stop.stopped:
+            raise ModelStoppedError(
+                "the Server is soft-stopped; start it through the Admin API before transcribing"
+            )
+        return self.ensure_loaded()
+
+    def start(self) -> None:
+        """Load the active model and clear the soft-stop; idempotent."""
+        was_stopped = self._soft_stop.stopped
+        # Clear first so ensure_loaded is allowed to load while starting.
+        self._soft_stop.clear()
+        try:
+            self.ensure_loaded()
+        except Exception:
+            if was_stopped:
+                # A failed start must not leave the Server claiming to be ready.
+                self._soft_stop.mark_stopped()
+            raise
+
+    def stop(self) -> None:
+        """Release the model and remember the soft-stop. Idempotent."""
+        self.unload()
+        self._soft_stop.mark_stopped()
 
     @property
     def state(self) -> ModelState:
@@ -470,7 +571,7 @@ class ModelManager:
             return {
                 "device": self._device,
                 "recommended": recommendation.name,
-                "state": self._state,
+                "state": "stopped" if self._soft_stop.stopped else self._state,
                 "active_model": self._active_model,
                 "active_path": self._active_path,
                 "error": self._error,
@@ -701,6 +802,10 @@ class ModelManager:
     def ensure_loaded(self) -> Transcriber:
         """Return the active Transcriber, loading it after an idle unload."""
         with self._lock:
+            if self._soft_stop.stopped:
+                raise ModelStoppedError(
+                    "the Server is soft-stopped; start it through the Admin API before transcribing"
+                )
             if self._transcriber is not None:
                 self._last_activity = self._clock()
                 return self._transcriber

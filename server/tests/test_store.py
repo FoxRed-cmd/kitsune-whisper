@@ -71,8 +71,8 @@ def test_patch_updates_file_and_preserves_comments_and_client(tmp_path: Path) ->
 
     assert result.written is True
     assert result.changed == ("server.port", "server.decode.beam_size")
-    assert result.restart_required == ("server.port",)
-    assert result.hot_applied == ("server.decode.beam_size",)
+    assert result.restart_required == ("server.port", "server.decode.beam_size")
+    assert result.hot_applied == ()
     text = path.read_text(encoding="utf-8")
     assert "# kitsune configuration" in text
     assert "# the listener port" in text
@@ -247,7 +247,8 @@ def test_non_mapping_intermediate_is_rewritten_with_a_backup(tmp_path: Path) -> 
     assert result.backup_path == backup
     assert backup.read_text(encoding="utf-8") == original
     assert result.changed == ("server.decode.beam_size",)
-    assert result.hot_applied == ("server.decode.beam_size",)
+    assert result.restart_required == ("server.decode.beam_size",)
+    assert result.hot_applied == ()
     assert result.config.decode.beam_size == 3
     text = path.read_text(encoding="utf-8")
     assert "# keep this client comment" in text
@@ -272,7 +273,11 @@ def test_restart_classification() -> None:
     restart = [
         "server.host",
         "server.port",
+        "server.model",
         "server.expose_to_network",
+        "server.decode.task",
+        "server.decode.beam_size",
+        "server.processing.enabled",
         "server.device",
         "server.compute_type",
         "server.workers",
@@ -286,12 +291,11 @@ def test_restart_classification() -> None:
         "server.unknown_future_field",
     ]
     hot = [
-        "server.model",
         "server.idle_unload_seconds",
         "server.max_audio_seconds",
         "server.max_upload_mb",
-        "server.decode.beam_size",
-        "server.processing.enabled",
+        "server.decode.language",
+        "server.decode.initial_prompt",
         "server.log_level",
     ]
     assert {path: ConfigStore.impact(path) for path in restart} == dict.fromkeys(restart, "restart")

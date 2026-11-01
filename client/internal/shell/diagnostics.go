@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
@@ -13,19 +14,22 @@ import (
 // Server configuration, the log tail, and one copyable text block. Secrets are
 // masked again here, so a Server bug cannot turn the copy action into a leak.
 type DiagnosticsView struct {
-	ClientVersion string   `json:"client_version"`
-	ServerVersion string   `json:"server_version,omitempty"`
-	Profile       string   `json:"profile,omitempty"`
-	ServerState   string   `json:"server_state,omitempty"`
-	ModelState    string   `json:"model_state,omitempty"`
-	ConfigPath    string   `json:"config_path,omitempty"`
-	ConfigText    string   `json:"config_text,omitempty"`
-	Redacted      []string `json:"redacted,omitempty"`
-	LogPath       string   `json:"log_path,omitempty"`
-	LogText       string   `json:"log_text,omitempty"`
-	Truncated     bool     `json:"truncated,omitempty"`
-	CopyText      string   `json:"copy_text"`
-	Error         string   `json:"error,omitempty"`
+	ClientVersion     string   `json:"client_version"`
+	ServerVersion     string   `json:"server_version,omitempty"`
+	Profile           string   `json:"profile,omitempty"`
+	ServerState       string   `json:"server_state,omitempty"`
+	ModelName         string   `json:"model,omitempty"`
+	ModelState        string   `json:"model_state,omitempty"`
+	ModelPath         string   `json:"model_path,omitempty"`
+	IdleUnloadSeconds int      `json:"idle_unload_seconds,omitempty"`
+	ConfigPath        string   `json:"config_path,omitempty"`
+	ConfigText        string   `json:"config_text,omitempty"`
+	Redacted          []string `json:"redacted,omitempty"`
+	LogPath           string   `json:"log_path,omitempty"`
+	LogText           string   `json:"log_text,omitempty"`
+	Truncated         bool     `json:"truncated,omitempty"`
+	CopyText          string   `json:"copy_text"`
+	Error             string   `json:"error,omitempty"`
 }
 
 // diagnosticsView builds the diagnostics block from the cached Admin API
@@ -36,12 +40,18 @@ func (s *Shell) diagnosticsView(serverView servers.View) DiagnosticsView {
 	s.mu.Unlock()
 
 	view := DiagnosticsView{
-		ClientVersion: s.opts.Version,
-		ServerVersion: server.Version,
-		ServerState:   serverStateLabel(s.catalog(), server.State),
-		Profile:       activeProfileName(serverView, s.opts.Profile),
+		ClientVersion:     s.opts.Version,
+		ServerVersion:     server.Version,
+		ServerState:       serverStateLabel(s.catalog(), server.State),
+		Profile:           activeProfileName(serverView, s.opts.Profile),
+		ModelName:         server.Model,
+		ModelPath:         server.ModelPath,
+		IdleUnloadSeconds: server.IdleUnloadSeconds,
 	}
-	if serverView.Lifecycle != nil {
+	// Prefer the live /status model state over the cached lifecycle result.
+	if server.ModelState != "" {
+		view.ModelState = modelLifecycleLabel(s.catalog(), server.ModelState)
+	} else if serverView.Lifecycle != nil {
 		view.ModelState = modelLifecycleLabel(s.catalog(), serverView.Lifecycle.ModelState)
 	}
 	if serverView.Config != nil {
@@ -57,6 +67,36 @@ func (s *Shell) diagnosticsView(serverView servers.View) DiagnosticsView {
 	view.Error = firstNonEmpty(serverView.ConfigError, serverView.LogsError, serverView.LifecycleError)
 	view.CopyText = diagnosticsText(view)
 	return view
+}
+
+// copyDiagnostics puts the generated diagnostics block on the clipboard through
+// the runtime, so the page holds no clipboard logic and the copy uses the same
+// seam as a Spool copy.
+func (s *Shell) copyDiagnostics() {
+	view := s.diagnosticsView(s.serversView())
+	if strings.TrimSpace(view.CopyText) == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.copyDiagnostics")})
+		return
+	}
+	if err := s.opts.Runtime.Copy(view.CopyText); err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.copyDiagnostics", err.Error())})
+		return
+	}
+	s.pushMessages([]string{s.catalog().T("notice.server.diagnosticsCopied")}, nil)
+}
+
+// copyLogs puts the loaded log tail on the clipboard through the runtime.
+func (s *Shell) copyLogs() {
+	view := s.diagnosticsView(s.serversView())
+	if strings.TrimSpace(view.LogText) == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.noLogs")})
+		return
+	}
+	if err := s.opts.Runtime.Copy(view.LogText); err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.copyLogs", err.Error())})
+		return
+	}
+	s.pushMessages([]string{s.catalog().T("notice.server.logsCopied")}, nil)
 }
 
 // activeProfileName prefers the active profile's display name over the
@@ -80,6 +120,9 @@ func firstNonEmpty(values ...string) string {
 }
 
 // diagnosticsText renders the one block the copy action puts on the clipboard.
+// It stays in English on purpose: the block is a bug-report artifact pasted
+// into an issue tracker, not a localized screen. All UI labels around it are
+// translated.
 func diagnosticsText(view DiagnosticsView) string {
 	var out strings.Builder
 	out.WriteString("kitsune-whisper diagnostics\n")
@@ -87,7 +130,12 @@ func diagnosticsText(view DiagnosticsView) string {
 	writeLine(&out, "server profile", view.Profile)
 	writeLine(&out, "server version", view.ServerVersion)
 	writeLine(&out, "server state", view.ServerState)
+	writeLine(&out, "model", view.ModelName)
 	writeLine(&out, "model state", view.ModelState)
+	writeLine(&out, "model path", view.ModelPath)
+	if view.IdleUnloadSeconds > 0 {
+		writeLine(&out, "idle unload seconds", strconv.Itoa(view.IdleUnloadSeconds))
+	}
 	writeLine(&out, "config path", view.ConfigPath)
 	if len(view.Redacted) > 0 {
 		writeLine(&out, "redacted", strings.Join(view.Redacted, ", "))

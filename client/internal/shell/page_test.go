@@ -686,10 +686,22 @@ func TestPageRendersServerManagementSettingsAndDiagnostics(t *testing.T) {
 		`data-action="copy-diagnostics"`,
 		`data-action="load-logs"`,
 		`data-action="copy-logs"`,
-		"navigator.clipboard",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"navigator.clipboard", "execCommand"} {
+		if strings.Contains(page, forbidden) {
+			t.Errorf("page still contains clipboard logic %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		`sendIntent({ action: "copy-diagnostics" })`,
+		`sendIntent({ action: "copy-logs" })`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing copy intent %q", want)
 		}
 	}
 }

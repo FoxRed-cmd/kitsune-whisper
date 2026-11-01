@@ -53,10 +53,10 @@ section is ignored entirely. Validation is fail-fast and names the offending
 field path. The configuration is read once at startup. The configuration stores
 (the Server's `kitsune_server.store` and the Client's settings store) classify
 each change as hot-applied or restart-required, and write their section
-atomically while preserving the rest of the file. The Server's Admin API now
-applies a narrow hot subset (log level, upload and audio limits, decode language
-and initial prompt) and reports the rest as restart-required; other hot
-classification remains advisory until the runtime reloads those values.
+atomically while preserving the rest of the file. The Server's Admin API applies
+exactly the hot subset it really runs live (log level, upload and audio limits,
+decode language and initial prompt, and the idle unload timeout when a Model
+manager is present) and reports everything else as restart-required.
 
 Check a config without starting either process:
 
@@ -217,17 +217,36 @@ Server:
 | --- | --- |
 | `GET /admin/config` | Effective configuration, per-field source and hot/restart classification, and the list of redacted paths. |
 | `PATCH /admin/config` | Validate and atomically write `{"patch": {...}}` with the same rules as startup. An invalid patch returns `400` and leaves the file byte-for-byte unchanged. |
+| `GET /admin/models` | The Model catalog, installation state, download progress, and idle timeout. |
+| `POST /admin/models/download` | Queue one catalog download (`{"model": "small"}`); downloads are serialized. |
+| `POST /admin/models/cancel` | Cancel a queued or running download (`{"model": "small"}`). |
+| `POST /admin/models/activate` | Load and swap in a catalog model (`{"model": "small"}`) or a local CTranslate2 directory (`{"path": "/srv/models/x"}`), rolling back on failure. |
+| `POST /admin/models/idle-unload` | Set the idle unload timeout in seconds (`0` = never). |
+| `DELETE /admin/models/{name}` | Delete one downloaded, non-active model. |
 | `GET /admin/logs?tail=N` | The last `N` lines (1–1000, default 200) of the Server log and whether older lines were cut. |
-| `POST /admin/restart` | Answer `202`, then exit with code `75`; systemd `Restart=on-failure`, Task Scheduler `RestartOnFailure`, and Docker bring the Server back. The Client polls health until it is ready. |
+| `POST /admin/restart` | Answer `202` with the lifecycle payload plus `restarting: true`, then exit with code `75`; systemd `Restart=on-failure`, Task Scheduler `RestartOnFailure`, and Docker bring the Server back. The Client polls health until it is ready. |
 | `POST /admin/stop` | Soft-stop: unload the model, persist `stopped`, keep the Admin API alive. `/transcribe` returns `503` with code `stopped`. |
 | `POST /admin/start` | Clear the soft-stop, load the model again, and accept transcription. |
 
+`/status`, stop, start, and restart return the same model payload
+(`stopped`, `loaded`, `model`, `model_state`, `model_path`,
+`idle_unload_seconds`), so the Tray, Settings, and Diagnostics never disagree
+about the model. `PATCH /admin/config` deliberately refuses
+`server.expose_to_network` and `server.allow_anonymous` with `400
+confirmation_required`: the former belongs to the confirmed
+`POST /admin/exposure` route, the latter to the Server host. Both are rendered
+read-only in the Settings window.
+
+Model download progress is polled, not streamed: the Client refreshes it on the
+background health tick (30 seconds) and immediately after each download action.
+
 A soft-stop survives a process restart, so a supervised restart does not
 silently reload a model the user deliberately unloaded. A hard process stop is
-still available only on the Server host (`kitsune-server stop`). When the Model
-catalog is in use, its model manager is authoritative for loading, online
-activation, and idle unload; a soft-stop asks that manager to release the model
-and only persists the stopped flag itself.
+still available only on the Server host (`kitsune-server stop`). One model
+runtime owns the active model: the Model manager when the catalog is enabled
+(it loads, activates, and idle-unloads), or a fixed runtime for a Server built
+without model management. A soft-stop asks that runtime to release the model
+and persists only the stopped flag.
 
 `GET /admin/config` masks every secret before sending it. Today that is
 `server.processing.api_key`, shown as `***` and listed under `redacted`; Device
@@ -235,8 +254,17 @@ token hashes never leave the Device store and are not part of the
 configuration. A patch that echoes the `***` placeholder back is dropped rather
 than writing the marker over the real key. Changes the running Server can apply
 immediately (log level, upload and audio limits, decode language and initial
-prompt) are reported under `hot_applied`; everything else is reported under
-`restart_required`.
+prompt, and the idle timeout when a Model manager is present) are reported under
+`hot_applied`; everything else is reported under `restart_required`.
+
+Diagnostics copy and log copy stay in English on purpose: the copied block is a
+bug-report artifact that users paste into an issue tracker, while every label
+around it in the window is translated.
+
+The background health probe is advisory and never writes trust state. Pairing
+happens once when the Client starts; a Local Server that starts after the Client
+is reported offline until the Client restarts. That trade-off is deliberate:
+a periodic probe must not mint a Device token or change the active profile.
 
 The Client keeps each token in the OS keychain (Windows Credential Manager,
 Linux Secret Service) and falls back to a file with mode `0600` under

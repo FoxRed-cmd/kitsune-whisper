@@ -72,9 +72,7 @@ func (s *Shell) refreshDiagnostics() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	if s.opts.CheckServer != nil {
-		s.checkServer(ctx)
-	}
+	s.updateServer(s.probeActiveServer(ctx))
 	var failures []string
 	if _, err := s.opts.Servers.LoadConfig(ctx, profileID); err != nil {
 		failures = append(failures, s.catalog().T("error.server.configRead", err.Error()))
@@ -162,9 +160,6 @@ func (s *Shell) runServerAction(action string) {
 // ready again, bounded so a Server the supervisor cannot restart does not
 // leave a goroutine probing forever.
 func (s *Shell) awaitServer() {
-	if s.opts.CheckServer == nil {
-		return
-	}
 	interval := s.opts.RestartPollInterval
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
@@ -175,9 +170,7 @@ func (s *Shell) awaitServer() {
 	}
 	name := s.activeProfileName()
 	for attempt := 0; attempt < attempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		status := s.opts.CheckServer(ctx)
-		cancel()
+		status := s.probeActiveServer(context.Background())
 		s.updateServer(status)
 		if status.State == trust.StateOnline {
 			s.pushMessages([]string{s.catalog().T("notice.server.ready", name)}, nil)
