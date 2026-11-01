@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
@@ -81,9 +82,11 @@ func New(opts Options) (desktopPort shell.Desktop) {
 	// The Settings page sends one JSON intent per user action over a plain
 	// same-origin POST. The handler is a shell port, so the page stays free of
 	// validation and routing logic.
+	// Wails strips the registered prefix before calling the handler, so the
+	// route is registered without a trailing slash to leave "/intent" intact.
 	app.RegisterService(application.NewServiceWithOptions(&bridge{desktop: d}, application.ServiceOptions{
 		Name:  "kitsuneSettings",
-		Route: "/kitsune/",
+		Route: "/kitsune",
 	}))
 	return d
 }
@@ -105,6 +108,25 @@ func (d *desktop) servePage(rw http.ResponseWriter, req *http.Request) {
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(rw, page)
+}
+
+// runtimeScript loads the Wails frontend runtime. The runtime is what announces
+// "wails:runtime:ready"; until that message arrives, WebviewWindow.ExecJS parks
+// every call in a queue, so the Settings page would render its initial HTML and
+// then never receive a push (live microphone level, language switch, a new
+// Device list). It is appended after the page's own script so the functions the
+// queued calls target are already defined when the runtime flushes them.
+//
+// The bundle is an ES module (it ends with an `export` statement), so it must
+// be loaded with type="module". A classic script fails to parse and never
+// announces itself, which leaves every ExecJS push queued forever.
+const runtimeScript = `<script type="module" src="/wails/runtime.js"></script>`
+
+func withRuntime(page string) string {
+	if strings.Contains(page, runtimeScript) {
+		return page
+	}
+	return strings.Replace(page, "</body>", runtimeScript+"</body>", 1)
 }
 
 // setPage replaces the page served to the window before it loads.
@@ -142,7 +164,9 @@ func (b *bridge) Intent(payload string) error {
 }
 
 func (b *bridge) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
-	if req.URL.Path != "/intent" {
+	// The asset server strips the registered route, which can leave the path
+	// with or without its leading slash depending on the Wails version.
+	if "/"+strings.TrimPrefix(req.URL.Path, "/") != "/intent" {
 		http.NotFound(rw, req)
 		return
 	}
@@ -178,7 +202,7 @@ func (d *desktop) NewWindow(initial shell.Snapshot, settings shell.SettingsView,
 	if d.app == nil {
 		return nil, fmt.Errorf("wails application is not available")
 	}
-	d.setPage(shell.Page(initial, settings))
+	d.setPage(withRuntime(shell.Page(initial, settings)))
 	win := d.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "settings",
 		Title:            "kitsune-whisper Settings",
