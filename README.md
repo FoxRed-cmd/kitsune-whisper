@@ -246,8 +246,9 @@ units for all three. It asks for `sudo` once to install GTK/WebKitGTK and the
 udev `uaccess` rule, then never again. Docker remains the supported deployment
 for a dedicated GPU host; the one-liner installs both parts locally by default.
 On Ubuntu 24.04+/Fedora 40+ the default build is GTK4/WebKitGTK 6.0; older LTS
-hosts automatically get the GTK3/WebKit2GTK 4.1 build. A `.deb` is published for
-Debian/Ubuntu: install it, then run `kitsune-whisper-setup` as your user.
+hosts automatically get the GTK3/WebKit2GTK 4.1 build. A self-contained `.deb`
+is published for Debian/Ubuntu: install it and the user units start at login;
+`kitsune-whisper-setup` seeds a config and starts them immediately.
 
 Declining elevation still installs a working headless Client: Settings open in
 the browser and Wayland injection stays clipboard-only until you re-run with

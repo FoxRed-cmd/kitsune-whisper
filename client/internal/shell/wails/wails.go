@@ -50,6 +50,9 @@ func New(opts Options) (desktopPort shell.Desktop) {
 			desktopPort = nil
 		}
 	}()
+	if !desktopAvailable() {
+		return nil
+	}
 	d := &desktop{}
 	options := application.Options{
 		Name:        "kitsune-whisper",

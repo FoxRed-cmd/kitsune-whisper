@@ -49,10 +49,10 @@ at most once:
   `/dev/uinput`, so the bundled `ydotoold` can inject text without adding you to
   a group or asking you to log out and back in.
 
-Nothing else runs as root, and re-running the installer never asks again once
-those pieces exist. Decline elevation with `--no-elevate` (or by answering the
-prompt with no): the Client still installs and dictates, Settings open in your
-browser instead of an embedded window, and Wayland injection stays
+Nothing else runs as root during install, and re-running the installer never asks
+again once those pieces exist. Declining elevation with `--no-elevate` (or by
+answering the prompt with no): the Client still installs and dictates, Settings
+open in your browser instead of an embedded window, and Wayland injection stays
 clipboard-only ("press Ctrl+V") until you re-run with elevation.
 
 Useful installer options:
@@ -65,13 +65,15 @@ install.sh --from ./release   # install verified artifacts from a directory
 install.sh --dry-run          # print the plan and change nothing
 ```
 
-On Debian or Ubuntu you can use the package instead. It installs the Client and
-the udev rule, declares GTK/WebKitGTK as dependencies (the package manager owns
-the only elevated step), and ships a per-user finisher for the Server:
+On Debian or Ubuntu you can use the package instead. It installs the Client,
+the native Server bundle, the bundled Wayland helpers, the udev rule, and three
+systemd user units, and declares GTK/WebKitGTK as dependencies (the package
+manager owns the only elevated step). The units start at your next login; to
+seed a config template and start them in the current session, run:
 
 ```sh
 sudo apt install ./kitsune-whisper_<version>_amd64.deb
-kitsune-whisper-setup        # no sudo: Server bundle, helpers, user units
+kitsune-whisper-setup        # no sudo: config template + start the user units
 ```
 
 Older LTS distributions use `kitsune-whisper-legacy_<version>_amd64.deb`.

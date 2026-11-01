@@ -5,8 +5,9 @@
 #
 # Installs the Client (Tray plus Settings window), the native per-user Server
 # bundle, and the bundled Wayland helpers (ydotool/ydotoold/wtype). It asks for
-# sudo at most once: that one step installs GTK/WebKitGTK and the udev uaccess
-# rule for /dev/uinput, then never runs privileged again.
+# sudo at most once during install: that one step installs GTK/WebKitGTK and the
+# udev uaccess rule for /dev/uinput, then never runs privileged again. Purging
+# later asks once more to remove that rule.
 #
 # The Client and Server are systemd *user* units. Re-run the installer to
 # upgrade in place; kitsune.yaml, models, Devices, and certificates are kept.
@@ -25,14 +26,13 @@
 #                             logs, Devices, wizard progress, and the udev rule
 #     -h, --help
 #
-# Environment: KITSUNE_VERSION, KITSUNE_PREFIX, KITSUNE_ARTIFACTS_DIR,
+# Environment: KITSUNE_VERSION, KITSUNE_ARTIFACTS_DIR,
 # KITSUNE_GUI, KITSUNE_PACKAGE_MANAGER (apt|dnf|pacman|zypper).
 set -euo pipefail
 
 REPO="FoxRed-cmd/kitsune-whisper"
 VERSION="${KITSUNE_VERSION:-latest}"
-PREFIX="${KITSUNE_PREFIX:-$HOME/.local}"
-BIN_DIR="$PREFIX/bin"
+BIN_DIR="$HOME/.local/bin"
 LOCAL_LIB="$HOME/.local/lib/kitsune-whisper"
 WAYLAND_DIR="$LOCAL_LIB/wayland"
 WAYLAND_BIN="$WAYLAND_DIR/bin"
@@ -49,7 +49,9 @@ STATE_DIR="$STATE_ROOT/kitsune-whisper"
 SYSTEMD_DIR="$CONFIG_ROOT/systemd/user"
 DESKTOP_FILE="$DATA_ROOT/applications/io.github.FoxRed-cmd.kitsune-whisper.desktop"
 UDEV_RULE="/etc/udev/rules.d/70-kitsune-whisper-uinput.rules"
+UDEV_RULE_SYSTEM="/usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules"
 MODULES_FILE="/etc/modules-load.d/kitsune-whisper.conf"
+MODULES_FILE_SYSTEM="/usr/lib/modules-load.d/kitsune-whisper.conf"
 WAYLAND_UNIT="$SYSTEMD_DIR/kitsune-ydotoold.service"
 CLIENT_DROPIN="$SYSTEMD_DIR/kitsune-client.service.d/10-wayland.conf"
 
@@ -79,7 +81,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'; }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -121,15 +123,6 @@ fi
 need() {
   command -v "$1" >/dev/null 2>&1 || die "$1 is required"
 }
-
-need tar
-need sha256sum
-need awk
-need grep
-need sed
-if [[ -z "$FROM_DIR" ]]; then
-  need curl
-fi
 
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
@@ -174,6 +167,32 @@ detect_pm() {
   fi
 }
 
+# os_release_value reads a key from os-release. KITSUNE_OS_RELEASE lets the
+# installer tests exercise old and new distributions without touching the host.
+os_release_value() {
+  local key="$1" file="${KITSUNE_OS_RELEASE:-/etc/os-release}"
+  [[ -f "$file" ]] || return 0
+  sed -n "s/^${key}=//p" "$file" | head -n1 | tr -d '"'
+}
+
+# distro_legacy says whether this distribution predates the WebKitGTK 6.0
+# stack, even when no GTK library is installed yet. Ubuntu 24.04, Debian 12,
+# Fedora 40, and RHEL 10 are the first releases with the default build.
+distro_legacy() {
+  local id major
+  id="$(os_release_value ID)"
+  major="$(os_release_value VERSION_ID)"
+  major="${major%%.*}"
+  [[ "$major" =~ ^[0-9]+$ ]] || return 1
+  case "$id" in
+    ubuntu) (( major < 24 )) ;;
+    debian) (( major < 12 )) ;;
+    fedora) (( major < 40 )) ;;
+    rhel|centos|rocky|almalinux) (( major < 10 )) ;;
+    *) return 1 ;;
+  esac
+}
+
 select_gui() {
   case "$GUI_CHOICE" in
     gtk4) printf 'gtk4\n' ;;
@@ -182,6 +201,8 @@ select_gui() {
       if has_gtk4; then
         printf 'gtk4\n'
       elif has_gtk3; then
+        printf 'gtk3\n'
+      elif distro_legacy; then
         printf 'gtk3\n'
       else
         printf 'gtk4\n'
@@ -382,10 +403,14 @@ install_server() {
   [[ -f "$dir/bootstrap.py" ]] || die "$asset has no bootstrap.py"
 
   info "Installing the native Server bundle..."
+  local config_args=()
+  if [[ -f "$CONFIG" ]]; then
+    config_args=(--config "$CONFIG")
+  fi
   if ! "$runtime" -s "$dir/bootstrap.py" install \
       --artifact "$TMP/$asset" \
       --sha256 "$(awk -v name="$asset" '$2 == name { print $1; exit }' "$TMP/checksums.txt")" \
-      --config "$CONFIG"; then
+      "${config_args[@]}"; then
     SERVER_OK=0
     warn "the Server bundle could not be installed; the Client stays usable with a Remote Server"
   fi
@@ -406,7 +431,9 @@ start_services() {
       systemctl --user enable --now kitsune-ydotoold.service >/dev/null 2>&1 \
         || warn "could not start kitsune-ydotoold.service"
     else
-      warn "ydotoold not started: /dev/uinput is not accessible without the udev rule"
+      systemctl --user enable kitsune-ydotoold.service >/dev/null 2>&1 \
+        || warn "could not enable kitsune-ydotoold.service"
+      warn "ydotoold will start at your next graphical login (no active /dev/uinput access here)"
     fi
   fi
 }
@@ -451,7 +478,7 @@ uninstall_all() {
   if [[ "$PURGE" == 1 ]]; then
     rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB"
     if [[ "$NO_ELEVATE" == 0 ]] && command -v sudo >/dev/null 2>&1; then
-      if sudo sh -c "rm -f '$UDEV_RULE' '$MODULES_FILE' && udevadm control --reload-rules 2>/dev/null || true"; then
+      if sudo sh -c "rm -f '$UDEV_RULE' '$MODULES_FILE' && { udevadm control --reload-rules >/dev/null 2>&1 || true; }"; then
         info "Removed the udev uinput rule"
       else
         warn "could not remove $UDEV_RULE; remove it manually"
@@ -474,6 +501,15 @@ if [[ "$UNINSTALL" == 1 ]]; then
   exit 0
 fi
 
+need tar
+need sha256sum
+need awk
+need grep
+need sed
+if [[ -z "$FROM_DIR" ]]; then
+  need curl
+fi
+
 SELECTED_GUI="$(select_gui)"
 PM="$(detect_pm)"
 PACKAGES="$(packages_for "$PM" "$SELECTED_GUI")"
@@ -489,7 +525,8 @@ if ! gui_ready_for "$SELECTED_GUI"; then
   NEEDS_PACKAGES=1
 fi
 NEEDS_RULE=0
-if [[ ! -f "$UDEV_RULE" ]] || ! uinput_ready; then
+if [[ ! -f "$UDEV_RULE" && ! -f "$UDEV_RULE_SYSTEM" ]] \
+  || [[ ! -f "$MODULES_FILE" && ! -f "$MODULES_FILE_SYSTEM" ]]; then
   NEEDS_RULE=1
 fi
 NEEDS_ELEVATION=0

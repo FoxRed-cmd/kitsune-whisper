@@ -143,13 +143,23 @@ jobs:
   deb:
     name: debian package
     runs-on: ubuntu-24.04
-    needs: client-linux
+    needs: [client-linux, server-bundle, wayland-tools]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/download-artifact@v4
         with:
           name: linux-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wayland-tools
           path: dist
 
       - name: Build the GTK4 and legacy packages
@@ -160,9 +170,13 @@ jobs:
           tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
           packaging/deb/build-deb.sh \
             --client dist/kitsune-client \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
             --version "${GITHUB_REF_NAME:-dev}" --output dist
           packaging/deb/build-deb.sh \
             --client dist/legacy/kitsune-client --legacy \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
             --version "${GITHUB_REF_NAME:-dev}" --output dist
 
       - uses: actions/upload-artifact@v4

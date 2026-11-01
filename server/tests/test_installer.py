@@ -152,7 +152,6 @@ def sandbox(tmp_path: Path) -> dict[str, Any]:
         "SUDO_SCRIPT": str(tmp_path / "sudo-script.sh"),
         "SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
         "KITSUNE_PACKAGE_MANAGER": "apt",
-        "KITSUNE_SKIP_UPDATE_CHECK": "1",
     }
     (tmp_path / "runtime").mkdir()
     return {"home": home, "env": env, "tmp": tmp_path, "libs": libs}
@@ -261,6 +260,32 @@ def test_forced_legacy_installs_the_gtk3_stack_and_packages(sandbox, tmp_path):
 
     completed = run_installer(
         sandbox, "--no-server", "--no-wayland", "--gui", "gtk3", "--from", str(artifacts)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
+    assert "client:legacy" in binary.read_text(encoding="utf-8")
+    privileged = read_log(sandbox, "sudo-script.sh")
+    assert "libgtk-3-0" in privileged
+    assert "libwebkit2gtk-4.1-0" in privileged
+
+
+def test_an_older_lts_without_gui_libraries_selects_the_legacy_build(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+    (tmp_path / "libs").write_text("", encoding="utf-8")
+    os_release = tmp_path / "os-release"
+    os_release.write_text(
+        'ID=ubuntu\nVERSION_ID="22.04"\n',
+        encoding="utf-8",
+    )
+
+    completed = run_installer(
+        sandbox,
+        "--no-server",
+        "--no-wayland",
+        "--from",
+        str(artifacts),
+        env={"KITSUNE_OS_RELEASE": str(os_release), "KITSUNE_PACKAGE_MANAGER": "apt"},
     )
 
     assert completed.returncode == 0, completed.stderr
@@ -510,6 +535,70 @@ def test_the_deb_builder_produces_a_working_package(tmp_path):
     assert "usr/bin/kitsune-whisper-setup" in data_names
     assert "usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules" in data_names
     assert "usr/lib/systemd/user/kitsune-client.service" in data_names
+
+
+def test_the_deb_package_can_include_the_server_and_wayland_helpers(tmp_path):
+    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
+        pytest.skip("neither dpkg-deb nor ar is available")
+
+    client = tmp_path / "kitsune-client"
+    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    client.chmod(0o755)
+    server = tmp_path / "server.tar.gz"
+    write_tar(
+        server,
+        {
+            "bootstrap.py": ("import sys\n", 0o644),
+            "bundle.json": ('{"version": "1.2.3"}\n', 0o644),
+            "lib/kitsune_server/__init__.py": ("", 0o644),
+            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
+        },
+    )
+    wayland = tmp_path / "wayland.tar.gz"
+    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
+    output = tmp_path / "dist"
+
+    completed = subprocess.run(
+        [
+            "bash",
+            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
+            "--client",
+            str(client),
+            "--server-artifact",
+            str(server),
+            "--wayland-artifact",
+            str(wayland),
+            "--version",
+            "1.2.3",
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    deb = output / "kitsune-whisper_1.2.3_amd64.deb"
+    control_tar = subprocess.run(
+        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
+    ).stdout
+    control = subprocess.run(
+        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
+    ).stdout.decode("utf-8")
+    assert "Conflicts: kitsune-whisper-legacy" in control
+
+    data_tar = subprocess.run(
+        ["ar", "p", str(deb), "data.tar.gz"], capture_output=True, check=True
+    ).stdout
+    names = subprocess.run(
+        ["tar", "-tzf", "-"], input=data_tar, capture_output=True, check=True
+    ).stdout.decode("utf-8")
+    assert "usr/lib/kitsune-whisper/server/runtime/bin/python3" in names
+    assert "usr/lib/kitsune-whisper/wayland/bin/ydotoold" in names
+    assert "usr/lib/systemd/user/kitsune-server.service" in names
+    assert "usr/lib/systemd/user/kitsune-ydotoold.service" in names
+    assert "usr/lib/modules-load.d/kitsune-whisper.conf" in names
 
 
 def test_the_legacy_deb_depends_on_the_gtk3_stack(tmp_path):

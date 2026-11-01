@@ -3,6 +3,7 @@ module github.com/FoxRed-cmd/kitsune-whisper/client
 go 1.26.0
 
 require (
+	github.com/ebitengine/purego v0.11.1
 	github.com/gen2brain/malgo v0.11.26
 	github.com/godbus/dbus/v5 v5.2.2
 	github.com/jezek/xgb v1.3.1
@@ -18,7 +19,6 @@ require (
 require (
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
-	github.com/ebitengine/purego v0.11.1 // indirect
 	github.com/go-ole/go-ole v1.3.0 // indirect
 	github.com/yalue/native_endian v1.0.2 // indirect
 	golang.design/x/x11 v0.2.0 // indirect

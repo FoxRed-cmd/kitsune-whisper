@@ -146,9 +146,12 @@ fi
 
 if [[ "$BUILD_DEB" == 1 && "$NO_CLIENT" == 0 && -n "$GTK4_CLIENT_BIN" ]]; then
   if [[ -x "$REPO_ROOT/packaging/deb/build-deb.sh" ]] && command -v ar >/dev/null 2>&1; then
-    "$REPO_ROOT/packaging/deb/build-deb.sh" \
-      --client "$GTK4_CLIENT_BIN" \
-      --version "$VERSION" --output "$OUTPUT_DIR" \
+    deb_args=(--client "$GTK4_CLIENT_BIN" --version "$VERSION" --output "$OUTPUT_DIR")
+    server_asset="$OUTPUT_DIR/kitsune-server_linux_${ARCH}.tar.gz"
+    wayland_asset="$OUTPUT_DIR/kitsune-wayland_linux_${ARCH}.tar.gz"
+    [[ -f "$server_asset" ]] && deb_args+=(--server-artifact "$server_asset")
+    [[ -f "$wayland_asset" ]] && deb_args+=(--wayland-artifact "$wayland_asset")
+    "$REPO_ROOT/packaging/deb/build-deb.sh" "${deb_args[@]}" \
       || echo "note: the .deb build failed; the other artifacts are still usable"
   fi
 fi
