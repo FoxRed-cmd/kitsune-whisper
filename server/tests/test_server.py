@@ -12,6 +12,7 @@ import yaml
 from kitsune_server import cli, server
 from kitsune_server.config import ServerConfig
 from kitsune_server.engine import EngineLoadError
+from kitsune_server.models import CatalogError
 from kitsune_server.transcriber import EngineInfo, FakeTranscriber
 
 
@@ -281,6 +282,28 @@ def test_run_server_survives_an_unwritable_log_path(
     blocker.write_text("", encoding="utf-8")
 
     server.run_server(ServerConfig(), port_check=allow_port, log_file=blocker / "server.log")
+
+
+def test_main_reports_a_bad_catalog_as_a_config_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    path = tmp_path / "kitsune.yaml"
+    path.write_text(yaml.safe_dump({"server": {"model": "small"}}), encoding="utf-8")
+
+    def boom(
+        config: ServerConfig,
+        *,
+        log_file: Path | None = None,
+        config_store: object = None,
+    ) -> None:
+        raise CatalogError("catalog model name must be a plain file name")
+
+    monkeypatch.setattr(server, "run_server", boom)
+
+    code = cli.main(["--config", str(path)])
+
+    assert code == 1
+    assert "config error: catalog" in capsys.readouterr().err
 
 
 def test_main_reports_engine_load_error(

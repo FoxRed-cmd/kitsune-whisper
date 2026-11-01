@@ -34,6 +34,19 @@ type ModelDownload struct {
 	Error         string `json:"error"`
 }
 
+// InProgress reports a download the user can still cancel.
+func (d *ModelDownload) InProgress() bool {
+	if d == nil {
+		return false
+	}
+	switch d.State {
+	case "queued", "downloading", "verifying":
+		return true
+	default:
+		return false
+	}
+}
+
 // ModelsView is the Server's Model catalog and lifecycle state.
 type ModelsView struct {
 	Device            string  `json:"device"`
@@ -46,6 +59,16 @@ type ModelsView struct {
 	Models            []Model `json:"models"`
 	// Warning reports a change that applied but could not be persisted.
 	Warning string `json:"warning,omitempty"`
+}
+
+// HasActiveDownload reports whether the catalog still has a download to watch.
+func (v ModelsView) HasActiveDownload() bool {
+	for _, model := range v.Models {
+		if model.Download.InProgress() {
+			return true
+		}
+	}
+	return false
 }
 
 // LoadModels reads the active or named Server's Model catalog.
@@ -79,7 +102,8 @@ func (s *Service) CancelDownload(ctx context.Context, profileID, model string) (
 }
 
 // ActivateModel loads a downloaded catalog model or a local CTranslate2
-// directory and swaps it in without restarting the Server.
+// directory and swaps it in without restarting the Server. A large model can
+// take minutes to load, so it is not bounded by the ordinary Admin timeout.
 func (s *Service) ActivateModel(
 	ctx context.Context, profileID, model, path string,
 ) (ModelsView, error) {
@@ -89,7 +113,11 @@ func (s *Service) ActivateModel(
 	} else {
 		body["model"] = model
 	}
-	return s.modelAction(ctx, profileID, "/admin/models/activate", body)
+	timeout := s.opts.Timeout
+	if timeout < 2*time.Minute {
+		timeout = 2 * time.Minute
+	}
+	return s.modelActionWithin(ctx, profileID, "/admin/models/activate", body, timeout)
 }
 
 // SetIdleTimeout sets the idle unload timeout; 0 keeps the model resident.
@@ -122,6 +150,15 @@ func (s *Service) modelAction(
 	profileID, path string,
 	body map[string]any,
 ) (ModelsView, error) {
+	return s.modelActionWithin(ctx, profileID, path, body, s.opts.Timeout)
+}
+
+func (s *Service) modelActionWithin(
+	ctx context.Context,
+	profileID, path string,
+	body map[string]any,
+	timeout time.Duration,
+) (ModelsView, error) {
 	profile, token, err := s.credentials(profileID)
 	if err != nil {
 		s.cacheModels(profileID, nil, err)
@@ -131,7 +168,7 @@ func (s *Service) modelAction(
 	if err != nil {
 		return ModelsView{}, fmt.Errorf("servers: build the model request: %w", err)
 	}
-	data, err := adminRequest(ctx, profile, token, http.MethodPost, path, encoded, s.opts.Timeout)
+	data, err := adminRequest(ctx, profile, token, http.MethodPost, path, encoded, timeout)
 	if err != nil {
 		s.cacheModels(profileID, nil, err)
 		return ModelsView{}, err
@@ -148,12 +185,23 @@ func (s *Service) modelAction(
 func (s *Service) cacheModels(profileID string, view *ModelsView, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err != nil {
+		s.cacheModelsErrorLocked(profileID, err)
+		return
+	}
 	s.modelsFor = profileID
 	s.models = view
 	s.modelsError = ""
-	if err != nil {
-		s.modelsError = err.Error()
+}
+
+// cacheModelsErrorLocked keeps the last successful catalog so a failed action
+// leaves the screen populated with the Server's message instead of blanking it.
+func (s *Service) cacheModelsErrorLocked(profileID string, err error) {
+	if s.modelsFor != profileID {
+		s.models = nil
 	}
+	s.modelsFor = profileID
+	s.modelsError = err.Error()
 }
 
 func fetchModels(

@@ -30,7 +30,7 @@ from typing import Any, Literal, Protocol
 import httpx
 import yaml
 
-from .config import ServerConfig
+from .config import ConfigError, ServerConfig
 from .gpu import resolve_engine
 from .transcriber import Transcriber
 
@@ -86,7 +86,7 @@ class ModelLoadError(ModelError):
     code = "model_load_failed"
 
 
-class CatalogError(Exception):
+class CatalogError(ConfigError):
     """The override catalog file is missing or invalid."""
 
 
@@ -123,19 +123,6 @@ PINNED_CATALOG: tuple[ModelSpec, ...] = (
 )
 
 RECOMMENDATIONS: Mapping[str, str] = {"cuda": "medium", "cpu": "base"}
-
-
-def format_bytes(value: int) -> str:
-    """Render a byte count the way the Settings window shows it."""
-    step = 1000.0
-    size = float(value)
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if size < step or unit == "TB":
-            if unit == "B":
-                return f"{int(size)} {unit}"
-            return f"{size:.1f} {unit}"
-        size /= step
-    return f"{size:.1f} TB"
 
 
 @dataclass(frozen=True)
@@ -183,6 +170,10 @@ class ModelCatalog:
                 raise CatalogError(f"{path}: invalid catalog entry: {exc}") from exc
             if not spec.name or spec.disk_bytes <= 0 or spec.memory_bytes <= 0:
                 raise CatalogError(f"{path}: every model needs a name and positive sizes")
+            if "/" in spec.name or "\\" in spec.name or spec.name in (".", ".."):
+                raise CatalogError(
+                    f"{path}: a catalog model name must be a plain file name, not {spec.name!r}"
+                )
             models.append(spec)
         return cls(tuple(models))
 
@@ -428,6 +419,7 @@ class ModelManager:
         self._queue: list[str] = []
         self._working = False
         self._monitor_stop = threading.Event()
+        self._monitor_started = False
 
     # -- read-only state ---------------------------------------------------
 
@@ -643,6 +635,9 @@ class ModelManager:
     # -- deletion ----------------------------------------------------------
 
     def delete(self, name: str) -> int:
+        # Only catalog names may be deleted, so a crafted path cannot escape the
+        # download root through the Admin API.
+        self._catalog.require(name)
         with self._lock:
             if name and name == self._active_model:
                 raise ModelActiveError(
@@ -670,14 +665,19 @@ class ModelManager:
             self._idle = seconds
 
     def maybe_unload(self) -> bool:
-        """Unload the model when it has been idle long enough."""
+        """Unload the model when it has been idle long enough.
+
+        A failed activation leaves the previous model serving with state
+        ``failed``; that model must still be unloaded when it goes idle.
+        """
         with self._lock:
-            if self._idle <= 0 or self._state != "loaded" or self._transcriber is None:
+            if self._idle <= 0 or self._state == "loading" or self._transcriber is None:
                 return False
             if self._clock() - self._last_activity < self._idle:
                 return False
             self._transcriber = None
             self._state = "cold"
+            self._error = ""
             logger.info("unloaded %s after %ss idle", self._active_model, self._idle)
             return True
 
@@ -717,6 +717,10 @@ class ModelManager:
 
     def start_idle_monitor(self, *, interval: float = 1.0) -> None:
         """Unload the model in the background once it has been idle."""
+        with self._lock:
+            if self._monitor_started:
+                return
+            self._monitor_started = True
 
         def loop() -> None:
             while not self._monitor_stop.wait(interval):

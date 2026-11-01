@@ -21,6 +21,7 @@ from .llm import OpenAITextProcessor
 from .models import (
     FileModelStorage,
     HttpModelDownloader,
+    ModelCatalog,
     ModelManager,
     WhisperLoader,
 )
@@ -230,6 +231,9 @@ def run_server(
         )
     # Detect once so model loading and /status cannot disagree.
     cuda_devices = detect_cuda_devices()
+    # Validate the override catalog before downloading or loading a model, so a
+    # bad catalog fails with a config error instead of after a costly load.
+    ModelCatalog.load(config)
     transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
     info = transcriber.info
     resolved_note = (

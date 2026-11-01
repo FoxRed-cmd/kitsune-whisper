@@ -14,11 +14,15 @@ from conftest import make_client, make_wav
 from kitsune_server.app import create_app
 from kitsune_server.config import ConfigError, ServerConfig
 from kitsune_server.models import (
+    AlreadyInstalledError,
+    CatalogError,
     DownloadCancelledError,
     DownloadedModel,
     ModelCatalog,
+    ModelLoadError,
     ModelManager,
     ModelNotDownloadedError,
+    UnknownModelError,
 )
 from kitsune_server.processor import DisabledTextProcessor
 from kitsune_server.transcriber import EngineInfo, FakeTranscriber
@@ -176,6 +180,10 @@ def wait_for(predicate: Any, *, timeout: float = 5.0) -> None:
     raise AssertionError("condition was not met before the timeout")
 
 
+def model_entry(manager: ModelManager, name: str) -> dict[str, Any]:
+    return next(item for item in manager.view()["models"] if item["name"] == name)
+
+
 # -- catalog ---------------------------------------------------------------
 
 
@@ -272,8 +280,10 @@ async def test_download_reports_progress_and_serialises_models() -> None:
         downloader.gate("tiny").set()
         wait_for(
             lambda: (
-                manager.view()["models"][0]["download"] is not None
-                and manager.view()["models"][0]["download"]["state"] == "done"
+                model_entry(manager, "base")["download"] is not None
+                and model_entry(manager, "tiny")["download"] is not None
+                and model_entry(manager, "base")["download"]["state"] == "done"
+                and model_entry(manager, "tiny")["download"]["state"] == "done"
             )
         )
 
@@ -292,7 +302,7 @@ async def test_cancel_stops_a_running_download() -> None:
         response = await client.post("/admin/models/cancel", json={"model": "base"})
         assert response.status_code == 200
         downloader.gate("base").set()
-        wait_for(lambda: manager.view()["models"][1]["download"]["state"] == "cancelled")
+        wait_for(lambda: model_entry(manager, "base")["download"]["state"] == "cancelled")
 
     view = manager.view()
     base = next(item for item in view["models"] if item["name"] == "base")
@@ -310,7 +320,7 @@ async def test_download_failure_is_reported_and_cleaned_up() -> None:
         await client.post("/admin/models/download", json={"model": "base"})
         wait_for(downloader.started_event("base").is_set)
         downloader.gate("base").set()
-        wait_for(lambda: manager.view()["models"][1]["download"]["state"] == "failed")
+        wait_for(lambda: model_entry(manager, "base")["download"]["state"] == "failed")
 
     base = next(item for item in manager.view()["models"] if item["name"] == "base")
     assert "network down" in base["download"]["error"]
@@ -347,9 +357,9 @@ def test_download_with_a_pinned_hash_rejects_a_mismatch(tmp_path: Path) -> None:
     )
 
     manager.start_download("custom")
-    wait_for(lambda: manager.view()["models"][0]["download"]["state"] == "failed")
+    wait_for(lambda: model_entry(manager, "custom")["download"]["state"] == "failed")
 
-    item = manager.view()["models"][0]
+    item = model_entry(manager, "custom")
     assert "checksum" in item["download"]["error"].lower()
     assert item["installed"] is False
     assert "custom" in storage.deleted
@@ -358,13 +368,11 @@ def test_download_with_a_pinned_hash_rejects_a_mismatch(tmp_path: Path) -> None:
 def test_download_refuses_an_unknown_or_already_installed_model() -> None:
     manager = build_manager(storage=FakeStorage(installed={"small": 10}))
 
-    with pytest.raises(Exception) as unknown:
+    with pytest.raises(UnknownModelError):
         manager.start_download("huge")
-    assert "huge" in str(unknown.value)
 
-    with pytest.raises(Exception) as installed:
+    with pytest.raises(AlreadyInstalledError):
         manager.start_download("small")
-    assert "already" in str(installed.value).lower()
 
 
 # -- activation ------------------------------------------------------------
@@ -519,6 +527,45 @@ async def test_deleting_the_active_model_is_refused() -> None:
     assert storage.installed("base") is False
 
 
+async def test_deleting_an_unknown_name_is_refused_without_touching_the_disk() -> None:
+    storage = FakeStorage(installed={"small": 10})
+    manager = build_manager(storage=storage)
+    app = build_app(manager)
+
+    async with make_client(app) as client:
+        response = await client.delete("/admin/models/huge")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "unknown_model"
+    with pytest.raises(UnknownModelError):
+        manager.delete("../../etc")
+    assert storage.deleted == []
+
+
+def test_a_catalog_name_cannot_escape_the_download_root(tmp_path: Path) -> None:
+    path = tmp_path / "catalog.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "models": [
+                    {
+                        "name": "../../etc",
+                        "disk_bytes": 1,
+                        "memory_bytes": 1,
+                        "speed": "fast",
+                        "quality": "good",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CatalogError) as caught:
+        ModelCatalog.load(ServerConfig(catalog_file=str(path)))
+    assert "plain file name" in str(caught.value)
+
+
 # -- idle unload and status transitions -----------------------------------
 
 
@@ -546,6 +593,26 @@ def test_idle_unload_defaults_to_600_seconds_and_reloads_lazily() -> None:
     assert loaded is not None
     assert manager.state == "loaded"
     assert loader.calls
+
+
+def test_the_previous_model_still_unloads_after_a_failed_activation() -> None:
+    clock = FakeClock()
+    loader = FakeLoader(failures={"base": RuntimeError("boom")})
+    manager = build_manager(
+        transcriber=FakeTranscriber(info=EngineInfo("small", "cpu", "int8")),
+        loader=loader,
+        storage=FakeStorage(installed={"small": 10, "base": 20}),
+        clock=clock,
+    )
+
+    with pytest.raises(ModelLoadError):
+        manager.activate("base")
+    assert manager.state == "failed"
+
+    clock.advance(600)
+    assert manager.maybe_unload() is True
+    assert manager.state == "cold"
+    assert manager.active_model == "small"
 
 
 def test_zero_idle_timeout_never_unloads() -> None:
@@ -606,13 +673,12 @@ async def test_idle_timeout_is_persisted_in_the_server_configuration() -> None:
     assert store.changes == [{"idle_unload_seconds": 300}]
 
 
-@pytest.mark.parametrize("seconds", [-1])
-async def test_negative_idle_timeout_is_rejected(seconds: int) -> None:
+async def test_negative_idle_timeout_is_rejected() -> None:
     manager = build_manager()
     app = build_app(manager)
 
     async with make_client(app) as client:
-        response = await client.post("/admin/models/idle-unload", json={"seconds": seconds})
+        response = await client.post("/admin/models/idle-unload", json={"seconds": -1})
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "bad_request"

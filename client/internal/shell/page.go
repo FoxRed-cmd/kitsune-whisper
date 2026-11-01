@@ -231,8 +231,7 @@ func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels
 
 // modelActions renders the one control a catalog row offers.
 func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLabels) string {
-	if model.Download != nil && model.Download.State != "" && model.Download.State != "done" &&
-		model.Download.State != "failed" && model.Download.State != "cancelled" {
+	if downloadInProgress(model.Download) {
 		return `<button type="button" data-action="cancel-download" data-model="` + escape(model.Name) + `">` + escape(labels.Cancel) + `</button>`
 	}
 	if !model.Installed {
@@ -245,6 +244,11 @@ func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLab
 	out.WriteString(`<button type="button" data-action="activate-model" data-model="` + escape(model.Name) + `">` + escape(labels.Activate) + `</button>`)
 	out.WriteString(` <button type="button" data-action="delete-model" data-model="` + escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `">` + escape(labels.Delete) + `</button>`)
 	return out.String()
+}
+
+// downloadInProgress reports a download the user can still cancel.
+func downloadInProgress(download *servers.ModelDownload) bool {
+	return download.InProgress()
 }
 
 // humanBytes matches the Server's catalog sizes without shipping translations
@@ -310,6 +314,10 @@ func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
 	case "queued":
 		return labels.Queued
 	case "downloading":
+		if download.TotalBytes > 0 {
+			return labels.Downloading + " " + humanBytes(download.ReceivedBytes) +
+				" / " + humanBytes(download.TotalBytes)
+		}
 		return labels.Downloading + " " + humanBytes(download.ReceivedBytes)
 	case "verifying":
 		return labels.Verifying

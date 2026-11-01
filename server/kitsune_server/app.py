@@ -8,11 +8,12 @@ load no model.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import ipaddress
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -499,6 +500,29 @@ def create_app(
             )
         return manager
 
+    @contextlib.contextmanager
+    def _quiesce() -> Iterator[None]:
+        """Hold every capacity slot so in-flight requests finish and new ones 503."""
+        for _ in range(app.state.workers):
+            app.state.semaphore.acquire()
+        try:
+            yield
+        finally:
+            for _ in range(app.state.workers):
+                app.state.semaphore.release()
+
+    def _patch_server_config(changes: Mapping[str, Any]) -> str:
+        """Persist one model change; return why it could not be saved, or ""."""
+        store = app.state.config_store
+        if store is None:
+            return ""
+        try:
+            store.patch(changes)
+        except ConfigError as exc:
+            logger.warning("could not save %s: %s", ", ".join(changes), exc)
+            return str(exc)
+        return ""
+
     def _model_response(warning: str = "") -> dict[str, Any]:
         manager = _require_models()
         manager.maybe_unload()
@@ -510,17 +534,6 @@ def create_app(
     def _model_failure(exc: ModelError) -> ApiError:
         status_code = 404 if exc.code == "unknown_model" else 409
         return ApiError(status_code, exc.code, str(exc))
-
-    def _persist_model(target: str) -> str:
-        store = app.state.config_store
-        if store is None:
-            return ""
-        try:
-            store.patch({"model": target})
-        except ConfigError as exc:
-            logger.warning("could not save the active model: %s", exc)
-            return str(exc)
-        return ""
 
     @app.get("/admin/models")
     async def list_models(
@@ -571,19 +584,14 @@ def create_app(
         def activate_blocking() -> None:
             # Hold every capacity slot so in-flight requests finish and new
             # ones get a clear 503 until the swap is complete.
-            for _ in range(app.state.workers):
-                app.state.semaphore.acquire()
-            try:
+            with _quiesce():
                 manager.activate(target)
-            finally:
-                for _ in range(app.state.workers):
-                    app.state.semaphore.release()
 
         try:
             await run_in_threadpool(activate_blocking)
         except ModelError as exc:
             raise _model_failure(exc) from exc
-        warning = _persist_model(manager.active_model)
+        warning = _patch_server_config({"model": manager.active_model})
         return _model_response(warning)
 
     @app.delete("/admin/models/{name}", status_code=204)
@@ -608,19 +616,8 @@ def create_app(
         del device
         manager = _require_models()
         manager.set_idle_unload_seconds(payload.seconds)
-        warning = _persist_idle_unload(payload.seconds)
+        warning = _patch_server_config({"idle_unload_seconds": payload.seconds})
         return _model_response(warning)
-
-    def _persist_idle_unload(seconds: int) -> str:
-        store = app.state.config_store
-        if store is None:
-            return ""
-        try:
-            store.patch({"idle_unload_seconds": seconds})
-        except ConfigError as exc:
-            logger.warning("could not save the idle unload timeout: %s", exc)
-            return str(exc)
-        return ""
 
     @app.post("/transcribe", dependencies=[Depends(authenticate)])
     async def transcribe(

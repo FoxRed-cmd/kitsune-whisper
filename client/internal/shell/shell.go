@@ -551,7 +551,11 @@ func (s *Shell) loadModelsForCheck(ctx context.Context) {
 	s.mu.Lock()
 	loaded := s.modelsLoaded
 	s.mu.Unlock()
-	if view.ActiveID == "" || loaded == view.ActiveID {
+	if view.ActiveID == "" {
+		return
+	}
+	// A running download still needs its progress refreshed.
+	if loaded == view.ActiveID && (view.Models == nil || !view.Models.HasActiveDownload()) {
 		return
 	}
 	modelsCtx, cancel := context.WithTimeout(ctx, 15*time.Second)

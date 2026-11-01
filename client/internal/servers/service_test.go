@@ -539,6 +539,9 @@ func TestDeletingTheActiveModelSurfacesTheServersRefusal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pair: %v", err)
 	}
+	if _, err := service.LoadModels(context.Background(), profile.ID); err != nil {
+		t.Fatalf("load models: %v", err)
+	}
 
 	err = service.DeleteModel(context.Background(), profile.ID, "small")
 
@@ -546,7 +549,11 @@ func TestDeletingTheActiveModelSurfacesTheServersRefusal(t *testing.T) {
 	if !errors.As(err, &adminErr) || adminErr.Code != "model_active" {
 		t.Fatalf("err = %v, want the model_active AdminError", err)
 	}
-	if view := service.View(); view.ModelsError == "" {
+	view := service.View()
+	if view.ModelsError == "" {
 		t.Fatalf("the refusal was not cached for the window: %+v", view)
+	}
+	if view.Models == nil || len(view.Models.Models) == 0 {
+		t.Fatalf("the last catalog was lost after a failed action: %+v", view.Models)
 	}
 }
