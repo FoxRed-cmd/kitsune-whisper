@@ -156,13 +156,13 @@ func TestSaveReportsRestartRequiredChanges(t *testing.T) {
 		t.Fatalf("applied/restart = %+v / %+v", outcome.Applied, outcome.RestartRequired)
 	}
 	change := outcome.RestartRequired[0]
-	if change.Path != "client.hotkey_backend" || change.Label != "Hotkey backend" || change.Mode != settings.ApplyRestart {
+	if change.Path != "client.hotkey_backend" || change.Label != "Session backend" || change.Mode != settings.ApplyRestart {
 		t.Fatalf("restart change = %+v", change)
 	}
 	if runtime.count() != 0 {
 		t.Fatalf("restart-only change rebuilt adapters %d times", runtime.count())
 	}
-	if !strings.Contains(strings.Join(outcome.Notices, " | "), "Restart the Client to apply: Hotkey backend") {
+	if !strings.Contains(strings.Join(outcome.Notices, " | "), "Restart the Client to apply: Session backend") {
 		t.Fatalf("notices = %v, want a restart hint", outcome.Notices)
 	}
 }

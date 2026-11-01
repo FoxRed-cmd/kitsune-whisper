@@ -5,7 +5,6 @@ var russian = map[string]string{
 	"app.title":    "kitsune-whisper",
 	"app.subtitle": "Приватная диктовка в локальной сети",
 
-	"status.section": "Состояние",
 	"status.phase":   "Фаза",
 	"status.client":  "Клиент",
 	"status.profile": "Профиль сервера",
@@ -35,7 +34,7 @@ var russian = map[string]string{
 	"help.cancel_hotkey":       "Отменяет текущую запись, не отправляя её на сервер.",
 	"field.trigger":            "Режим запуска",
 	"help.trigger":             "«Переключение» запускает и останавливает запись одним нажатием. «Удержание» записывает, пока клавиша нажата.",
-	"field.hotkey_backend":     "Бэкенд горячих клавиш",
+	"field.hotkey_backend":     "Бэкенд сеанса",
 	"help.hotkey_backend":      "«Автоматически» выбирает встроенный механизм рабочего стола. Смена требует перезапуска клиента.",
 	"field.audio.device":       "Микрофон",
 	"help.audio.device":        "Выберите устройство ввода и проверьте уровень перед диктовкой.",
@@ -107,7 +106,6 @@ var russian = map[string]string{
 
 	"mic.default":       "Системный по умолчанию",
 	"mic.level":         "Уровень входа",
-	"mic.noDevices":     "Микрофоны не найдены.",
 	"error.mic.list":    "Не удалось получить список микрофонов: %s.",
 	"error.mic.unknown": "Микрофон «%s» недоступен. Выберите один из списка: %s.",
 	"error.mic.start":   "Не удалось открыть микрофон «%s»: %s. Выберите другой микрофон или проверьте настройки звука.",

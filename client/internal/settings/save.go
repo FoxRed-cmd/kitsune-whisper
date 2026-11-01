@@ -12,11 +12,43 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 )
 
+// Reason is the machine-readable kind of a rejected field. The Settings window
+// translates on it instead of matching message text.
+type Reason string
+
+const (
+	// ReasonUnknownKey is a key the schema does not know.
+	ReasonUnknownKey Reason = Reason(config.ReasonUnknownKey)
+	// ReasonNotMapping is a scalar where a group belongs.
+	ReasonNotMapping Reason = Reason(config.ReasonNotMapping)
+	// ReasonRequired is a missing or empty required value.
+	ReasonRequired Reason = Reason(config.ReasonRequired)
+	// ReasonText is a value that must be a string.
+	ReasonText Reason = Reason(config.ReasonText)
+	// ReasonNumber is a value that must be a number.
+	ReasonNumber Reason = Reason(config.ReasonNumber)
+	// ReasonBoolean is a value that must be a boolean.
+	ReasonBoolean Reason = Reason(config.ReasonBoolean)
+	// ReasonChoice is a value outside a fixed list; Detail names the choices.
+	ReasonChoice Reason = Reason(config.ReasonChoice)
+	// ReasonRange is a value outside its bounds.
+	ReasonRange Reason = Reason(config.ReasonRange)
+	// ReasonInvalid is a validation failure without a more specific kind.
+	ReasonInvalid Reason = Reason(config.ReasonInvalid)
+	// ReasonLocked is a field the environment or the command line decides;
+	// Detail explains which.
+	ReasonLocked Reason = "locked"
+)
+
 // FieldError is one field a save rejected. Path is the config path, e.g.
 // "client.trigger".
 type FieldError struct {
 	Path    string
 	Message string
+	// Reason classifies the rejection; Detail carries reason-specific data
+	// such as the allowed values or the lock explanation.
+	Reason Reason
+	Detail string
 }
 
 func (e FieldError) Error() string {
@@ -93,10 +125,18 @@ func (s *Store) Save(patch map[string]any) (SaveResult, error) {
 			continue
 		}
 		if isGroupPath(path, known) {
-			fields = append(fields, FieldError{Path: path, Message: "must be a mapping"})
+			fields = append(fields, FieldError{
+				Path:    path,
+				Message: "must be a mapping",
+				Reason:  ReasonNotMapping,
+			})
 			continue
 		}
-		fields = append(fields, FieldError{Path: path, Message: "unknown key"})
+		fields = append(fields, FieldError{
+			Path:    path,
+			Message: "unknown key",
+			Reason:  ReasonUnknownKey,
+		})
 	}
 	for _, path := range paths {
 		current, ok := s.snapshot.Field(path)
@@ -107,6 +147,8 @@ func (s *Store) Save(patch map[string]any) (SaveResult, error) {
 			fields = append(fields, FieldError{
 				Path:    path,
 				Message: "locked: " + current.Reason,
+				Reason:  ReasonLocked,
+				Detail:  current.Reason,
 			})
 		}
 	}
@@ -285,13 +327,31 @@ func appendFieldError(fields []FieldError, err error) []FieldError {
 	return append(fields, field)
 }
 
-// asFieldError splits a config error into its field path and message.
+// asFieldError splits a config error into its field path and message, keeping
+// the typed reason so callers never have to match message text.
 func asFieldError(err error) FieldError {
+	var configErr *config.Error
+	if errors.As(err, &configErr) {
+		message := configErr.Message
+		if configErr.Path != "" {
+			message = strings.TrimPrefix(message, configErr.Path+": ")
+		}
+		reason := Reason(configErr.Reason)
+		if reason == "" {
+			reason = ReasonInvalid
+		}
+		return FieldError{
+			Path:    configErr.Path,
+			Message: message,
+			Reason:  reason,
+			Detail:  configErr.Detail,
+		}
+	}
 	message := err.Error()
 	if path, rest, ok := strings.Cut(message, ": "); ok {
-		return FieldError{Path: path, Message: rest}
+		return FieldError{Path: path, Message: rest, Reason: ReasonInvalid}
 	}
-	return FieldError{Message: message}
+	return FieldError{Message: message, Reason: ReasonInvalid}
 }
 
 func cloneValues(values map[string]any) map[string]any {

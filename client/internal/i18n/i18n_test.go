@@ -62,24 +62,6 @@ func TestResolveLanguageSetting(t *testing.T) {
 	}
 }
 
-func TestCatalogTranslatesAndFallsBackToEnglish(t *testing.T) {
-	catalog := i18n.New(i18n.Russian, map[string]string{
-		"greeting": "Привет, %s",
-		"shared":   "по-русски",
-	})
-	if got := catalog.T("greeting", "мир"); got != "Привет, мир" {
-		t.Fatalf("translated message = %q", got)
-	}
-	// A key missing from Russian must fall back to the English catalog.
-	if got := catalog.T("tray.quit"); got != i18n.For(i18n.English).T("tray.quit") {
-		t.Fatalf("missing-key fallback = %q, want the English string", got)
-	}
-	// A key missing everywhere is reported as the key, never as empty text.
-	if got := catalog.T("not.a.real.key"); got != "not.a.real.key" {
-		t.Fatalf("unknown key = %q, want the key itself", got)
-	}
-}
-
 func TestCatalogExposesItsLanguageAndKeys(t *testing.T) {
 	catalog := i18n.For(i18n.Russian)
 	if catalog.Lang() != i18n.Russian {

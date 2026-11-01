@@ -179,32 +179,28 @@ func localizeStoreError(catalog i18n.Catalog, err error) []string {
 }
 
 func localizeFieldError(catalog i18n.Catalog, field settings.FieldError) string {
-	message := field.Message
 	var localized string
-	switch {
-	case message == "unknown key" || message == "must be a mapping":
+	switch field.Reason {
+	case settings.ReasonUnknownKey:
 		localized = catalog.T("error.field.unknown")
-		if message == "must be a mapping" {
-			localized = catalog.T("error.field.mapping")
-		}
-	case message == "must not be empty":
+	case settings.ReasonNotMapping:
+		localized = catalog.T("error.field.mapping")
+	case settings.ReasonRequired:
 		localized = catalog.T("error.field.required")
-	case strings.HasPrefix(message, "must be one of "):
-		localized = catalog.T("error.field.choice", strings.TrimPrefix(message, "must be one of "))
-	case strings.HasPrefix(message, "locked: "):
-		localized = catalog.T("error.field.locked", lockReason(catalog, strings.TrimPrefix(message, "locked: ")))
-	case message == "must be a string":
+	case settings.ReasonChoice:
+		localized = catalog.T("error.field.choice", field.Detail)
+	case settings.ReasonLocked:
+		localized = catalog.T("error.field.locked", lockReason(catalog, field.Detail))
+	case settings.ReasonText:
 		localized = catalog.T("error.field.text")
-	case message == "must be a boolean":
+	case settings.ReasonBoolean:
 		localized = catalog.T("error.field.boolean")
-	case strings.Contains(message, "must be a number"):
+	case settings.ReasonNumber:
 		localized = catalog.T("error.field.number")
-	case strings.Contains(message, "must not exceed"):
+	case settings.ReasonRange:
 		localized = catalog.T("error.field.range")
-	case strings.Contains(message, "must be greater"):
-		localized = catalog.T("error.field.invalid", message)
 	default:
-		localized = catalog.T("error.field.invalid", message)
+		localized = catalog.T("error.field.invalid", field.Message)
 	}
 	if field.Path == "" {
 		return localized

@@ -5,8 +5,8 @@ package settings
 type ApplyMode string
 
 const (
-	// ApplyHot means the runtime can pick the value up without a restart.
-	// Classification is advisory until #71 wires live apply.
+	// ApplyHot means the runtime can pick the value up without a restart. The
+	// runtime rebuilds its adapters, or the shell re-renders the value it owns.
 	ApplyHot ApplyMode = "hot"
 	// ApplyRestart means the running Client cannot apply the value safely; the
 	// Settings window offers a one-click restart.
@@ -19,12 +19,11 @@ const (
 // field the shell itself renders (the interface language) is applied by the
 // shell without a runtime rebuild.
 //
-// hotFields lists the values the Dictation runtime will apply live per the
+// hotFields lists the values the Dictation runtime applies live per the
 // desktop spec: hotkey, cancel hotkey, trigger, microphone, language, initial
 // prompt, paste/clipboard, earcons, indicator, log level, timeouts and the
-// Spool. The active Server profile becomes hot when live apply lands with the
-// Settings window (#75); the current runtime builds its transcriber at startup,
-// so switching is reported as restart-required.
+// Spool. The active Server profile is not hot: the runtime builds its
+// transcriber at startup, so switching is reported as restart-required.
 //
 // Everything else needs a restart. The hotkey backend and the Wayland
 // injection tool bind at startup, the profile list and active selection are

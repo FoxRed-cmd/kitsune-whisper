@@ -115,16 +115,6 @@ func For(lang Lang) Catalog {
 	return Catalog{lang: English, messages: english}
 }
 
-// New builds a catalog from explicit messages. It exists so tests and future
-// languages can construct a catalog without touching the built-in tables.
-func New(lang Lang, messages map[string]string) Catalog {
-	copied := make(map[string]string, len(messages))
-	for key, value := range messages {
-		copied[key] = value
-	}
-	return Catalog{lang: lang, messages: copied}
-}
-
 // Lang reports the catalog's language.
 func (c Catalog) Lang() Lang { return c.lang }
 

@@ -8,6 +8,7 @@
 package mic
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -38,6 +39,9 @@ func ListDevices(onLog func(string)) ([]Device, error) {
 	return backend.Devices()
 }
 
+// ErrNoDevices means enumeration found no capture device to select.
+var ErrNoDevices = errors.New("no capture devices found")
+
 // SelectDevice resolves the configured selector against enumerated devices:
 // an empty selector picks the system default, a decimal picks by index, and
 // anything else is matched against the device name case-insensitively.
@@ -49,7 +53,7 @@ func SelectDevice(selector string, devices []Device) (Device, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
 		if len(devices) == 0 {
-			return Device{}, fmt.Errorf("no capture devices found")
+			return Device{}, ErrNoDevices
 		}
 		for _, device := range devices {
 			if device.IsDefault {

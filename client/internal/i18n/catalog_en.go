@@ -7,7 +7,6 @@ var english = map[string]string{
 	"app.title":    "kitsune-whisper",
 	"app.subtitle": "Private, LAN-local dictation",
 
-	"status.section": "Status",
 	"status.phase":   "Phase",
 	"status.client":  "Client",
 	"status.profile": "Server profile",
@@ -37,7 +36,7 @@ var english = map[string]string{
 	"help.cancel_hotkey":       "Discards the current recording without sending it to the Server.",
 	"field.trigger":            "Trigger mode",
 	"help.trigger":             "Toggle starts and stops with one press. Push-to-talk records while the key is held.",
-	"field.hotkey_backend":     "Hotkey backend",
+	"field.hotkey_backend":     "Session backend",
 	"help.hotkey_backend":      "Automatic picks the session's native mechanism. Changing it requires a Client restart.",
 	"field.audio.device":       "Microphone",
 	"help.audio.device":        "Pick the input device and check its level before dictating.",
@@ -109,7 +108,6 @@ var english = map[string]string{
 
 	"mic.default":       "System default",
 	"mic.level":         "Input level",
-	"mic.noDevices":     "No microphones found.",
 	"error.mic.list":    "Could not list microphones: %s.",
 	"error.mic.unknown": "Microphone “%s” is not available. Choose one of: %s.",
 	"error.mic.start":   "Could not open microphone “%s”: %s. Choose another device or check your audio settings.",
