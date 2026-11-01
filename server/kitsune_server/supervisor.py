@@ -337,8 +337,10 @@ def status(env: Environment) -> SupervisorStatus:
             return SupervisorStatus(installed=False, running=False)
         result = env.run(["schtasks", "/Query", "/TN", TASK_NAME, "/FO", "LIST"])
         if not result.ok:
+            # The cached XML is not registration: a failed /Create leaves the
+            # file behind, so the query is the source of truth.
             return SupervisorStatus(
-                installed=True,
+                installed=False,
                 running=False,
                 detail=_one_line(result.stderr) or _one_line(result.stdout),
             )

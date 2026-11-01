@@ -463,6 +463,11 @@ def _validate_stage(stage: Path, layout: Layout) -> None:
         raise BundleError(
             f"bundle artifact is missing its pinned runtime (runtime/{layout.runtime_python})"
         )
+    if layout.is_windows and not (stage / "runtime" / "pythonw.exe").is_file():
+        raise BundleError(
+            "bundle artifact has no runtime/pythonw.exe, so the Server cannot "
+            "start hidden on Windows"
+        )
     lib = stage / "lib"
     if not lib.is_dir() or not any(lib.iterdir()):
         raise BundleError("bundle artifact is missing its resolved environment (lib/)")

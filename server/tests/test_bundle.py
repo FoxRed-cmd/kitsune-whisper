@@ -96,11 +96,14 @@ def bundle_artifact_bytes(
     *,
     version: str = "0.1.0",
     platform: str = "linux",
+    with_pythonw: bool = True,
 ) -> bytes:
     buffer = io.BytesIO()
     runtime_python = "runtime/python.exe" if platform == "windows" else "runtime/bin/python3"
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         add_bytes(archive, runtime_python, b"#!/bin/sh\n", 0o755)
+        if platform == "windows" and with_pythonw:
+            add_bytes(archive, "runtime/pythonw.exe", b"\x00", 0o755)
         add_bytes(archive, "lib/kitsune_server/__init__.py", b"", 0o644)
         manifest = Manifest(
             version=version,
@@ -180,6 +183,19 @@ def test_install_from_artifact_verifies_and_lays_out_the_bundle(tmp_path: Path) 
     assert manifest.config_dir == str(paths.config_dir)
     assert manifest.models_dir == str(paths.root.parent / "models")
     assert Manifest.from_path(paths.manifest_path) == manifest
+
+
+def test_windows_artifact_without_pythonw_is_rejected(tmp_path: Path) -> None:
+    paths = layout(tmp_path, "windows")
+    payload = bundle_artifact_bytes(platform="windows", with_pythonw=False)
+    subject = installer(paths, download=FakeDownloader(payload))
+
+    with pytest.raises(BundleError, match="pythonw"):
+        subject.install(
+            ArtifactSource(location="https://example.test/bundle.tar.gz", sha256=digest(payload))
+        )
+
+    assert not paths.root.exists()
 
 
 def test_install_from_artifact_rejects_a_checksum_mismatch(tmp_path: Path) -> None:

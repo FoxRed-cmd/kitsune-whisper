@@ -324,7 +324,7 @@ def _install(args: argparse.Namespace) -> int:
                 user=_current_user(),
             ),
         )
-    except (bundle.BundleError, supervisor.SupervisorError) as exc:
+    except (bundle.BundleError, supervisor.SupervisorError, OSError) as exc:
         return _fail(str(exc))
     print(f"installed kitsune-server {manifest.version} to {layout.root}")
     print(f"supervisor: registered to start at login ({env.os_name})")
@@ -360,7 +360,7 @@ def _uninstall() -> int:
     try:
         supervisor.uninstall(_supervisor_env())
         _bundle_installer(layout).uninstall()
-    except (bundle.BundleError, supervisor.SupervisorError) as exc:
+    except (bundle.BundleError, supervisor.SupervisorError, OSError) as exc:
         return _fail(str(exc))
     print(
         "removed the Server bundle, launcher, and supervisor; "
@@ -379,7 +379,7 @@ def _bundle_build(args: argparse.Namespace) -> int:
             arch=getattr(args, "arch", None),
             version=getattr(args, "bundle_version", None),
         )
-    except bundle.BundleError as exc:
+    except (bundle.BundleError, OSError) as exc:
         return _fail(str(exc))
     print(f"wrote {output}")
     return 0

@@ -189,6 +189,34 @@ def test_install_reports_a_checksum_mismatch_on_one_line(
     assert len(error.strip().splitlines()) == 1
 
 
+def test_install_reports_a_filesystem_error_on_one_line(
+    tmp_path: Path,
+    wiring: Wiring,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class BrokenInstaller:
+        def __init__(self, paths: bundle.Layout, models_dir: Path | None = None) -> None:
+            pass
+
+        def install(self, source: object) -> bundle.Manifest:
+            raise PermissionError("permission denied: /usr/local/share")
+
+        def uninstall(self) -> None:  # pragma: no cover - not exercised
+            raise AssertionError("unexpected uninstall")
+
+    monkeypatch.setattr(
+        cli, "_bundle_installer", lambda paths, models_dir=None: BrokenInstaller(paths)
+    )
+
+    assert cli.main(install_args(build_artifact(tmp_path))) == 1
+
+    error = capsys.readouterr().err
+    assert error.startswith("error:")
+    assert "permission denied" in error
+    assert len(error.strip().splitlines()) == 1
+
+
 def test_install_from_a_pinned_runtime_uses_the_wheelhouse(
     tmp_path: Path,
     wiring: Wiring,

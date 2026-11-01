@@ -306,6 +306,20 @@ def test_windows_status_parses_the_query(tmp_path: Path) -> None:
     assert status == supervisor.SupervisorStatus(installed=True, running=True, detail="Running")
 
 
+def test_windows_status_treats_an_unregistered_task_as_missing(tmp_path: Path) -> None:
+    runner = FakeRunner({"/Query": CommandResult(1, stderr="ERROR: the task does not exist")})
+    env = windows_env(tmp_path, runner)
+    task_path = supervisor.task_path(env)
+    task_path.parent.mkdir(parents=True)
+    task_path.write_text("", encoding="utf-8")
+
+    status = supervisor.status(env)
+
+    assert status.installed is False
+    assert status.running is False
+    assert "does not exist" in status.detail
+
+
 def test_windows_status_reports_a_missing_task(tmp_path: Path) -> None:
     runner = FakeRunner()
     env = windows_env(tmp_path, runner)
