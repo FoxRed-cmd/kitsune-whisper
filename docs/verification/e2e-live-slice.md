@@ -136,8 +136,9 @@ Out of v1's Windows + Linux X11 scope; see ADR 0002 for the portal hotkey and
 
 ## Two-machine pairing and revocation
 
-Run the Server on one machine and the Client on another on the same LAN. This is
-the flow issue #74 verifies by hand:
+Run the Server on one machine and the Client on another on the same LAN. The
+manual pass is tracked in issue #84 and is run once the desktop work is
+complete:
 
 1. On the Server host, run `kitsune-server expose on --yes` and restart the
    Server. Check that `https://<server>:8765/health` answers from the laptop.
