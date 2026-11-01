@@ -2,7 +2,7 @@
 
 The Server runs without Docker and without a system Python. It ships as a
 per-user **bundle**: a pinned standalone Python runtime, the Server package and
-its resolved dependencies, and a launcher, installed under the user's data
+its resolved dependencies, and a launcher, installed under the user's library
 directory and kept alive by an OS supervisor. Docker remains the supported
 deployment for a dedicated host (see `docs/adr/0007-native-server-bundle.md`).
 
@@ -20,8 +20,9 @@ deployment for a dedicated host (see `docs/adr/0007-native-server-bundle.md`).
 
 The launcher puts `<root>/lib` first on `sys.path`, runs the interpreter with
 `-s` so user site-packages cannot mix in, and calls `kitsune_server.cli`, so the
-bundle never imports a system Python or system site-packages. `bundle.json` records the version, runtime Python version,
-platform, source, and the configuration and model directories.
+bundle never imports a system Python or system site-packages. `bundle.json`
+records the version, runtime Python version, platform, source, and the
+configuration and model directories.
 
 ## Install
 
@@ -38,10 +39,9 @@ kitsune-server install \
   --sha256 <hex>
 ```
 
-Pass a local path instead of a URL for an offline install. Both the artifact
-URL and its SHA-256 come from the release's `checksums.txt`, and the runtime
-path below uses that runtime's own pinned archive and checksum entry. A pinned
-standalone runtime plus the release wheelhouse:
+Pass a local path instead of a URL for an offline install. The artifact URL and
+its SHA-256 come from the release's `checksums.txt`. Alternatively, install from
+a pinned standalone runtime plus the release wheelhouse:
 
 ```sh
 kitsune-server install \
@@ -50,15 +50,16 @@ kitsune-server install \
   --wheelhouse ./wheelhouse
 ```
 
-The runtime archive is verified before extraction, flattened if it has a single
-top-level directory (the python-build-standalone layout), and filled with
+The runtime archive is verified against `--runtime-sha256` (from the same
+release metadata) before extraction, flattened if it has a single top-level
+directory (the python-build-standalone layout), and filled with
 `kitsune-server==<version>` using its own pip against the wheelhouse
 (`--no-index --find-links`). Downloads, extraction, and pip are injectable, so
 the packaging tests run offline in temporary directories.
 
-`install` writes the supervisor entry and enables it at login. Re-run it to
-upgrade: the bundle root is replaced and configuration and models are left
-alone.
+`install` writes the supervisor entry, starts the Server now, and enables it at
+login. Re-run it to upgrade: a running Server is stopped, the bundle root is
+replaced, and configuration and models are left alone.
 
 ## Supervisor
 
@@ -88,8 +89,9 @@ kitsune-server restart       # restart the supervised process
 ```
 
 `stop`/`restart`/`status` drive `systemctl --user` or `schtasks` through an
-injectable runner; when the supervisor is not installed they exit non-zero with
-a one-line pointer to `kitsune-server install`.
+injectable runner; `status` always reports what it finds, and `stop`/`restart`
+exit non-zero with a one-line pointer to `kitsune-server install` when the
+supervisor is missing.
 
 Soft-stop through the Admin API (unload the model but keep serving) and the
 supervised self-exit restart land with #77. This ticket hard-stops the process.
@@ -101,9 +103,7 @@ The Server binds loopback on the configured port (`server.port`, default
 exits non-zero with one line naming the setting:
 
 ```
-error: server.port 8765 is already in use on 127.0.0.1 (Address already in use);
-change server.port in ~/.config/kitsune-whisper/kitsune.yaml or set
-KITSUNE_SERVER_PORT to a free port
+error: server.port 8765 is already in use on 127.0.0.1 (Address already in use); change server.port in ~/.config/kitsune-whisper/kitsune.yaml or set KITSUNE_SERVER_PORT to a free port
 ```
 
 It never picks a random port.

@@ -268,6 +268,9 @@ def install(env: Environment, options: SupervisorOptions) -> None:
     if env.os_name == "windows":
         _write_utf16_file(task_path(env), task_xml(options))
         _check(env, ["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(task_path(env)), "/F"])
+        # systemctl enable --now starts the unit; Task Scheduler only triggers
+        # at the next logon, so start it now to match.
+        _check(env, ["schtasks", "/Run", "/TN", TASK_NAME])
         return
     raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
 

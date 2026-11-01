@@ -241,7 +241,10 @@ def test_windows_install_registers_the_task_from_a_utf16_file(tmp_path: Path) ->
     task_path = supervisor.task_path(env)
     raw = task_path.read_bytes()
     assert raw[:2] == b"\xff\xfe"
-    assert runner.commands == [f"schtasks /Create /TN {supervisor.TASK_NAME} /XML {task_path} /F"]
+    assert runner.commands == [
+        f"schtasks /Create /TN {supervisor.TASK_NAME} /XML {task_path} /F",
+        f"schtasks /Run /TN {supervisor.TASK_NAME}",
+    ]
 
 
 def test_windows_uninstall_deletes_the_task_and_is_idempotent(tmp_path: Path) -> None:
