@@ -107,7 +107,7 @@ async def test_admin_config_patch_writes_valid_changes_and_classifies_them(tmp_p
     assert body["restart_required"] == ["server.port", "server.decode.beam_size"]
     assert body["hot_applied"] == ["server.log_level"]
     assert body["config"]["port"] == 9100
-    assert status.json()["network"]["port"] == 9100
+    assert status.json()["network"]["port"] == 8765
     text = path.read_text(encoding="utf-8")
     assert "port: 9100" in text
     assert "beam_size: 3" in text
@@ -127,6 +127,22 @@ async def test_admin_config_does_not_redact_an_unset_key(tmp_path: Path) -> None
     assert response.json()["config"]["processing"]["api_key"] is None
 
 
+async def test_a_restart_required_auth_change_does_not_apply_live(tmp_path: Path) -> None:
+    path = config_file(tmp_path)
+    app = build(tmp_path=tmp_path, config_store=ConfigStore(path, env={}))
+
+    async with make_client(app) as client:
+        patched = await client.patch("/admin/config", json={"patch": {"allow_anonymous": True}})
+    assert patched.status_code == 200
+    assert patched.json()["restart_required"] == ["server.allow_anonymous"]
+
+    async with make_client(app, token="") as anonymous:
+        response = await anonymous.get("/status")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
 async def test_admin_config_patch_rejects_invalid_values_and_leaves_the_file(
     tmp_path: Path,
 ) -> None:
@@ -141,6 +157,25 @@ async def test_admin_config_patch_rejects_invalid_values_and_leaves_the_file(
     assert response.json()["error"]["code"] == "bad_request"
     assert "server.port" in response.json()["error"]["message"]
     assert path.read_bytes() == original
+
+
+async def test_admin_config_patch_reports_a_read_only_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = config_file(tmp_path)
+    app = build(tmp_path=tmp_path, config_store=ConfigStore(path, env={}))
+
+    def read_only(*_args: object, **_kwargs: object) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr("kitsune_server.store._atomic_write", read_only)
+
+    async with make_client(app) as client:
+        response = await client.patch("/admin/config", json={"patch": {"port": 9100}})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "config_unavailable"
+    assert "read-only" in response.json()["error"]["message"]
 
 
 async def test_admin_config_patch_never_writes_a_redacted_sentinel(tmp_path: Path) -> None:
@@ -291,7 +326,7 @@ async def test_start_reloads_the_model_and_clears_the_stopped_state(tmp_path: Pa
     assert json.loads(state_path.read_text(encoding="utf-8"))["stopped"] is False
 
 
-async def test_a_soft_stop_survives_a_process_restart(tmp_path: Path) -> None:
+def test_a_soft_stop_survives_a_process_restart(tmp_path: Path) -> None:
     state_path = lifecycle_state_path({"XDG_STATE_HOME": str(tmp_path / "state")})
     first = Lifecycle(
         lambda: FakeTranscriber(),

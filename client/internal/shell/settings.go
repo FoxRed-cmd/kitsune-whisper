@@ -85,6 +85,7 @@ type ServerLabels struct {
 	SettingsTitle    string `json:"settingsTitle"`
 	SettingsHelp     string `json:"settingsHelp"`
 	SaveSettings     string `json:"saveSettings"`
+	AdvancedValue    string `json:"advancedValue"`
 	Source           string `json:"source"`
 	ModeRestart      string `json:"modeRestart"`
 	ModeHot          string `json:"modeHot"`
@@ -92,6 +93,7 @@ type ServerLabels struct {
 	LogsTitle        string `json:"logsTitle"`
 	LogsHelp         string `json:"logsHelp"`
 	LogPath          string `json:"logPath"`
+	LogTruncated     string `json:"logTruncated"`
 	NoLogs           string `json:"noLogs"`
 	LoadLogs         string `json:"loadLogs"`
 	CopyLogs         string `json:"copyLogs"`
@@ -116,7 +118,9 @@ type SettingsView struct {
 	dictation.View
 	Servers     servers.View    `json:"servers"`
 	Diagnostics DiagnosticsView `json:"diagnostics"`
-	Labels      ServerLabels    `json:"serverLabels"`
+	// ModelState is the translated lifecycle state of the active Server.
+	ModelState string       `json:"modelState,omitempty"`
+	Labels     ServerLabels `json:"serverLabels"`
 }
 
 func (s *Shell) serversView() servers.View {
@@ -171,6 +175,7 @@ func (s *Shell) serverLabels() ServerLabels {
 		SettingsTitle:    catalog.T("server.settingsTitle"),
 		SettingsHelp:     catalog.T("server.settingsHelp"),
 		SaveSettings:     catalog.T("action.saveServer"),
+		AdvancedValue:    catalog.T("server.advancedValue"),
 		Source:           catalog.T("server.source"),
 		ModeRestart:      catalog.T("server.modeRestart"),
 		ModeHot:          catalog.T("server.modeHot"),
@@ -178,6 +183,7 @@ func (s *Shell) serverLabels() ServerLabels {
 		LogsTitle:        catalog.T("server.logsTitle"),
 		LogsHelp:         catalog.T("server.logsHelp"),
 		LogPath:          catalog.T("server.logPath"),
+		LogTruncated:     catalog.T("server.logTruncated"),
 		NoLogs:           catalog.T("server.noLogs"),
 		LoadLogs:         catalog.T("action.loadLogs"),
 		CopyLogs:         catalog.T("action.copyLogs"),
@@ -209,10 +215,15 @@ func (s *Shell) catalog() i18n.Catalog {
 // no settings service is wired.
 func (s *Shell) settingsView() SettingsView {
 	serverView := s.serversView()
+	modelState := ""
+	if serverView.Lifecycle != nil {
+		modelState = modelStateLabel(s.catalog(), serverView.Lifecycle.ModelState)
+	}
 	view := SettingsView{
 		View:        s.dictationView(),
 		Servers:     serverView,
 		Diagnostics: s.diagnosticsView(serverView),
+		ModelState:  modelState,
 		Labels:      s.serverLabels(),
 	}
 	return view

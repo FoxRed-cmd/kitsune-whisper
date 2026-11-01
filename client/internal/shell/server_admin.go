@@ -72,6 +72,9 @@ func (s *Shell) refreshDiagnostics() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
+	if s.opts.CheckServer != nil {
+		s.checkServer(ctx)
+	}
 	var failures []string
 	if _, err := s.opts.Servers.LoadConfig(ctx, profileID); err != nil {
 		failures = append(failures, s.catalog().T("error.server.configRead", err.Error()))
@@ -180,7 +183,9 @@ func (s *Shell) awaitServer() {
 			s.pushMessages([]string{s.catalog().T("notice.server.ready", name)}, nil)
 			return
 		}
-		time.Sleep(interval)
+		if attempt < attempts-1 {
+			time.Sleep(interval)
+		}
 	}
 	s.pushMessages(nil, []string{s.catalog().T("error.server.notReady", name)})
 }

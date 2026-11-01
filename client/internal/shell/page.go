@@ -58,7 +58,7 @@ func SettingsHTML(view SettingsView) string {
 		}
 		out.WriteString(`</section>`)
 	}
-	out.WriteString(serversHTML(view.Servers, view.Labels))
+	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelState))
 	out.WriteString(serverSettingsHTML(view.Servers, view.Labels))
 	out.WriteString(diagnosticsHTML(view.Diagnostics, view.Labels))
 	if view.DeviceError != "" {
@@ -73,7 +73,7 @@ func SettingsHTML(view SettingsView) string {
 // serversHTML renders the Server profiles and the active profile's Devices.
 // Inputs have stable ids so the page can collect one pairing request without
 // rebuilding any other screen.
-func serversHTML(view servers.View, labels ServerLabels) string {
+func serversHTML(view servers.View, labels ServerLabels, modelState string) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group" data-section="servers">`)
 	out.WriteString(`<h2>` + escape(labels.Title) + `</h2>`)
@@ -104,7 +104,7 @@ func serversHTML(view servers.View, labels ServerLabels) string {
 	out.WriteString(`<h3>` + escape(labels.ManagementTitle) + `</h3>`)
 	out.WriteString(`<p class="help">` + escape(labels.ManagementHelp) + `</p>`)
 	if view.Lifecycle != nil {
-		out.WriteString(`<p class="row"><strong>` + escape(labels.ModelState) + `:</strong> <span data-model-state="` + escape(view.Lifecycle.ModelState) + `">` + escape(view.Lifecycle.ModelState) + `</span></p>`)
+		out.WriteString(`<p class="row"><strong>` + escape(labels.ModelState) + `:</strong> <span data-model-state="` + escape(view.Lifecycle.ModelState) + `">` + escape(valueOr(modelState, view.Lifecycle.ModelState)) + `</span></p>`)
 	}
 	if view.LifecycleError != "" {
 		out.WriteString(`<p class="failure">` + escape(view.LifecycleError) + `</p>`)
@@ -202,7 +202,7 @@ func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 			out.WriteString(`<span class="badge hot">` + escape(labels.ModeHot) + `</span>`)
 		}
 		if field.Source != "default" {
-			out.WriteString(`<span class="source">` + escape(field.Source) + `</span>`)
+			out.WriteString(`<span class="source">` + escape(labels.Source) + `: ` + escape(field.Source) + `</span>`)
 		}
 		out.WriteString(`</div>`)
 		disabled := ""
@@ -212,6 +212,13 @@ func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 		value := ""
 		if field.Value != nil {
 			value = fmt.Sprint(field.Value)
+		}
+		if !scalarValue(field.Value) {
+			encoded, _ := json.Marshal(field.Value)
+			out.WriteString(`<pre class="diagnostics" data-server-advanced="` + escape(path) + `">` + escape(string(encoded)) + `</pre>`)
+			out.WriteString(`<p class="help">` + escape(labels.AdvancedValue) + `</p>`)
+			out.WriteString(`</div>`)
+			continue
 		}
 		out.WriteString(`<input type="text" id="` + escape(id) + `" data-server-path="` + escape(path) +
 			`" autocomplete="off" spellcheck="false" value="` + escape(value) + `"` + disabled + `>`)
@@ -266,6 +273,9 @@ func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
 	if view.LogPath != "" {
 		out.WriteString(`<p class="help">` + escape(labels.LogPath) + `: <code>` + escape(view.LogPath) + `</code></p>`)
 	}
+	if view.Truncated {
+		out.WriteString(`<p class="help">` + escape(labels.LogTruncated) + `</p>`)
+	}
 	out.WriteString(`<div class="actions-inline">`)
 	out.WriteString(`<button type="button" data-action="load-logs">` + escape(labels.LoadLogs) + `</button>`)
 	out.WriteString(`<button type="button" data-action="copy-logs">` + escape(labels.CopyLogs) + `</button>`)
@@ -285,6 +295,18 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// scalarValue reports whether the Settings form can edit a value as one text
+// input. Nested objects and lists are rendered read-only so saving another
+// field cannot send them back as an invalid string.
+func scalarValue(value any) bool {
+	switch value.(type) {
+	case map[string]any, []any:
+		return false
+	default:
+		return true
+	}
 }
 
 func lastSeen(value *float64, never string) string {
@@ -553,6 +575,9 @@ const pageHTML = `<!doctype html>
     for (var i = 0; i < fields.length; i++) {
       var el = fields[i];
       if (el.disabled) continue;
+      // Only send edited fields: untouched null/optional fields must not be
+      // rewritten as empty strings by a save of an unrelated setting.
+      if (el.value === el.defaultValue) continue;
       var path = el.dataset.serverPath.replace(/^server\./, "");
       var parts = path.split(".");
       var cursor = patch;

@@ -387,6 +387,9 @@ func managementView() shell.SettingsView {
 			"server.processing.api_key": {
 				Value: "***", Source: "file", Mode: "hot",
 			},
+			"server.processing.extra_body": {
+				Value: map[string]any{"temperature": float64(0)}, Source: "file", Mode: "hot",
+			},
 			"server.port": {
 				Value: float64(8765), Source: "file", Mode: "restart",
 			},
@@ -422,6 +425,7 @@ func managementView() shell.SettingsView {
 		SettingsTitle:    "Server settings",
 		SettingsHelp:     "Validated patches.",
 		SaveSettings:     "Save Server settings",
+		AdvancedValue:    "This value is a structured setting.",
 		ModeRestart:      "Restart required",
 		ModeHot:          "Applies live",
 		Locked:           "Locked: %s",
@@ -458,6 +462,8 @@ func TestPageRendersServerManagementSettingsAndDiagnostics(t *testing.T) {
 		`data-action="save-server"`,
 		`data-server-path="server.port"`,
 		`data-server-path="server.processing.api_key"`,
+		`data-server-advanced="server.processing.extra_body"`,
+		"structured setting",
 		"Restart required",
 		"Applies live",
 		"Diagnostics",

@@ -154,10 +154,14 @@ class Lifecycle:
         """Release the model and remember the soft-stop. Idempotent."""
         transcriber = self._transcriber
         self._transcriber = None
-        if transcriber is not None:
-            self._unload(transcriber)
-        self._stopped = True
-        self._persist(True)
+        try:
+            if transcriber is not None:
+                self._unload(transcriber)
+        finally:
+            # Even a failing unload must not leave the Server claiming to be
+            # loaded and ready.
+            self._stopped = True
+            self._persist(True)
 
     def transcribe(
         self,

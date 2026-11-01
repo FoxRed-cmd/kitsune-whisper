@@ -26,8 +26,9 @@ func managementService() *fakeServers {
 		Redacted: []string{"server.processing.api_key"},
 	}
 	service.logs = servers.ServerLog{
-		Path:  "/home/kim/.local/state/kitsune-whisper/server.log",
-		Lines: []string{"line 4", "line 5"},
+		Path:      "/home/kim/.local/state/kitsune-whisper/server.log",
+		Lines:     []string{"line 4", "line 5"},
+		Truncated: true,
 	}
 	service.lifecycleResult = servers.ServerLifecycle{
 		Stopped: false, Loaded: true, Model: "small", ModelState: "loaded",
@@ -80,11 +81,17 @@ func TestRefreshDiagnosticsLoadsConfigAndLogs(t *testing.T) {
 	if diagnostics.ClientVersion != "1.2.3" {
 		t.Fatalf("client version = %q", diagnostics.ClientVersion)
 	}
+	if diagnostics.ServerVersion != "0.9.0" {
+		t.Fatalf("server version = %q, want the health probe", diagnostics.ServerVersion)
+	}
 	if !strings.Contains(diagnostics.ConfigText, "server.processing.api_key: ***") {
 		t.Fatalf("config text = %q", diagnostics.ConfigText)
 	}
 	if !strings.Contains(diagnostics.LogText, "line 5") {
 		t.Fatalf("log text = %q", diagnostics.LogText)
+	}
+	if !strings.Contains(diagnostics.CopyText, "older lines omitted") {
+		t.Fatalf("copy text does not mention the omitted lines: %q", diagnostics.CopyText)
 	}
 	if !strings.Contains(diagnostics.CopyText, "kitsune-whisper diagnostics") ||
 		!strings.Contains(diagnostics.CopyText, "line 5") {

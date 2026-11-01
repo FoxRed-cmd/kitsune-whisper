@@ -504,13 +504,7 @@ func (s *Shell) activeProfileName() string {
 	if s.opts.Servers == nil {
 		return s.opts.Profile
 	}
-	view := s.opts.Servers.View()
-	for _, profile := range view.Profiles {
-		if profile.Active {
-			return profile.Name
-		}
-	}
-	return s.opts.Profile
+	return activeProfileName(s.opts.Servers.View(), s.opts.Profile)
 }
 
 // monitorServer probes the active Server once at startup and then on the slow

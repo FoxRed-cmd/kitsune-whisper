@@ -1,8 +1,6 @@
 package servers
 
-import (
-	"context"
-)
+import "context"
 
 // ConfigField is one Server setting as the Admin API reports it: the effective
 // value, where it came from, whether an environment variable or command-line

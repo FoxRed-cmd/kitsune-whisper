@@ -1,6 +1,7 @@
 package shell
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -41,7 +42,7 @@ func (s *Shell) diagnosticsView(serverView servers.View) DiagnosticsView {
 		Profile:       activeProfileName(serverView, s.opts.Profile),
 	}
 	if serverView.Lifecycle != nil {
-		view.ModelState = serverView.Lifecycle.ModelState
+		view.ModelState = modelStateLabel(s.catalog(), serverView.Lifecycle.ModelState)
 	}
 	if serverView.Config != nil {
 		view.ConfigPath = serverView.Config.Path
@@ -106,6 +107,9 @@ func diagnosticsText(view DiagnosticsView) string {
 		out.WriteString(" (" + view.LogPath + ")")
 	}
 	out.WriteString(":\n")
+	if view.Truncated {
+		out.WriteString("older lines omitted\n")
+	}
 	if view.LogText == "" {
 		out.WriteString("(not loaded)\n")
 	} else {
@@ -156,6 +160,13 @@ func formatConfigValue(key string, value any) string {
 	}
 	if value == nil {
 		return "(unset)"
+	}
+	switch value.(type) {
+	case map[string]any, []any:
+		encoded, err := json.Marshal(value)
+		if err == nil {
+			return string(encoded)
+		}
 	}
 	return fmt.Sprint(value)
 }

@@ -12,6 +12,7 @@ import functools
 import ipaddress
 import logging
 import threading
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -173,9 +174,11 @@ def _config_payload(store: ConfigStore) -> dict[str, Any]:
 def _tail_lines(path: Path, limit: int) -> tuple[list[str], bool]:
     """Read the last ``limit`` lines, reporting whether older lines exist."""
     with path.open("r", encoding="utf-8", errors="replace") as handle:
-        lines = [line.rstrip("\r\n") for line in handle]
+        lines = deque((line.rstrip("\r\n") for line in handle), maxlen=limit + 1)
     truncated = len(lines) > limit
-    return lines[-limit:], truncated
+    if truncated:
+        lines.popleft()
+    return list(lines), truncated
 
 
 def _model_state(lifecycle: Lifecycle) -> str:
@@ -184,6 +187,33 @@ def _model_state(lifecycle: Lifecycle) -> str:
     if lifecycle.loaded:
         return "loaded"
     return "cold"
+
+
+def _apply_hot_config(
+    current: ServerConfig, updated: ServerConfig, paths: list[str]
+) -> ServerConfig:
+    """Copy only the fields the running Server applies; leave the rest alone.
+
+    ``authenticate`` and the listener read ``app.state.config``, so assigning
+    the whole patched config would silently apply restart-required values
+    (for example ``allow_anonymous``). The running view keeps the old values
+    until an actual restart.
+    """
+    applied = current.model_copy(deep=True)
+    decode_updates: dict[str, Any] = {}
+    for path in paths:
+        if path == "server.log_level":
+            applied.log_level = updated.log_level
+        elif path == "server.max_audio_seconds":
+            applied.max_audio_seconds = updated.max_audio_seconds
+        elif path == "server.max_upload_mb":
+            applied.max_upload_mb = updated.max_upload_mb
+        elif path.startswith("server.decode."):
+            field = path.removeprefix("server.decode.")
+            decode_updates[field] = getattr(updated.decode, field)
+    if decode_updates:
+        applied.decode = updated.decode.model_copy(update=decode_updates)
+    return applied
 
 
 def _lifecycle_payload(lifecycle: Lifecycle) -> dict[str, Any]:
@@ -528,6 +558,12 @@ def create_app(
             result = store.patch({"expose_to_network": payload.expose})
         except ConfigError as exc:
             raise ApiError(400, "bad_request", str(exc)) from exc
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                f"the Server configuration could not be written: {exc}",
+            ) from exc
         return {
             "expose_to_network": result.config.expose_to_network,
             "bind_host": result.config.bind_host,
@@ -595,11 +631,17 @@ def create_app(
             result = store.patch(changes)
         except ConfigError as exc:
             raise ApiError(400, "bad_request", str(exc)) from exc
-        app.state.config = result.config
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                f"the Server configuration could not be written: {exc}",
+            ) from exc
         if "server.log_level" in result.changed:
             logging.getLogger("kitsune").setLevel(result.config.log_level.upper())
         hot = [path for path in result.changed if path in _APPLIED_HOT_FIELDS]
         restart = [path for path in result.changed if path not in _APPLIED_HOT_FIELDS]
+        app.state.config = _apply_hot_config(app.state.config, result.config, hot)
         payload_out = _config_payload(store)
         return {
             **payload_out,
