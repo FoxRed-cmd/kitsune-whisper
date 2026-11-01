@@ -8,12 +8,20 @@ package wails
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"sync"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 )
+
+// intentLimit bounds one JSON intent from the page.
+const intentLimit = 256 << 10
 
 // Options configures the Wails application.
 type Options struct {
@@ -28,6 +36,10 @@ type Options struct {
 // working.
 type desktop struct {
 	app *application.App
+
+	mu     sync.RWMutex
+	page   string
+	intent func([]byte) error
 }
 
 // New builds the Wails application. It returns nil when Wails cannot start at
@@ -38,9 +50,13 @@ func New(opts Options) (desktopPort shell.Desktop) {
 			desktopPort = nil
 		}
 	}()
+	d := &desktop{}
 	options := application.Options{
 		Name:        "kitsune-whisper",
 		Description: "Private, LAN-local speech-to-text dictation",
+		Assets: application.AssetOptions{
+			Handler: http.HandlerFunc(d.servePage),
+		},
 		Linux: application.LinuxOptions{
 			ApplicationID:                 autostart.AppID,
 			ProgramName:                   autostart.AppID,
@@ -58,12 +74,95 @@ func New(opts Options) (desktopPort shell.Desktop) {
 	if app == nil {
 		return nil
 	}
-	return &desktop{app: app}
+	d.app = app
+	// The Settings page sends one JSON intent per user action over a plain
+	// same-origin POST. The handler is a shell port, so the page stays free of
+	// validation and routing logic.
+	app.RegisterService(application.NewServiceWithOptions(&bridge{desktop: d}, application.ServiceOptions{
+		Name:  "kitsuneSettings",
+		Route: "/kitsune/",
+	}))
+	return d
 }
 
-// NewWindow creates the Settings window. The initial snapshot is rendered into
-// the page so the first paint is correct before any update arrives.
-func (d *desktop) NewWindow(initial shell.Snapshot, hidden bool) (port shell.Window, err error) {
+// servePage serves the Settings page rendered from Go. The Wails asset server
+// wraps this handler, so /wails/runtime.js, events, and service routes keep
+// working.
+func (d *desktop) servePage(rw http.ResponseWriter, req *http.Request) {
+	if req.URL.Path != "/" && req.URL.Path != "/index.html" {
+		http.NotFound(rw, req)
+		return
+	}
+	d.mu.RLock()
+	page := d.page
+	d.mu.RUnlock()
+	if page == "" {
+		http.Error(rw, "the settings window is still starting", http.StatusServiceUnavailable)
+		return
+	}
+	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(rw, page)
+}
+
+// setPage replaces the page served to the window before it loads.
+func (d *desktop) setPage(page string) {
+	d.mu.Lock()
+	d.page = page
+	d.mu.Unlock()
+}
+
+func (d *desktop) setIntent(handler func([]byte) error) {
+	d.mu.Lock()
+	d.intent = handler
+	d.mu.Unlock()
+}
+
+func (d *desktop) deliverIntent(payload []byte) error {
+	d.mu.RLock()
+	handler := d.intent
+	d.mu.RUnlock()
+	if handler == nil {
+		return fmt.Errorf("the settings window is still starting")
+	}
+	return handler(payload)
+}
+
+// bridge is the HTTP and binding surface the page calls into.
+type bridge struct {
+	desktop *desktop
+}
+
+// Intent is the Wails binding form of the intent handler. The page uses the
+// HTTP route; the binding exists so Wails has a service method to register.
+func (b *bridge) Intent(payload string) error {
+	return b.desktop.deliverIntent([]byte(payload))
+}
+
+func (b *bridge) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	if req.URL.Path != "/intent" {
+		http.NotFound(rw, req)
+		return
+	}
+	if req.Method != http.MethodPost {
+		rw.Header().Set("Allow", http.MethodPost)
+		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	payload, err := io.ReadAll(io.LimitReader(req.Body, intentLimit))
+	if err != nil {
+		http.Error(rw, "could not read the settings intent", http.StatusBadRequest)
+		return
+	}
+	if err := b.desktop.deliverIntent(payload); err != nil {
+		http.Error(rw, err.Error(), http.StatusBadRequest)
+		return
+	}
+	rw.WriteHeader(http.StatusNoContent)
+}
+
+// NewWindow creates the Settings window. The initial page embeds the status
+// snapshot and the rendered screens so the first paint is correct.
+func (d *desktop) NewWindow(initial shell.Snapshot, settings dictation.View, hidden bool) (port shell.Window, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			port, err = nil, fmt.Errorf("wails window: %v", recovered)
@@ -72,21 +171,22 @@ func (d *desktop) NewWindow(initial shell.Snapshot, hidden bool) (port shell.Win
 	if d.app == nil {
 		return nil, fmt.Errorf("wails application is not available")
 	}
+	d.setPage(shell.Page(initial, settings))
 	win := d.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "settings",
 		Title:            "kitsune-whisper Settings",
 		Width:            760,
-		Height:           560,
+		Height:           720,
 		MinWidth:         560,
 		MinHeight:        420,
 		Hidden:           hidden,
-		HTML:             shell.Page(initial),
+		URL:              "/",
 		BackgroundColour: application.NewRGB(24, 24, 27),
 	})
 	if win == nil {
 		return nil, fmt.Errorf("wails window could not be created")
 	}
-	return &window{win: win}, nil
+	return &window{win: win, desktop: d}, nil
 }
 
 // NewTray creates the Tray image and its initial menu.
@@ -113,8 +213,9 @@ func (d *desktop) Quit()      { d.app.Quit() }
 
 // window is the Wails Settings window.
 type window struct {
-	win    *application.WebviewWindow
-	closed func()
+	win     *application.WebviewWindow
+	desktop *desktop
+	closed  func()
 }
 
 func (w *window) Show() {
@@ -132,6 +233,32 @@ func (w *window) Update(snapshot shell.Snapshot) {
 	w.win.ExecJS("window.renderStatus(" + string(payload) + ")")
 }
 
+// settingsPayload is the view plus the HTML fragment rendered from it.
+type settingsPayload struct {
+	dictation.View
+	HTML string `json:"html"`
+}
+
+func (w *window) UpdateSettings(view dictation.View) {
+	payload, err := json.Marshal(settingsPayload{View: view, HTML: shell.SettingsHTML(view)})
+	if err != nil {
+		return
+	}
+	w.win.ExecJS("window.renderSettings(" + string(payload) + ")")
+}
+
+func (w *window) UpdateMessages(notices, failures []string) {
+	payload, err := json.Marshal(map[string]any{"notices": notices, "failures": failures})
+	if err != nil {
+		return
+	}
+	w.win.ExecJS("window.renderMessages(" + string(payload) + ")")
+}
+
+func (w *window) UpdateLevel(level float64) {
+	w.win.ExecJS("window.setLevel(" + strconv.FormatFloat(level, 'f', 4, 64) + ")")
+}
+
 func (w *window) OnClose(handler func()) {
 	w.closed = handler
 	w.win.RegisterHook(events.Common.WindowClosing, func(event *application.WindowEvent) {
@@ -143,6 +270,10 @@ func (w *window) OnClose(handler func()) {
 	})
 }
 
+func (w *window) OnIntent(handler func([]byte) error) {
+	w.desktop.setIntent(handler)
+}
+
 // trayPort is the Wails notification-area image and menu.
 type trayPort struct {
 	tray   *application.SystemTray
@@ -150,27 +281,32 @@ type trayPort struct {
 }
 
 func (t *trayPort) Update(snapshot shell.Snapshot) {
+	labels := snapshot.Labels
+	status := labels.Status
+	if status == "" {
+		status = "kitsune-whisper"
+	}
 	t.tray.SetIcon(shell.Icon(snapshot.State))
-	t.tray.SetTooltip("kitsune-whisper — " + snapshot.State.Label())
+	t.tray.SetTooltip(status)
 
 	menu := application.NewMenu()
-	status := menu.Add(fmt.Sprintf("kitsune-whisper — %s", snapshot.State.Label()))
-	status.SetEnabled(false)
+	statusItem := menu.Add(status)
+	statusItem.SetEnabled(false)
 	if snapshot.Error != "" {
 		detail := menu.Add(truncate(snapshot.Error, 64))
 		detail.SetEnabled(false)
 	}
 
-	toggleLabel := "Start dictation"
+	toggleLabel := labels.Start
 	if snapshot.State == shell.StateRecording {
-		toggleLabel = "Stop dictation"
+		toggleLabel = labels.Stop
 	}
 	menu.Add(toggleLabel).OnClick(func(*application.Context) { t.do(shell.ActionToggle) })
 	menu.AddSeparator()
-	menu.Add("Settings…").OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
-	menu.Add("Restart Client").OnClick(func(*application.Context) { t.do(shell.ActionRestart) })
+	menu.Add(labels.Settings).OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
+	menu.Add(labels.Restart).OnClick(func(*application.Context) { t.do(shell.ActionRestart) })
 	menu.AddSeparator()
-	menu.Add("Quit").OnClick(func(*application.Context) { t.do(shell.ActionQuit) })
+	menu.Add(labels.Quit).OnClick(func(*application.Context) { t.do(shell.ActionQuit) })
 	t.tray.SetMenu(menu)
 }
 
