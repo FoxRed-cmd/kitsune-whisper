@@ -23,4 +23,4 @@ jobs:
       - name: Build the CPU image
         run: docker build -t kitsune-whisper-server:smoke server
       - name: Run the parity smoke
-        run: bash scripts/docker-smoke.sh --image kitsune-whisper-server:smoke --model tiny
+        run: bash scripts/docker-smoke.sh --image kitsune-whisper-server:smoke --model tiny --no-build
