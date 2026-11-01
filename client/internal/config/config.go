@@ -142,6 +142,18 @@ func UserConfigDir(env map[string]string) string {
 	return filepath.Join(base, "kitsune-whisper")
 }
 
+// Locate returns the config file Load would read and whether it exists. When
+// nothing is discovered it returns the user config path that a writer should
+// create, with exists false.
+func Locate(opts LoadOptions) (path string, exists bool) {
+	env := opts.environ()
+	path, _ = findConfig(opts.CLIConfig, env, opts.CWD)
+	if path == "" {
+		path = filepath.Join(UserConfigDir(env), ConfigName)
+	}
+	return path, isFile(path)
+}
+
 // findConfig locates kitsune.yaml. It returns the path and whether it is
 // required (an explicit --config or $KITSUNE_CONFIG must exist).
 func findConfig(cliPath string, env map[string]string, cwd string) (string, bool) {
@@ -205,6 +217,13 @@ func readClientSection(path string) (map[string]any, error) {
 		return nil, &Error{Message: fmt.Sprintf("%s: 'client' must be a mapping", path)}
 	}
 	return m, nil
+}
+
+// ClientSection returns the raw "client:" section of the config at path. A
+// missing section yields an empty map. It is the read half a config writer
+// needs; Load validates the result.
+func ClientSection(path string) (map[string]any, error) {
+	return readClientSection(path)
 }
 
 func envOverrides(env map[string]string) map[string]any {
@@ -525,6 +544,63 @@ func defaultsMap() (map[string]any, error) {
 	return m, nil
 }
 
+// FieldPaths returns every leaf field path in the Client schema, prefixed with
+// "client." and sorted. Writers use it to accept and reject changes by path.
+func FieldPaths() []string {
+	paths := make([]string, 0, len(schema))
+	collectFieldPaths("client", schema, &paths)
+	sort.Strings(paths)
+	return paths
+}
+
+func collectFieldPaths(prefix string, known map[string]any, out *[]string) {
+	for key, child := range known {
+		path := prefix + "." + key
+		if group, ok := child.(map[string]any); ok {
+			collectFieldPaths(path, group, out)
+			continue
+		}
+		*out = append(*out, path)
+	}
+}
+
+// DefaultsMap returns the built-in configuration as a nested map shaped like
+// the file's "client:" section.
+func DefaultsMap() (map[string]any, error) {
+	return defaultsMap()
+}
+
+// Validate validates a "client:" section as it would be read from the file,
+// without environment or CLI overrides, and returns the resolved
+// configuration or a field error.
+func Validate(section map[string]any) (ClientConfig, error) {
+	defaults, err := defaultsMap()
+	if err != nil {
+		return ClientConfig{}, err
+	}
+	effective := deepMerge(defaults, section)
+	if err := rejectUnknown("client", effective, schema); err != nil {
+		return ClientConfig{}, err
+	}
+	return configFromMap(effective)
+}
+
+// Resolve merges a file "client:" section with environment and CLI overrides,
+// applies defaults, and validates the result.
+func Resolve(section map[string]any, opts LoadOptions) (ClientConfig, error) {
+	defaults, err := defaultsMap()
+	if err != nil {
+		return ClientConfig{}, err
+	}
+	effective := deepMerge(defaults, section)
+	effective = deepMerge(effective, envOverrides(opts.environ()))
+	effective = deepMerge(effective, opts.CLIOverrides)
+	if err := rejectUnknown("client", effective, schema); err != nil {
+		return ClientConfig{}, err
+	}
+	return configFromMap(effective)
+}
+
 // Load resolves and validates the effective Client configuration.
 func Load(opts LoadOptions) (ClientConfig, error) {
 	env := opts.environ()
@@ -545,18 +621,7 @@ func Load(opts LoadOptions) (ClientConfig, error) {
 		}
 	}
 
-	defaults, err := defaultsMap()
-	if err != nil {
-		return ClientConfig{}, err
-	}
-	effective := deepMerge(defaults, fileValues)
-	effective = deepMerge(effective, envOverrides(env))
-	effective = deepMerge(effective, opts.CLIOverrides)
-
-	if err := rejectUnknown("client", effective, schema); err != nil {
-		return ClientConfig{}, err
-	}
-	return configFromMap(effective)
+	return Resolve(fileValues, opts)
 }
 
 // Dump renders the effective config as YAML under a single "client:" key.
