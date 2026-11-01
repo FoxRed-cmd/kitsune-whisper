@@ -27,6 +27,7 @@ type fakeServers struct {
 	codeCalls    []string
 	useCalls     []string
 	healthCalls  []string
+	modelCalls   []string
 
 	pairErr    error
 	devicesErr error
@@ -35,6 +36,9 @@ type fakeServers struct {
 	selectErr  error
 	profile    servers.Profile
 	health     map[string]trust.Status
+
+	modelsView servers.ModelsView
+	modelErr   error
 }
 
 func newFakeServers() *fakeServers {
@@ -162,6 +166,105 @@ func twoProfileServers() *fakeServers {
 	}
 	service.profile = service.view.Profiles[0]
 	return service
+}
+
+func (f *fakeServers) LoadModels(_ context.Context, profileID string) (servers.ModelsView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modelCalls = append(f.modelCalls, "load|"+profileID)
+	if f.modelErr != nil {
+		f.view.ModelsError = f.modelErr.Error()
+		return servers.ModelsView{}, f.modelErr
+	}
+	view := f.modelsView
+	if len(view.Models) == 0 {
+		view = servers.ModelsView{
+			Device: "cpu", Recommended: "base", State: "loaded",
+			ActiveModel: "small", IdleUnloadSeconds: 600,
+			Models: []servers.Model{
+				{Name: "base", DiskBytes: 145000000, MemoryBytes: 600000000, Speed: "fast", Quality: "good", Recommended: true},
+				{Name: "small", DiskBytes: 484000000, MemoryBytes: 1300000000, Speed: "balanced", Quality: "good", Installed: true},
+			},
+		}
+	}
+	f.view.Models = &view
+	f.view.ModelsError = ""
+	return view, nil
+}
+
+func (f *fakeServers) DownloadModel(_ context.Context, profileID, model string) (servers.ModelsView, error) {
+	return f.modelAction("download|"+profileID+"|"+model, func(view *servers.ModelsView) {
+		view.Models[0].Download = &servers.ModelDownload{Model: model, State: "downloading", ReceivedBytes: 5, TotalBytes: 10}
+	})
+}
+
+func (f *fakeServers) CancelDownload(_ context.Context, profileID, model string) (servers.ModelsView, error) {
+	return f.modelAction("cancel|"+profileID+"|"+model, func(view *servers.ModelsView) {
+		view.Models[0].Download = &servers.ModelDownload{Model: model, State: "cancelled"}
+	})
+}
+
+func (f *fakeServers) ActivateModel(_ context.Context, profileID, model, path string) (servers.ModelsView, error) {
+	return f.modelAction("activate|"+profileID+"|"+model+"|"+path, func(view *servers.ModelsView) {
+		if path != "" {
+			view.ActiveModel, view.ActivePath = path, path
+			return
+		}
+		view.ActiveModel = model
+	})
+}
+
+func (f *fakeServers) DeleteModel(_ context.Context, profileID, model string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modelCalls = append(f.modelCalls, "delete|"+profileID+"|"+model)
+	if f.modelErr != nil {
+		f.view.ModelsError = f.modelErr.Error()
+		return f.modelErr
+	}
+	if f.view.Models != nil {
+		for index := range f.view.Models.Models {
+			if f.view.Models.Models[index].Name == model {
+				f.view.Models.Models[index].Installed = false
+			}
+		}
+	}
+	return nil
+}
+
+func (f *fakeServers) SetIdleTimeout(_ context.Context, profileID string, seconds int) (servers.ModelsView, error) {
+	return f.modelAction("idle|"+profileID, func(view *servers.ModelsView) {
+		view.IdleUnloadSeconds = seconds
+	})
+}
+
+func (f *fakeServers) modelAction(
+	call string,
+	change func(*servers.ModelsView),
+) (servers.ModelsView, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.modelCalls = append(f.modelCalls, call)
+	if f.modelErr != nil {
+		f.view.ModelsError = f.modelErr.Error()
+		return servers.ModelsView{}, f.modelErr
+	}
+	if f.view.Models == nil {
+		f.view.Models = &servers.ModelsView{
+			Device: "cpu", Recommended: "base", State: "loaded",
+			ActiveModel: "small", IdleUnloadSeconds: 600,
+			Models: []servers.Model{
+				{Name: "base", DiskBytes: 145000000, MemoryBytes: 600000000, Speed: "fast", Quality: "good", Recommended: true},
+				{Name: "small", DiskBytes: 484000000, MemoryBytes: 1300000000, Speed: "balanced", Quality: "good", Installed: true},
+			},
+		}
+	}
+	view := *f.view.Models
+	view.Models = append([]servers.Model(nil), view.Models...)
+	change(&view)
+	f.view.Models = &view
+	f.view.ModelsError = ""
+	return view, nil
 }
 
 func newServersShell(
@@ -564,6 +667,147 @@ func TestExposureIntentWritesTheServerSetting(t *testing.T) {
 	}
 	messages, _ := window.lastMessages()
 	if len(messages.notices) != 1 || !strings.Contains(messages.notices[0], "restart") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestLoadModelsIntentRendersTheCatalog(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := newFakeServers()
+	sh := newServersShell(t, rt, desktop, settings, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentLoadModels}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if len(service.modelCalls) != 1 || service.modelCalls[0] != "load|local" {
+		t.Fatalf("model calls = %v", service.modelCalls)
+	}
+	view, _ := window.lastSettings()
+	if view.Servers.Models == nil || len(view.Servers.Models.Models) != 2 {
+		t.Fatalf("pushed view = %+v", view.Servers.Models)
+	}
+	messages, _ := window.lastMessages()
+	if len(messages.notices) != 1 {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestModelDownloadCancelActivateDeleteAndIdleIntents(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := newFakeServers()
+	sh := newServersShell(t, rt, desktop, settings, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	intents := []shell.Intent{
+		{Action: shell.IntentLoadModels},
+		{Action: shell.IntentDownloadModel, Model: "base"},
+		{Action: shell.IntentCancelDownload, Model: "base"},
+		{Action: shell.IntentActivateModel, Model: "base"},
+		{Action: shell.IntentActivateModel, Path: "/models/ct2"},
+		{Action: shell.IntentDeleteModel, Model: "base"},
+		{Action: shell.IntentIdleTimeout, Seconds: 0},
+	}
+	for _, intent := range intents {
+		if err := window.sendIntent(t, intent); err != nil {
+			t.Fatalf("intent %s: %v", intent.Action, err)
+		}
+	}
+	want := []string{
+		"load|local", "download|local|base", "cancel|local|base",
+		"activate|local|base|", "activate|local||/models/ct2",
+		"delete|local|base", "idle|local",
+	}
+	if len(service.modelCalls) != len(want) {
+		t.Fatalf("calls = %v", service.modelCalls)
+	}
+	for index := range want {
+		if service.modelCalls[index] != want[index] {
+			t.Fatalf("calls = %v", service.modelCalls)
+		}
+	}
+	view, _ := window.lastSettings()
+	if view.Servers.Models == nil || view.Servers.Models.IdleUnloadSeconds != 0 {
+		t.Fatalf("pushed view = %+v", view.Servers.Models)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestHealthCheckLoadsTheModelCatalogOnce(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := newFakeServers()
+	service.health["local"] = trust.Status{State: trust.StateOnline}
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Settings:      settings,
+		Servers:       service,
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "the Model catalog to load", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.modelCalls) > 0
+	})
+	view, ok := desktop.getWindow().lastSettings()
+	if !ok || view.Servers.Models == nil || len(view.Servers.Models.Models) != 2 {
+		t.Fatalf("pushed view = %+v", view.Servers.Models)
+	}
+	service.mu.Lock()
+	calls := len(service.modelCalls)
+	service.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("catalog loaded %d times, want once per profile", calls)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestModelFailureIsShownAsOneTranslatedError(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := newFakeServers()
+	service.modelErr = errors.New("base is not downloaded yet")
+	sh := newServersShell(t, rt, desktop, settings, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentActivateModel, Model: "base"}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	messages, _ := window.lastMessages()
+	if len(messages.failures) != 1 || !strings.Contains(messages.failures[0], "not downloaded") {
 		t.Fatalf("messages = %+v", messages)
 	}
 

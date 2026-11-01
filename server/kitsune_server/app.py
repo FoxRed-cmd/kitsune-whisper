@@ -8,11 +8,12 @@ load no model.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import ipaddress
 import logging
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -20,7 +21,7 @@ import anyio.to_thread
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -29,6 +30,7 @@ from .audio import AudioDecodeError, decode_audio
 from .config import ConfigError, ServerConfig, format_errors
 from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
+from .models import ModelError, ModelLoadError, ModelManager
 from .pairing import (
     ExpiredPairingCodeError,
     PairingCodeStore,
@@ -122,6 +124,31 @@ class ExposureRequest(BaseModel):
     confirm: bool = False
 
 
+class DownloadRequest(BaseModel):
+    """The model to download or cancel."""
+
+    model: str = Field(min_length=1, max_length=128)
+
+
+class ActivateRequest(BaseModel):
+    """One activation target: a catalog model or a local CTranslate2 directory."""
+
+    model: str | None = Field(default=None, min_length=1, max_length=512)
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> ActivateRequest:
+        if bool(self.model) == bool(self.path):
+            raise ValueError("send either a catalog model name or a local model directory")
+        return self
+
+
+class IdleUnloadRequest(BaseModel):
+    """Idle unload in seconds; ``0`` disables unloading."""
+
+    seconds: int = Field(ge=0)
+
+
 def is_loopback_address(host: str | None) -> bool:
     """Return True when the HTTP peer is on the loopback interface."""
     if not host:
@@ -146,6 +173,7 @@ def create_app(
     certificate: Certificate | None = None,
     pairing_codes: PairingCodeStore | None = None,
     config_store: ConfigStore | None = None,
+    models: ModelManager | None = None,
     version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
@@ -157,6 +185,9 @@ def create_app(
     Client pins; it is absent when TLS is explicitly disabled.
     ``pairing_codes`` holds the one-time Pairing codes; ``config_store`` is the
     only writer of the Server YAML and backs the LAN exposure switch.
+    ``models`` is the model lifecycle manager; ``None`` keeps the fixed
+    ``transcriber`` and hides the Models Admin API, which is what the existing
+    transcription tests use.
     """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
@@ -165,15 +196,16 @@ def create_app(
     app.state.devices = devices if devices is not None else DeviceStore()
     app.state.pairing_codes = pairing_codes if pairing_codes is not None else PairingCodeStore()
     app.state.config_store = config_store
+    app.state.models = models
     app.state.certificate = certificate
     app.state.version = version
     if cuda_device_count is None:
         cuda_device_count = detect_cuda_devices()
     app.state.cuda_device_count = cuda_device_count
     app.state.ready = True
-    app.state.semaphore = threading.Semaphore(
-        resolve_workers(config.workers, transcriber.info.device)
-    )
+    workers = resolve_workers(config.workers, transcriber.info.device)
+    app.state.semaphore = threading.Semaphore(workers)
+    app.state.workers = workers
 
     @app.exception_handler(ApiError)
     async def _handle_api_error(_request: Any, exc: ApiError) -> JSONResponse:
@@ -281,13 +313,24 @@ def create_app(
     ) -> dict[str, Any]:
         """Authenticated status for the Tray, Settings, and diagnostics."""
         info = transcriber.info
+        active = app.state.models
+        if active is not None:
+            active.maybe_unload()
+            current = active.current_transcriber()
+            if current is not None:
+                info = current.info
         capability = processor.info
         gpu = gpu_status(config, cuda_device_count=app.state.cuda_device_count)
         certificate = app.state.certificate
         return {
             "status": "ok",
             "version": app.state.version,
-            "model": info.model,
+            "model": active.active_model if active is not None else info.model,
+            "model_state": active.state if active is not None else "loaded",
+            "model_path": active.active_path if active is not None else "",
+            "idle_unload_seconds": (
+                active.idle_unload_seconds if active is not None else config.idle_unload_seconds
+            ),
             "device": info.device,
             "compute_type": info.compute_type,
             "ready": bool(app.state.ready),
@@ -447,6 +490,135 @@ def create_app(
             "restart_required": list(result.restart_required),
         }
 
+    def _require_models() -> ModelManager:
+        manager = app.state.models
+        if manager is None:
+            raise ApiError(
+                503,
+                "models_unavailable",
+                "model management is not available on this Server",
+            )
+        return manager
+
+    @contextlib.contextmanager
+    def _quiesce() -> Iterator[None]:
+        """Hold every capacity slot so in-flight requests finish and new ones 503."""
+        for _ in range(app.state.workers):
+            app.state.semaphore.acquire()
+        try:
+            yield
+        finally:
+            for _ in range(app.state.workers):
+                app.state.semaphore.release()
+
+    def _patch_server_config(changes: Mapping[str, Any]) -> str:
+        """Persist one model change; return why it could not be saved, or ""."""
+        store = app.state.config_store
+        if store is None:
+            return ""
+        try:
+            store.patch(changes)
+        except ConfigError as exc:
+            logger.warning("could not save %s: %s", ", ".join(changes), exc)
+            return str(exc)
+        return ""
+
+    def _model_response(warning: str = "") -> dict[str, Any]:
+        manager = _require_models()
+        manager.maybe_unload()
+        body = manager.view()
+        if warning:
+            body["warning"] = warning
+        return body
+
+    def _model_failure(exc: ModelError) -> ApiError:
+        status_code = 404 if exc.code == "unknown_model" else 409
+        return ApiError(status_code, exc.code, str(exc))
+
+    @app.get("/admin/models")
+    async def list_models(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """The Model catalog, installation state, downloads, and idle setting."""
+        del device
+        return _model_response()
+
+    @app.post("/admin/models/download", status_code=202)
+    async def download_model(
+        payload: DownloadRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Queue one model download; one worker serialises every download."""
+        del device
+        manager = _require_models()
+        try:
+            manager.start_download(payload.model)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+        return _model_response()
+
+    @app.post("/admin/models/cancel")
+    async def cancel_download(
+        payload: DownloadRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Cancel a queued or running model download."""
+        del device
+        manager = _require_models()
+        try:
+            manager.cancel_download(payload.model)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+        return _model_response()
+
+    @app.post("/admin/models/activate")
+    async def activate_model(
+        payload: ActivateRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Quiesce requests, load the new model, swap it in, and roll back on failure."""
+        del device
+        manager = _require_models()
+        target = payload.path or payload.model or ""
+
+        def activate_blocking() -> None:
+            # Hold every capacity slot so in-flight requests finish and new
+            # ones get a clear 503 until the swap is complete.
+            with _quiesce():
+                manager.activate(target)
+
+        try:
+            await run_in_threadpool(activate_blocking)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+        warning = _patch_server_config({"model": manager.active_model})
+        return _model_response(warning)
+
+    @app.delete("/admin/models/{name}", status_code=204)
+    async def delete_model(
+        name: str,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> None:
+        """Delete a downloaded model; the active model is refused."""
+        del device
+        manager = _require_models()
+        try:
+            manager.delete(name)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+
+    @app.post("/admin/models/idle-unload")
+    async def set_idle_unload(
+        payload: IdleUnloadRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Set the idle unload timeout; ``0`` keeps the model resident."""
+        del device
+        manager = _require_models()
+        manager.set_idle_unload_seconds(payload.seconds)
+        warning = _patch_server_config({"idle_unload_seconds": payload.seconds})
+        return _model_response(warning)
+
     @app.post("/transcribe", dependencies=[Depends(authenticate)])
     async def transcribe(
         audio: Annotated[UploadFile, File()],
@@ -458,6 +630,12 @@ def create_app(
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
         try:
+            active = transcriber
+            if app.state.models is not None:
+                try:
+                    active = await run_in_threadpool(app.state.models.ensure_loaded)
+                except ModelLoadError as exc:
+                    raise ApiError(503, "model_unavailable", str(exc)) from exc
             max_bytes = int(config.max_upload_mb * 1024 * 1024)
             declared_size = getattr(audio, "size", None)
             if declared_size is not None and declared_size > max_bytes:
@@ -484,11 +662,13 @@ def create_app(
                     f"audio exceeds {config.max_audio_seconds} s",
                 )
             result = await run_in_threadpool(
-                transcriber.transcribe,
+                active.transcribe,
                 clip,
                 language=_effective_language(language, config),
                 initial_prompt=_effective_prompt(initial_prompt, config),
             )
+            if app.state.models is not None:
+                app.state.models.touch()
         finally:
             app.state.semaphore.release()
 

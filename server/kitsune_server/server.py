@@ -6,6 +6,7 @@ import errno
 import logging
 import socket
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TextIO
@@ -17,6 +18,13 @@ from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_d
 from .engine import WhisperTranscriber
 from .gpu import detect_cuda_devices
 from .llm import OpenAITextProcessor
+from .models import (
+    FileModelStorage,
+    HttpModelDownloader,
+    ModelCatalog,
+    ModelManager,
+    WhisperLoader,
+)
 from .pairing import PairingCodeStore, pairing_store_path
 from .processor import DisabledTextProcessor, TextProcessor
 from .store import ConfigStore
@@ -173,6 +181,24 @@ def build_transcriber(
     return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
 
 
+def build_model_manager(
+    config: ServerConfig,
+    *,
+    transcriber: Transcriber | None,
+    cuda_device_count: int = 0,
+) -> ModelManager:
+    """Wire the model lifecycle to the real loader, downloader, and model directory."""
+    return ModelManager(
+        config,
+        transcriber=transcriber,
+        loader=WhisperLoader(cuda_device_count=cuda_device_count),
+        downloader=HttpModelDownloader(),
+        storage=FileModelStorage(config.download_root),
+        clock=time.monotonic,
+        cuda_device_count=cuda_device_count,
+    )
+
+
 def build_processor(config: ServerConfig) -> TextProcessor:
     """Build the processing port; the endpoint is called lazily per stage."""
     if not config.processing.enabled:
@@ -205,6 +231,9 @@ def run_server(
         )
     # Detect once so model loading and /status cannot disagree.
     cuda_devices = detect_cuda_devices()
+    # Validate the override catalog before downloading or loading a model, so a
+    # bad catalog fails with a config error instead of after a costly load.
+    ModelCatalog.load(config)
     transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
     info = transcriber.info
     resolved_note = (
@@ -220,6 +249,7 @@ def run_server(
     if info.device == "cpu":
         logger.warning(CPU_ESCAPE_HATCH)
     processor = build_processor(config)
+    models = build_model_manager(config, transcriber=transcriber, cuda_device_count=cuda_devices)
     app = create_app(
         config,
         transcriber,
@@ -229,6 +259,7 @@ def run_server(
         certificate=certificate,
         pairing_codes=pairing_codes,
         config_store=config_store if config_store is not None else ConfigStore(),
+        models=models,
     )
     if config.expose_to_network:
         logger.warning(
@@ -236,14 +267,18 @@ def run_server(
             config.bind_host,
             config.port,
         )
-    if certificate is not None:
-        uvicorn.run(
-            app,
-            host=config.bind_host,
-            port=config.port,
-            log_level=config.log_level,
-            ssl_certfile=str(certificate.cert_file),
-            ssl_keyfile=str(certificate.key_file),
-        )
-        return
-    uvicorn.run(app, host=config.bind_host, port=config.port, log_level=config.log_level)
+    models.start_idle_monitor()
+    try:
+        if certificate is not None:
+            uvicorn.run(
+                app,
+                host=config.bind_host,
+                port=config.port,
+                log_level=config.log_level,
+                ssl_certfile=str(certificate.cert_file),
+                ssl_keyfile=str(certificate.key_file),
+            )
+            return
+        uvicorn.run(app, host=config.bind_host, port=config.port, log_level=config.log_level)
+    finally:
+        models.stop_idle_monitor()

@@ -342,6 +342,7 @@ type Shell struct {
 	devicesLoaded string
 	notifiedError string
 	healthState   string
+	modelsLoaded  string
 
 	quitCh    chan struct{}
 	restartCh chan struct{}
@@ -656,6 +657,7 @@ func (s *Shell) checkServer(ctx context.Context) {
 	s.updateServer(status)
 	if status.State == trust.StateOnline {
 		go s.loadDevices(ctx)
+		go s.loadModelsForCheck(ctx)
 	}
 }
 
@@ -676,7 +678,11 @@ func (s *Shell) checkProfiles(ctx context.Context) {
 	s.updateServer(active)
 	s.pushSettingsIfHealthChanged()
 	if active.State == trust.StateOnline {
+		// The Models and Devices screens follow the active profile's health:
+		// the catalog is loaded once per profile, and a running download keeps
+		// refreshing its progress.
 		go s.loadDevices(ctx)
+		go s.loadModelsForCheck(ctx)
 	}
 }
 
@@ -727,11 +733,43 @@ func (s *Shell) loadDevices(ctx context.Context) {
 	s.pushSettings()
 }
 
+// loadModelsForCheck reads the active profile's Model catalog once per profile
+// after a successful health check, so the Models screen is populated and
+// download progress advances without the user pressing Refresh.
+func (s *Shell) loadModelsForCheck(ctx context.Context) {
+	if s.opts.Servers == nil {
+		return
+	}
+	view := s.opts.Servers.View()
+	s.mu.Lock()
+	loaded := s.modelsLoaded
+	s.mu.Unlock()
+	if view.ActiveID == "" {
+		return
+	}
+	// A running download still needs its progress refreshed.
+	if loaded == view.ActiveID && (view.Models == nil || !view.Models.HasActiveDownload()) {
+		return
+	}
+	modelsCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := s.opts.Servers.LoadModels(modelsCtx, view.ActiveID); err != nil {
+		s.log.Debug("servers: load Models: %v", err)
+		s.pushSettings()
+		return
+	}
+	s.mu.Lock()
+	s.modelsLoaded = view.ActiveID
+	s.mu.Unlock()
+	s.pushSettings()
+}
+
 // resetDevices forgets the cached Device list so the next check or refresh
 // reloads it for a changed active profile.
 func (s *Shell) resetDevices() {
 	s.mu.Lock()
 	s.devicesLoaded = ""
+	s.modelsLoaded = ""
 	s.mu.Unlock()
 }
 
