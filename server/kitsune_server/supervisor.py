@@ -122,7 +122,9 @@ class Environment:
 def _current_platform() -> str:
     if sys.platform == "win32":
         return "windows"
-    return "linux"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return sys.platform
 
 
 def _config_home(os_name: str, environ: Mapping[str, str]) -> Path:
@@ -230,9 +232,10 @@ def task_xml(options: SupervisorOptions) -> str:
 
 def _systemd_quote(value: str) -> str:
     """Quote one ExecStart field per systemd.syntax(7)."""
-    if value and not any(character in value for character in " \t\"'\\"):
-        return value
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    escaped = value.replace("%", "%%")
+    if escaped and not any(character in escaped for character in " \t\"'\\"):
+        return escaped
+    escaped = escaped.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
 
 
@@ -281,10 +284,13 @@ def uninstall(env: Environment) -> None:
 
 def start(env: Environment) -> None:
     """Start the supervised Server."""
-    _lifecycle(
+    _check(
         env,
-        ["systemctl", "--user", "start", UNIT_NAME],
-        ["schtasks", "/Run", "/TN", TASK_NAME],
+        _command_for(
+            env,
+            ["systemctl", "--user", "start", UNIT_NAME],
+            ["schtasks", "/Run", "/TN", TASK_NAME],
+        ),
     )
 
 
@@ -294,8 +300,13 @@ def stop(env: Environment) -> None:
     Soft-stop through the Admin API (unload the model but keep serving) lands
     with #77; this hard-stops the process.
     """
-    _lifecycle(
-        env, ["systemctl", "--user", "stop", UNIT_NAME], ["schtasks", "/End", "/TN", TASK_NAME]
+    _check(
+        env,
+        _command_for(
+            env,
+            ["systemctl", "--user", "stop", UNIT_NAME],
+            ["schtasks", "/End", "/TN", TASK_NAME],
+        ),
     )
 
 
@@ -306,11 +317,7 @@ def restart(env: Environment) -> None:
         _try(env, ["schtasks", "/End", "/TN", TASK_NAME])
         _check(env, ["schtasks", "/Run", "/TN", TASK_NAME])
         return
-    _lifecycle(
-        env,
-        ["systemctl", "--user", "restart", UNIT_NAME],
-        ["schtasks", "/Restart", "/TN", TASK_NAME],
-    )
+    _check(env, _command_for(env, ["systemctl", "--user", "restart", UNIT_NAME], []))
 
 
 def status(env: Environment) -> SupervisorStatus:
@@ -344,17 +351,15 @@ def status(env: Environment) -> SupervisorStatus:
     raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
 
 
-def _lifecycle(
+def _command_for(
     env: Environment,
-    linux_command: list[str],
-    windows_command: list[str],
-) -> None:
+    linux: list[str],
+    windows: list[str],
+) -> list[str]:
     if env.os_name == "linux":
-        _check(env, linux_command)
-        return
+        return linux
     if env.os_name == "windows":
-        _check(env, windows_command)
-        return
+        return windows
     raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
 
 

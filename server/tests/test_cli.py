@@ -147,6 +147,25 @@ def test_install_lays_out_the_bundle_and_enables_the_supervisor(
     assert __version__ in output
 
 
+def test_install_stops_a_running_server_before_replacing_the_bundle(
+    tmp_path: Path, wiring: Wiring
+) -> None:
+    artifact = build_artifact(tmp_path)
+    cli.main(install_args(artifact))
+    wiring.runner.calls.clear()
+
+    assert cli.main(install_args(artifact)) == 0
+
+    commands = wiring.runner.commands
+    stop = f"systemctl --user stop {supervisor.UNIT_NAME}"
+    assert stop in commands
+    stop_index = commands.index(stop)
+    enable_index = next(
+        index for index, command in enumerate(commands) if "enable --now" in command
+    )
+    assert stop_index < enable_index
+
+
 def test_install_requires_a_checksummed_source(
     wiring: Wiring, capsys: pytest.CaptureFixture[str]
 ) -> None:

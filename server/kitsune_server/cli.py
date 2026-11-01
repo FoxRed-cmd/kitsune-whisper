@@ -302,11 +302,19 @@ def _install(args: argparse.Namespace) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 1
 
+    env = _supervisor_env()
+    if env.os_name not in ("linux", "windows"):
+        return _fail(f"the Server bundle supports Linux and Windows, not {env.os_name!r}")
     layout = _layout()
     installer = _bundle_installer(layout, models_dir=_models_dir(config))
     try:
+        # Replacing the runtime under a running Server would leave it serving
+        # from deleted files; stop it so the enable/start below picks up the
+        # upgrade.
+        state = supervisor.status(env)
+        if state.installed and state.running:
+            supervisor.stop(env)
         manifest = installer.install(source)
-        env = _supervisor_env()
         supervisor.install(
             env,
             supervisor.SupervisorOptions(

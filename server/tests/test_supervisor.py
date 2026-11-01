@@ -98,6 +98,14 @@ def test_systemd_unit_quotes_paths_with_spaces() -> None:
     assert '"/home/kim/a b.yaml"' in unit
 
 
+def test_systemd_unit_escapes_percent_specifiers() -> None:
+    options = SupervisorOptions(Invocation("/home/kim/100%/python3", ("start",)))
+
+    unit = supervisor.systemd_unit(options)
+
+    assert "ExecStart=/home/kim/100%%/python3 start" in unit
+
+
 def test_install_writes_and_enables_the_user_unit(tmp_path: Path) -> None:
     runner = FakeRunner()
     env = linux_env(tmp_path, runner)
@@ -323,6 +331,16 @@ def test_default_environment_uses_the_xdg_config_home(
     env = supervisor.Environment.default(os_name="linux", run=FakeRunner())
 
     assert env.config_home == tmp_path / "xdg"
+
+
+def test_default_environment_reports_an_unsupported_platform(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(supervisor.sys, "platform", "darwin")
+
+    env = supervisor.Environment.default(run=FakeRunner())
+
+    assert env.os_name == "darwin"
 
 
 def test_default_environment_uses_appdata_on_windows(

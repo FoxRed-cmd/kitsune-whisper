@@ -247,6 +247,14 @@ Uninstall stops and removes the autostart entry and the binary; `--purge` /
 
 ## Server
 
+The Server has two deployments. The **native per-user bundle** needs neither
+Docker nor a system Python and is supervised by a systemd user unit or a
+per-user Task Scheduler task; see [server-bundle.md](server-bundle.md) for its
+layout, install sources, commands, and uninstall behaviour. The **Docker image**
+remains the supported deployment for a dedicated host.
+
+### Docker
+
 The Server runs as a Docker container with `restart: unless-stopped`
 (`compose.yaml`), so it comes back after a reboot or crash. Start it with one
 profile:

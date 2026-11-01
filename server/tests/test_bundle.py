@@ -129,6 +129,12 @@ def installer(layout_: Layout, **kwargs: object) -> BundleInstaller:
     return BundleInstaller(layout_, **options)  # type: ignore[arg-type]
 
 
+def test_current_os_reports_unsupported_platforms(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(bundle.sys, "platform", "darwin")
+
+    assert bundle.current_os() == "darwin"
+
+
 def test_linux_layout_is_per_user_and_keeps_config_separate(tmp_path: Path) -> None:
     paths = layout(tmp_path)
 

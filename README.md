@@ -8,7 +8,9 @@ audio never leaves your network.
   resamples to 16 kHz mono, and injects the transcription via clipboard +
   synthetic paste.
 - A Python **Server** transcribes with faster-whisper, auto-detects CUDA vs CPU,
-  and exposes `POST /transcribe` and `GET /health`. It ships as a Docker image.
+  and exposes `POST /transcribe` and `GET /health`. It ships as a native
+  per-user bundle (pinned runtime, no system Python or Docker) and as a Docker
+  image for a dedicated host.
 - An optional **LLM sidecar** (the official llama.cpp server, behind the opt-in
   `llm` compose profile) runs on your GPU for local Refine/Summarize. The Server
   talks to it — or to any OpenAI-compatible endpoint (Ollama, LM Studio, a cloud

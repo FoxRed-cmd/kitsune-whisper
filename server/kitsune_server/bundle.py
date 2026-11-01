@@ -23,6 +23,7 @@ import contextlib
 import hashlib
 import json
 import os
+import platform
 import shlex
 import shutil
 import subprocess
@@ -47,6 +48,7 @@ class BundleError(Exception):
     """The bundle cannot be installed, built, or read."""
 
 
+@dataclass(frozen=True)
 class Layout:
     """Where one per-user installation keeps each piece.
 
@@ -55,11 +57,10 @@ class Layout:
     configuration and model cache live elsewhere and survive uninstall.
     """
 
-    def __init__(self, os_name: str, root: Path, bin_dir: Path, config_dir: Path) -> None:
-        self.os_name = os_name
-        self.root = root
-        self.bin_dir = bin_dir
-        self.config_dir = config_dir
+    os_name: str
+    root: Path
+    bin_dir: Path
+    config_dir: Path
 
     @classmethod
     def default(
@@ -92,19 +93,6 @@ class Layout:
             root=data_dir / "kitsune-whisper" / "server",
             bin_dir=home / ".local" / "bin",
             config_dir=config_dir / "kitsune-whisper",
-        )
-
-    def __repr__(self) -> str:  # pragma: no cover - debugging aid
-        return f"Layout(os_name={self.os_name!r}, root={str(self.root)!r})"
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Layout):
-            return NotImplemented
-        return (
-            self.os_name == other.os_name
-            and self.root == other.root
-            and self.bin_dir == other.bin_dir
-            and self.config_dir == other.config_dir
         )
 
     @property
@@ -150,12 +138,14 @@ class Layout:
 
 
 def current_os() -> str:
-    return "windows" if sys.platform == "win32" else "linux"
+    if sys.platform == "win32":
+        return "windows"
+    if sys.platform.startswith("linux"):
+        return "linux"
+    return sys.platform
 
 
 def current_arch() -> str:
-    import platform
-
     return platform.machine() or "unknown"
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import socket
+import sys
 from collections.abc import Callable
 
 import uvicorn
@@ -45,6 +46,11 @@ def check_port_available(
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     try:
         with socket_factory(family, socket.SOCK_STREAM) as probe:
+            # Mirror uvicorn: reuse a port left in TIME_WAIT after a crash or a
+            # supervised restart. On Windows SO_REUSEADDR would hijack an
+            # actively bound port, so the preflight keeps the strict check there.
+            if sys.platform != "win32":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             probe.bind((host, port))
     except OSError as exc:
         reason = exc.strerror or str(exc)

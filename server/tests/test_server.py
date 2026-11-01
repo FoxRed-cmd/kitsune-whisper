@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import errno
 import logging
+import socket
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +25,11 @@ class FakeSocket:
     def __init__(self, failure: OSError | None = None) -> None:
         self.failure = failure
         self.bound: tuple[str, int] | None = None
+        self.options: list[tuple[int, int, int]] = []
         self.closed = False
+
+    def setsockopt(self, level: int, option: int, value: int) -> None:
+        self.options.append((level, option, value))
 
     def bind(self, address: tuple[str, int]) -> None:
         if self.failure is not None:
@@ -51,6 +57,15 @@ def test_check_port_available_binds_the_configured_address() -> None:
 
     assert probe.bound == ("127.0.0.1", 8765)
     assert probe.closed
+
+
+def test_check_port_available_reuses_a_waiting_socket_on_posix() -> None:
+    probe = FakeSocket()
+
+    server.check_port_available("127.0.0.1", 8765, socket_factory=socket_factory(probe))
+
+    if sys.platform != "win32":
+        assert probe.options == [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
 
 
 def test_check_port_available_names_server_port_when_taken() -> None:
