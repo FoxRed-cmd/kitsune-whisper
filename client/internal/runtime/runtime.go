@@ -451,6 +451,51 @@ func (r *Runtime) Status() Status {
 // the control socket and global hotkey feed the same channel.
 func (r *Runtime) Trigger(trigger cycle.Trigger) { r.send(trigger) }
 
+// generation returns the adapters currently serving Dictation, or nil when the
+// runtime is not running. The returned generation may be replaced by a
+// concurrent Apply, but its adapters stay safe to call: they own no lifecycle
+// beyond the recorder, and the caller only uses the transcriber, injector, and
+// clipboard.
+func (r *Runtime) generation() *generation {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.gen
+}
+
+// Transcribe sends one saved Utterance to the active Server profile. The Spool
+// retry uses it, so a retry always follows a live Server switch.
+func (r *Runtime) Transcribe(ctx context.Context, audio []byte) (transcribe.Transcription, error) {
+	gen := r.generation()
+	if gen == nil {
+		return transcribe.Transcription{}, ErrNotRunning
+	}
+	return gen.adapters.Transcriber.Transcribe(ctx, audio)
+}
+
+// Inject places text into the focused field through the active generation's
+// injector. The Spool uses it after the user chooses Insert.
+func (r *Runtime) Inject(text string) error {
+	gen := r.generation()
+	if gen == nil {
+		return ErrNotRunning
+	}
+	return gen.adapters.Injector.Inject(text)
+}
+
+// Copy puts text on the clipboard without pasting it. The Spool uses it after
+// the user chooses Copy.
+func (r *Runtime) Copy(text string) error {
+	gen := r.generation()
+	if gen == nil {
+		return ErrNotRunning
+	}
+	copier, ok := gen.adapters.Injector.(interface{ Copy(string) error })
+	if !ok {
+		return errors.New("runtime: the injector cannot copy text to the clipboard")
+	}
+	return copier.Copy(text)
+}
+
 // Subscribe returns a channel that receives a Status on every lifecycle or
 // phase change, starting with the current snapshot. The returned function
 // unsubscribes and is idempotent. Updates are best-effort: a subscriber that

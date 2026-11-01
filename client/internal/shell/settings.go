@@ -12,6 +12,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // Settings is the Dictation settings service the window renders and edits.
@@ -30,6 +31,8 @@ type Servers interface {
 	View() servers.View
 	Config() config.ClientConfig
 	AddRemote(ctx context.Context, address, code, name string) (servers.Profile, error)
+	SetActive(profileID string) (servers.Profile, error)
+	CheckHealth(ctx context.Context, profileID string) trust.Status
 	LoadDevices(ctx context.Context, profileID string) ([]servers.Device, error)
 	RevokeDevice(ctx context.Context, profileID, deviceID string) error
 	GenerateCode(ctx context.Context, profileID string) (servers.PairingCode, error)
@@ -44,36 +47,41 @@ type Servers interface {
 
 // ServerLabels are the translated strings for the Servers and Devices screens.
 type ServerLabels struct {
-	Title            string `json:"title"`
-	Profiles         string `json:"profiles"`
-	Active           string `json:"active"`
-	PairTitle        string `json:"pairTitle"`
-	PairHelp         string `json:"pairHelp"`
-	Address          string `json:"address"`
-	Code             string `json:"code"`
-	Name             string `json:"name"`
-	NameHelp         string `json:"nameHelp"`
-	Pair             string `json:"pair"`
-	Devices          string `json:"devices"`
-	DevicesFor       string `json:"devicesFor"`
-	Refresh          string `json:"refresh"`
-	GenerateCode     string `json:"generateCode"`
-	CodeHelp         string `json:"codeHelp"`
-	CodeExpires      string `json:"codeExpires"`
-	Fingerprint      string `json:"fingerprint"`
-	NoDevices        string `json:"noDevices"`
-	LastSeen         string `json:"lastSeen"`
-	Never            string `json:"never"`
-	Revoke           string `json:"revoke"`
-	RevokeConfirm    string `json:"revokeConfirm"`
-	NoServers        string `json:"noServers"`
-	ExposureTitle    string `json:"exposureTitle"`
-	ExposureHelp     string `json:"exposureHelp"`
-	ExposureOn       string `json:"exposureOn"`
-	ExposureOff      string `json:"exposureOff"`
-	ExposureConfirm  string `json:"exposureConfirm"`
-	ExposureOnState  string `json:"exposureOnState"`
-	ExposureOffState string `json:"exposureOffState"`
+	Title            string            `json:"title"`
+	Profiles         string            `json:"profiles"`
+	Active           string            `json:"active"`
+	Health           string            `json:"health"`
+	RefreshHealth    string            `json:"refreshHealth"`
+	Use              string            `json:"use"`
+	OpenSettings     string            `json:"openSettings"`
+	StateLabels      map[string]string `json:"stateLabels"`
+	PairTitle        string            `json:"pairTitle"`
+	PairHelp         string            `json:"pairHelp"`
+	Address          string            `json:"address"`
+	Code             string            `json:"code"`
+	Name             string            `json:"name"`
+	NameHelp         string            `json:"nameHelp"`
+	Pair             string            `json:"pair"`
+	Devices          string            `json:"devices"`
+	DevicesFor       string            `json:"devicesFor"`
+	Refresh          string            `json:"refresh"`
+	GenerateCode     string            `json:"generateCode"`
+	CodeHelp         string            `json:"codeHelp"`
+	CodeExpires      string            `json:"codeExpires"`
+	Fingerprint      string            `json:"fingerprint"`
+	NoDevices        string            `json:"noDevices"`
+	LastSeen         string            `json:"lastSeen"`
+	Never            string            `json:"never"`
+	Revoke           string            `json:"revoke"`
+	RevokeConfirm    string            `json:"revokeConfirm"`
+	NoServers        string            `json:"noServers"`
+	ExposureTitle    string            `json:"exposureTitle"`
+	ExposureHelp     string            `json:"exposureHelp"`
+	ExposureOn       string            `json:"exposureOn"`
+	ExposureOff      string            `json:"exposureOff"`
+	ExposureConfirm  string            `json:"exposureConfirm"`
+	ExposureOnState  string            `json:"exposureOnState"`
+	ExposureOffState string            `json:"exposureOffState"`
 }
 
 // ModelLabels are the translated strings for the Model catalog screen.
@@ -125,12 +133,13 @@ type ModelLabels struct {
 }
 
 // SettingsView is everything the Settings window renders: the Dictation and
-// General screens plus the Servers, Devices, and Models screens.
+// General screens plus the Servers, Devices, Spool, and Models screens.
 type SettingsView struct {
 	dictation.View
 	Servers     servers.View `json:"servers"`
 	Labels      ServerLabels `json:"serverLabels"`
 	ModelLabels ModelLabels  `json:"modelLabels"`
+	Spool       SpoolView    `json:"spool"`
 }
 
 func (s *Shell) serversView() servers.View {
@@ -148,6 +157,11 @@ func (s *Shell) serverLabels() ServerLabels {
 		Title:            catalog.T("section.servers"),
 		Profiles:         catalog.T("server.profiles"),
 		Active:           catalog.T("server.active"),
+		Health:           catalog.T("server.health"),
+		RefreshHealth:    catalog.T("server.refreshHealth"),
+		Use:              catalog.T("server.use"),
+		OpenSettings:     catalog.T("action.openSettings"),
+		StateLabels:      serverStateLabels(catalog),
 		PairTitle:        catalog.T("server.pairTitle"),
 		PairHelp:         catalog.T("server.pairHelp"),
 		Address:          catalog.T("server.address"),
@@ -176,6 +190,24 @@ func (s *Shell) serverLabels() ServerLabels {
 		ExposureOnState:  catalog.T("server.exposureStateOn"),
 		ExposureOffState: catalog.T("server.exposureStateOff"),
 	}
+}
+
+// serverStateLabels translates every advisory health state whose label the
+// profile rows render.
+func serverStateLabels(catalog i18n.Catalog) map[string]string {
+	states := []trust.ServerState{
+		trust.StateUnknown,
+		trust.StateOnline,
+		trust.StateOffline,
+		trust.StateUnauthenticated,
+		trust.StateUnpinned,
+		trust.StateMismatch,
+	}
+	labels := make(map[string]string, len(states))
+	for _, state := range states {
+		labels[string(state)] = catalog.T("server." + string(state))
+	}
+	return labels
 }
 
 // modelLabels translates the Model catalog screen in the active language.
@@ -246,6 +278,7 @@ func (s *Shell) settingsView() SettingsView {
 		Servers:     s.serversView(),
 		Labels:      s.serverLabels(),
 		ModelLabels: s.modelLabels(),
+		Spool:       s.spoolView(),
 	}
 	return view
 }
@@ -265,8 +298,7 @@ func (s *Shell) dictationView() dictation.View {
 // Intent is the JSON the Settings page sends for one user action. The page
 // collects values and sends them; Go validates, saves, and applies them.
 type Intent struct {
-	// Action is one of IntentSave, IntentValidate, IntentTestMic,
-	// IntentStopMic, or IntentRestart.
+	// Action is one of the Intent constants below.
 	Action string `json:"action"`
 	// Patch is a nested "client:"-shaped patch for ActionSave.
 	Patch json.RawMessage `json:"patch,omitempty"`
@@ -281,6 +313,10 @@ type Intent struct {
 	Name    string `json:"name,omitempty"`
 	// DeviceID selects the Device to revoke.
 	DeviceID string `json:"device_id,omitempty"`
+	// ProfileID selects the Server profile to switch to.
+	ProfileID string `json:"profile_id,omitempty"`
+	// EntryID selects one saved Utterance on the Spool screen.
+	EntryID string `json:"entry_id,omitempty"`
 	// Model names one catalog model; Path also carries a local CTranslate2
 	// directory for ActionActivateModel.
 	Model string `json:"model,omitempty"`
@@ -300,6 +336,12 @@ const (
 	IntentRevokeDevice   = "revoke-device"
 	IntentPairingCode    = "pairing-code"
 	IntentExposure       = "exposure"
+	IntentUseProfile     = "use-profile"
+	IntentRefreshServers = "refresh-servers"
+	IntentSpoolRetry     = "spool-retry"
+	IntentSpoolCopy      = "spool-copy"
+	IntentSpoolInsert    = "spool-insert"
+	IntentSpoolDelete    = "spool-delete"
 	IntentLoadModels     = "load-models"
 	IntentDownloadModel  = "download-model"
 	IntentCancelDownload = "cancel-download"
@@ -312,7 +354,7 @@ const (
 // window rather than returned as errors; an error means the intent itself was
 // malformed or no settings service is available.
 func (s *Shell) HandleIntent(payload []byte) error {
-	if s.opts.Settings == nil && s.opts.Servers == nil {
+	if s.opts.Settings == nil && s.opts.Servers == nil && s.opts.Spool == nil {
 		return errors.New("settings are not available in this build")
 	}
 	var intent Intent
@@ -373,6 +415,24 @@ func (s *Shell) HandleIntent(payload []byte) error {
 	case IntentExposure:
 		s.setExposure(intent.Value)
 		return nil
+	case IntentUseProfile:
+		s.useProfile(intent.ProfileID)
+		return nil
+	case IntentRefreshServers:
+		s.refreshServers()
+		return nil
+	case IntentSpoolRetry:
+		s.retrySpool(intent.EntryID)
+		return nil
+	case IntentSpoolCopy:
+		s.spoolText(intent.EntryID, true)
+		return nil
+	case IntentSpoolInsert:
+		s.spoolText(intent.EntryID, false)
+		return nil
+	case IntentSpoolDelete:
+		s.deleteSpool(intent.EntryID)
+		return nil
 	case IntentLoadModels:
 		s.loadModels()
 		return nil
@@ -423,9 +483,7 @@ func (s *Shell) pairRemote(intent Intent) {
 	s.pushSettings()
 	s.pushMessages(notices, failures)
 	s.update(s.opts.Runtime.Status())
-	if s.opts.CheckServer != nil {
-		go s.checkServer(context.Background())
-	}
+	go s.checkServer(context.Background())
 }
 
 // refreshDevices reloads the active profile's Device list on demand.
@@ -524,6 +582,44 @@ func (s *Shell) setExposure(value string) {
 		state = "on"
 	}
 	s.pushMessages([]string{s.catalog().T("notice.server.exposure", state)}, nil)
+}
+
+// useProfile makes one Server profile active, persists it, and applies the new
+// configuration to the running Client. The next Utterance uses it; nothing
+// retries on another profile.
+func (s *Shell) useProfile(profileID string) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	if strings.TrimSpace(profileID) == "" {
+		return
+	}
+	profile, err := s.opts.Servers.SetActive(profileID)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.server.select", err.Error())})
+		return
+	}
+	failures := []string{}
+	if s.opts.ApplyConfig != nil {
+		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
+			failures = append(failures, s.catalog().T("error.server.apply", err.Error()))
+		}
+	}
+	s.resetDevices()
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.server.selected", profile.Name)}, failures)
+	s.update(s.opts.Runtime.Status())
+	go s.checkServer(context.Background())
+}
+
+// refreshServers probes every profile on demand and re-renders the health.
+func (s *Shell) refreshServers() {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	s.checkServer(ctx)
+	s.pushSettings()
 }
 
 // loadModels refreshes the active profile's Model catalog.

@@ -12,6 +12,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
@@ -45,6 +46,43 @@ type fakeRuntime struct {
 	once    sync.Once
 	waitErr error
 	stops   int
+
+	transcribeText  string
+	transcribeErr   error
+	transcribed     [][]byte
+	injected        []string
+	copied          []string
+	injectErr       error
+	copyErr         error
+	transcribeCalls int
+}
+
+func (r *fakeRuntime) Transcribe(_ context.Context, audio []byte) (transcribe.Transcription, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.transcribeCalls++
+	r.transcribed = append(r.transcribed, append([]byte(nil), audio...))
+	return transcribe.Transcription{Text: r.transcribeText}, r.transcribeErr
+}
+
+func (r *fakeRuntime) Inject(text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.injected = append(r.injected, text)
+	return r.injectErr
+}
+
+func (r *fakeRuntime) Copy(text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.copied = append(r.copied, text)
+	return r.copyErr
+}
+
+func (r *fakeRuntime) spoolCalls() (injected, copied int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.injected), len(r.copied)
 }
 
 func newFakeRuntime() *fakeRuntime {
@@ -96,6 +134,7 @@ type fakeWindow struct {
 	hides    int
 	updates  []shell.Snapshot
 	settings []shell.SettingsView
+	spools   []shell.SpoolView
 	messages []messageUpdate
 	levels   []float64
 	onClose  func()
@@ -141,6 +180,21 @@ func (w *fakeWindow) UpdateSettings(view shell.SettingsView) {
 	w.settings = append(w.settings, view)
 }
 
+func (w *fakeWindow) UpdateSpool(view shell.SpoolView) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.spools = append(w.spools, view)
+}
+
+func (w *fakeWindow) lastSpool() (shell.SpoolView, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.spools) == 0 {
+		return shell.SpoolView{}, false
+	}
+	return w.spools[len(w.spools)-1], true
+}
+
 func (w *fakeWindow) UpdateMessages(notices, failures []string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -160,6 +214,12 @@ func (w *fakeWindow) lastSettings() (shell.SettingsView, bool) {
 		return shell.SettingsView{}, false
 	}
 	return w.settings[len(w.settings)-1], true
+}
+
+func (w *fakeWindow) settingsCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.settings)
 }
 
 func (w *fakeWindow) lastMessages() (messageUpdate, bool) {
@@ -716,6 +776,103 @@ func TestServerStatusIsRenderedInTheWindowAndTray(t *testing.T) {
 	}
 
 	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// fakeNotifier records the user-facing notifications the shell raises.
+type fakeNotifier struct {
+	mu    sync.Mutex
+	notes []shell.Notification
+}
+
+func (n *fakeNotifier) Notify(notification shell.Notification) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.notes = append(n.notes, notification)
+}
+
+func (n *fakeNotifier) snapshot() []shell.Notification {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]shell.Notification(nil), n.notes...)
+}
+
+func newNotifyingShell(rt *fakeRuntime, notifier shell.Notifier) *shell.Shell {
+	return shell.New(shell.Options{
+		Runtime:  rt,
+		Desktop:  newFakeDesktop(),
+		Version:  "test",
+		Profile:  "Local Server",
+		Notifier: notifier,
+		Logger:   &fakeLogger{},
+	})
+}
+
+// TestADictationFailureRaisesOneNotificationWithASettingsAction proves a
+// failed Utterance surfaces exactly once, points at Settings, and a later,
+// different failure is a new event rather than silence.
+func TestADictationFailureRaisesOneNotificationWithASettingsAction(t *testing.T) {
+	rt := newFakeRuntime()
+	notifier := &fakeNotifier{}
+	sh := newNotifyingShell(rt, notifier)
+
+	done := start(t, sh, true)
+	waitFor(t, "the first status", func() bool { return sh.Snapshot().Running })
+
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseProcessing, Error: "server unreachable"})
+	waitFor(t, "one failure notification", func() bool { return len(notifier.snapshot()) == 1 })
+	note := notifier.snapshot()[0]
+	if note.Action != shell.ActionSettings || note.ActionLabel == "" {
+		t.Fatalf("notification action = %q %q, want the Settings action", note.Action, note.ActionLabel)
+	}
+	if !strings.Contains(note.Body, "Local Server") || !strings.Contains(note.Body, "server unreachable") {
+		t.Fatalf("notification body = %q", note.Body)
+	}
+	if note.Title == "" {
+		t.Fatal("notification has no title")
+	}
+
+	// The same failure seen across a phase change is not a second event.
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseIdle, Error: "server unreachable"})
+	time.Sleep(30 * time.Millisecond)
+	if got := len(notifier.snapshot()); got != 1 {
+		t.Fatalf("notifications after the same failure = %d, want 1", got)
+	}
+
+	// A recovered cycle and a new failure notify again.
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseIdle})
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseProcessing, Error: "timeout"})
+	waitFor(t, "the second failure notification", func() bool { return len(notifier.snapshot()) == 2 })
+
+	snapshot := sh.Snapshot()
+	if snapshot.ErrorAction != shell.ActionSettings {
+		t.Fatalf("snapshot error action = %q", snapshot.ErrorAction)
+	}
+
+	_ = rt.Stop()
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestASuccessfulCycleDoesNotNotify(t *testing.T) {
+	rt := newFakeRuntime()
+	notifier := &fakeNotifier{}
+	sh := newNotifyingShell(rt, notifier)
+
+	done := start(t, sh, true)
+	waitFor(t, "the first status", func() bool { return sh.Snapshot().Running })
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseRecording})
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseProcessing})
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseIdle})
+	time.Sleep(30 * time.Millisecond)
+	if got := len(notifier.snapshot()); got != 0 {
+		t.Fatalf("notifications = %d, want none", got)
+	}
+
+	_ = rt.Stop()
 	if res := <-done; res.err != nil {
 		t.Fatalf("run: %v", res.err)
 	}

@@ -33,6 +33,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/instance"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/notify"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/restart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
@@ -488,6 +489,84 @@ func serverCheck(
 	}
 }
 
+// profileCheck is the health probe the Servers service runs for one profile.
+// It auto-pairs the Local Server when it has no token or pin, so a Local Server
+// that starts after the Client still reports Online, and it never changes the
+// active profile.
+func profileCheck(store *settings.Store, manager *trust.Manager) servers.CheckFunc {
+	return func(
+		ctx context.Context,
+		profile config.ServerProfile,
+		token string,
+		timeout time.Duration,
+	) trust.Status {
+		if profile.AutoPair {
+			current := config.Default()
+			if store != nil {
+				current = store.Snapshot().Config
+			}
+			current.ActiveServer = profile.ID
+			if !hasProfile(current.Servers, profile.ID) {
+				current.Servers = append(append([]config.ServerProfile(nil), current.Servers...), profile)
+			}
+			if ensured, err := manager.Ensure(ctx, current); err == nil {
+				for _, candidate := range ensured.Servers {
+					if candidate.ID == profile.ID {
+						profile = candidate
+					}
+				}
+				if stored, err := manager.Token(profile.ID); err == nil {
+					token = stored
+				}
+			}
+		}
+		return trust.CheckServer(ctx, profile, token, timeout)
+	}
+}
+
+// hasProfile reports whether cfg has a profile with the given id.
+func hasProfile(profiles []config.ServerProfile, id string) bool {
+	for _, profile := range profiles {
+		if profile.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// newSpoolService builds the Spool screen's service. The directory is read per
+// operation, so a live spool_dir change is followed without a restart.
+func newSpoolService(
+	store *settings.Store,
+	cfg config.ClientConfig,
+	rt *runtime.Runtime,
+) *shell.SpoolService {
+	dir := func() string {
+		if store != nil {
+			return store.Snapshot().Config.SpoolDir
+		}
+		return cfg.SpoolDir
+	}
+	return shell.NewSpoolService(shell.SpoolOptions{Dir: dir, Runtime: rt})
+}
+
+// newNotifier builds the best-effort desktop notifier. A failure is logged
+// once and never retried.
+func newNotifier(logger *logging.Logger) *notify.Notifier {
+	return notify.New(notify.Options{
+		OnLog: func(message string) { logger.Debug("%s", message) },
+	})
+}
+
+// shellNotifier adapts the notification sender to the shell's port.
+type shellNotifier struct {
+	send *notify.Notifier
+}
+
+func (n shellNotifier) Notify(notification shell.Notification) {
+	n.send.Notify(notification.Title, notification.Body)
+}
+
 // serve builds the real adapters, starts the runtime, and either waits
 // headlessly or hands control to the desktop shell.
 func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr io.Writer) int {
@@ -549,22 +628,30 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 		}
 		server, _ := cfg.ActiveProfile()
 		var serverService shell.Servers
+		var healthCheck func(context.Context) trust.Status
 		if bootstrap.store != nil {
 			serverService = servers.New(servers.Options{
 				Store:  bootstrap.store,
 				Tokens: bootstrap.tokens,
+				Check:  profileCheck(bootstrap.store, bootstrap.manager),
 			})
+		} else {
+			// Without a profile service the shell still probes the active
+			// Server for the status card.
+			healthCheck = serverCheck(cfg, bootstrap.manager, nil)
 		}
 		sh = shell.New(shell.Options{
 			Runtime:     rt,
 			Desktop:     wails.New(wails.Options{Version: Version, Logger: logger}),
 			Settings:    settingsService,
 			Servers:     serverService,
+			Spool:       newSpoolService(bootstrap.store, cfg, rt),
 			ApplyConfig: rt.Apply,
 			Send:        rt.Trigger,
 			Version:     Version,
 			Profile:     server.Name,
-			CheckServer: serverCheck(cfg, bootstrap.manager, bootstrap.store),
+			CheckServer: healthCheck,
+			Notifier:    shellNotifier{send: newNotifier(logger)},
 			Logger:      logger,
 		})
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // Page renders the Settings window's initial HTML for a status snapshot and a
@@ -39,6 +40,7 @@ func Page(initial Snapshot, settings SettingsView) string {
 		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
+		"__OPEN_SETTINGS__", html.EscapeString(settings.Labels.OpenSettings),
 		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
@@ -58,6 +60,7 @@ func SettingsHTML(view SettingsView) string {
 		out.WriteString(`</section>`)
 	}
 	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelLabels))
+	out.WriteString(spoolHTML(view.Spool))
 	if view.DeviceError != "" {
 		out.WriteString(`<p class="device-error">` + escape(view.DeviceError) + `</p>`)
 	}
@@ -78,13 +81,26 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 		out.WriteString(`<p class="help">` + escape(labels.NoServers) + `</p>`)
 	} else {
 		out.WriteString(`<h3>` + escape(labels.Profiles) + `</h3>`)
+		out.WriteString(`<div class="actions-inline">`)
+		out.WriteString(`<button type="button" data-action="refresh-servers">` + escape(labels.RefreshHealth) + `</button>`)
+		out.WriteString(`</div>`)
 		for _, profile := range view.Profiles {
 			out.WriteString(`<div class="row" data-profile="` + escape(profile.ID) + `">`)
 			out.WriteString(`<strong>` + escape(profile.Name) + `</strong>`)
 			if profile.Active {
 				out.WriteString(`<span class="badge">` + escape(labels.Active) + `</span>`)
 			}
+			health := labels.StateLabels[string(profile.Health.State)]
+			if health == "" {
+				health = labels.StateLabels[string(trust.StateUnknown)]
+			}
+			out.WriteString(`<span class="health-label">` + escape(labels.Health) + `:</span>`)
+			out.WriteString(`<span class="health" data-health="` + escape(string(profile.Health.State)) + `">` + escape(health) + `</span>`)
 			out.WriteString(`<code>` + escape(profile.URL) + `</code>`)
+			if !profile.Active {
+				out.WriteString(`<button type="button" data-action="use-profile" data-profile-id="` +
+					escape(profile.ID) + `">` + escape(labels.Use) + `</button>`)
+			}
 			out.WriteString(`</div>`)
 		}
 	}
@@ -149,6 +165,61 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	}
 	out.WriteString(`</section>`)
 	out.WriteString(modelsHTML(view.Models, view.ModelsError, modelLabels))
+	return out.String()
+}
+
+// SpoolHTML renders only the Spool screen, for a live refresh that leaves the
+// edited Dictation forms alone.
+func SpoolHTML(view SpoolView) string { return spoolHTML(view) }
+
+// spoolHTML renders the saved failed Utterances and the retry result. Every
+// action carries the entry id; the page never decides what to do with it.
+func spoolHTML(view SpoolView) string {
+	if view.Labels.Title == "" {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="spool">`)
+	out.WriteString(`<h2>` + escape(view.Labels.Title) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(view.Labels.Help) + `</p>`)
+	if view.Error != "" {
+		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
+	}
+	if len(view.Entries) == 0 {
+		out.WriteString(`<p class="help">` + escape(view.Labels.Empty) + `</p>`)
+		out.WriteString(`</section>`)
+		return out.String()
+	}
+	out.WriteString(`<table class="devices"><thead><tr><th>` + escape(view.Labels.SavedAt) +
+		`</th><th>` + escape(view.Labels.Duration) + `</th><th></th></tr></thead><tbody>`)
+	for _, entry := range view.Entries {
+		out.WriteString(`<tr data-entry="` + escape(entry.ID) + `"><td>`)
+		out.WriteString(escape(savedAt(entry.SavedAt)))
+		out.WriteString(`</td><td>` + escape(formatSpoolDuration(entry.Duration)) + `</td><td>`)
+		out.WriteString(`<button type="button" data-action="spool-retry" data-entry-id="` +
+			escape(entry.ID) + `">` + escape(view.Labels.Retry) + `</button> `)
+		out.WriteString(`<button type="button" data-action="spool-delete" data-entry-id="` +
+			escape(entry.ID) + `" data-confirm="` + escape(view.Labels.DeleteConfirm) + `">` +
+			escape(view.Labels.Delete) + `</button>`)
+		out.WriteString(`</td></tr>`)
+	}
+	out.WriteString(`</tbody></table>`)
+	if view.Selected != "" {
+		out.WriteString(`<h3>` + escape(view.Labels.Text) + `</h3>`)
+		if view.Text == "" {
+			out.WriteString(`<p class="help">` + escape(view.Labels.EmptyText) + `</p>`)
+		} else {
+			out.WriteString(`<pre class="spool-text" data-entry-id="` + escape(view.Selected) + `">` +
+				escape(view.Text) + `</pre>`)
+			out.WriteString(`<div class="actions-inline">`)
+			out.WriteString(`<button type="button" data-action="spool-copy" data-entry-id="` +
+				escape(view.Selected) + `">` + escape(view.Labels.Copy) + `</button>`)
+			out.WriteString(`<button type="button" data-action="spool-insert" data-entry-id="` +
+				escape(view.Selected) + `">` + escape(view.Labels.Insert) + `</button>`)
+			out.WriteString(`</div>`)
+		}
+	}
+	out.WriteString(`</section>`)
 	return out.String()
 }
 
@@ -227,6 +298,14 @@ func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels
 	out.WriteString(`<button type="button" data-action="activate-local">` + escape(labels.UseLocal) + `</button>`)
 	out.WriteString(`</section>`)
 	return out.String()
+}
+
+// savedAt renders a spool entry's capture time in local time.
+func savedAt(seconds float64) string {
+	if seconds <= 0 {
+		return "—"
+	}
+	return time.Unix(int64(seconds), 0).Local().Format("2006-01-02 15:04")
 }
 
 // modelActions renders the one control a catalog row offers.
@@ -484,7 +563,11 @@ const pageHTML = `<!doctype html>
   .notice { color:#2f9e44; margin:0 0 6px; }
   .failure { color:#d6409f; margin:0 0 6px; }
   .error { margin-top:20px; padding:12px 14px; border:1px solid #d6409f55; border-radius:8px; color:#d6409f; display:none; }
-  .error.visible { display:block; }
+  .error.visible { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .health { font-size: 12px; color: var(--muted); }
+  .health[data-health="online"] { color:#2f9e44; }
+  .health[data-health="offline"], .health[data-health="unauthenticated"], .health[data-health="mismatch"] { color:#d6409f; }
+  .spool-text { white-space: pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
   footer { display:flex; gap:10px; align-items:center; margin-top: 20px; }
   button { font: inherit; padding: 8px 14px; border-radius: 8px; border:1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: white; }
@@ -504,7 +587,7 @@ const pageHTML = `<!doctype html>
       <dt id="label-server-status">—</dt><dd id="server-status">—</dd>
       <dt id="label-version">—</dt><dd id="version">—</dd>
     </dl>
-    <p class="error" id="error"></p>
+    <p class="error" id="error"><span id="error-text"></span> <button type="button" data-action="settings" id="error-settings">__OPEN_SETTINGS__</button></p>
   </section>
   <div class="messages" id="messages"></div>
   <div id="settings">__SETTINGS__</div>
@@ -534,11 +617,11 @@ const pageHTML = `<!doctype html>
     text("label-server", labels.profile);
     text("label-server-status", labels.server);
     text("label-version", labels.version);
+    text("error-text", s.error);
     var error = document.getElementById("error");
-    if (error) {
-      error.textContent = s.error || "";
-      error.classList.toggle("visible", Boolean(s.error));
-    }
+    if (error) error.classList.toggle("visible", Boolean(s.error));
+    var errorSettings = document.getElementById("error-settings");
+    if (errorSettings) errorSettings.hidden = !s.errorAction;
   }
   function renderSettings(v) {
     var host = document.getElementById("settings");
@@ -549,6 +632,7 @@ const pageHTML = `<!doctype html>
       text("page-title", v.title);
     }
     if (v) text("page-subtitle", v.subtitle);
+    if (v && v.serverLabels) text("error-settings", v.serverLabels.openSettings);
     if (v && v.actions) {
       var save = document.getElementById("save-button");
       if (save && v.actions.save) save.textContent = v.actions.save;
@@ -557,6 +641,16 @@ const pageHTML = `<!doctype html>
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
     }
+  }
+  function renderSpool(v) {
+    var host = document.getElementById("settings");
+    var current = host ? host.querySelector("[data-section='spool']") : null;
+    var holder = document.createElement("div");
+    holder.innerHTML = (v && v.html) || "";
+    var next = holder.firstElementChild;
+    if (current && next) current.replaceWith(next);
+    else if (current) current.remove();
+    else if (next && host) host.appendChild(next);
   }
   function renderMessages(m) {
     var host = document.getElementById("messages");
@@ -667,6 +761,23 @@ const pageHTML = `<!doctype html>
       revokeDevice(button);
     } else if (action === "pairing-code") {
       sendIntent({ action: "pairing-code" });
+    } else if (action === "use-profile") {
+      sendIntent({ action: "use-profile", profile_id: button.dataset.profileId || "" });
+    } else if (action === "refresh-servers") {
+      sendIntent({ action: "refresh-servers" });
+    } else if (action === "spool-retry") {
+      sendIntent({ action: "spool-retry", entry_id: button.dataset.entryId || "" });
+    } else if (action === "spool-copy") {
+      sendIntent({ action: "spool-copy", entry_id: button.dataset.entryId || "" });
+    } else if (action === "spool-insert") {
+      sendIntent({ action: "spool-insert", entry_id: button.dataset.entryId || "" });
+    } else if (action === "spool-delete") {
+      var deleteMessage = button.dataset.confirm || "Delete this saved recording?";
+      if (window.confirm && !window.confirm(deleteMessage)) return;
+      sendIntent({ action: "spool-delete", entry_id: button.dataset.entryId || "" });
+    } else if (action === "settings") {
+      var host = document.getElementById("settings");
+      if (host && host.scrollIntoView) host.scrollIntoView({ block: "start" });
     } else if (action === "exposure") {
       var expose = button.dataset.expose || "off";
       var exposureMessage = button.dataset.confirm || "";

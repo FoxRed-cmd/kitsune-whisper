@@ -13,6 +13,7 @@ package shell
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
@@ -43,6 +45,12 @@ type Runtime interface {
 	Subscribe() (<-chan runtime.Status, func())
 	Stop() error
 	Wait() error
+	// Transcribe sends saved audio to the active Server profile.
+	Transcribe(ctx context.Context, audio []byte) (transcribe.Transcription, error)
+	// Inject places text into the focused field.
+	Inject(text string) error
+	// Copy puts text on the clipboard without pasting it.
+	Copy(text string) error
 }
 
 // Window is the Settings window port.
@@ -61,6 +69,9 @@ type Window interface {
 	// UpdateMessages renders validation and save messages without rebuilding
 	// the form, so a rejected hotkey keeps the other edited fields.
 	UpdateMessages(notices, failures []string)
+	// UpdateSpool re-renders only the Spool screen, so a new failed Utterance
+	// appears without rebuilding the edited forms.
+	UpdateSpool(SpoolView)
 	// UpdateLevel renders the live microphone Input level in [0,1].
 	UpdateLevel(level float64)
 	// OnClose installs the handler called when the user closes the window. The
@@ -108,6 +119,43 @@ const (
 	ActionQuit Action = "quit"
 )
 
+// profileActionPrefix marks a Tray menu click on one Server profile.
+const profileActionPrefix = "profile:"
+
+// ProfileAction is the Tray action that makes one Server profile active.
+func ProfileAction(profileID string) Action {
+	return Action(profileActionPrefix + profileID)
+}
+
+// ProfileID returns the profile a Tray action selects, and whether the action
+// is a profile selection at all.
+func (a Action) ProfileID() (string, bool) {
+	value := string(a)
+	if !strings.HasPrefix(value, profileActionPrefix) {
+		return "", false
+	}
+	id := strings.TrimPrefix(value, profileActionPrefix)
+	if id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+// Notification is one user-facing message. Action is the menu action the user
+// can take from it; ActionLabel is its translated name.
+type Notification struct {
+	Title       string `json:"title"`
+	Body        string `json:"body"`
+	Action      Action `json:"action"`
+	ActionLabel string `json:"actionLabel"`
+}
+
+// Notifier raises one desktop notification. Implementations must not retry in
+// a loop; a failed notification is logged and dropped.
+type Notifier interface {
+	Notify(Notification)
+}
+
 // State is the state the Tray icon reflects.
 type State string
 
@@ -126,22 +174,33 @@ const (
 // Labels are the translated strings the page and the Tray render. They travel
 // with the snapshot so a language switch updates both without a restart.
 type Labels struct {
-	State       string `json:"state"`
-	Status      string `json:"status"`
-	Start       string `json:"start"`
-	Stop        string `json:"stop"`
-	Settings    string `json:"settings"`
-	Restart     string `json:"restart"`
-	Quit        string `json:"quit"`
-	Phase       string `json:"phase"`
-	PhaseValue  string `json:"phaseValue"`
-	Client      string `json:"client"`
-	Profile     string `json:"profile"`
-	Version     string `json:"version"`
-	Running     string `json:"running"`
-	Stopped     string `json:"stopped"`
-	Server      string `json:"server"`
-	ServerState string `json:"serverState"`
+	State        string `json:"state"`
+	Status       string `json:"status"`
+	Start        string `json:"start"`
+	Stop         string `json:"stop"`
+	Settings     string `json:"settings"`
+	Restart      string `json:"restart"`
+	Quit         string `json:"quit"`
+	Phase        string `json:"phase"`
+	PhaseValue   string `json:"phaseValue"`
+	Client       string `json:"client"`
+	Profile      string `json:"profile"`
+	Version      string `json:"version"`
+	Running      string `json:"running"`
+	Stopped      string `json:"stopped"`
+	Server       string `json:"server"`
+	ServerState  string `json:"serverState"`
+	Profiles     string `json:"profiles"`
+	OpenSettings string `json:"openSettings"`
+}
+
+// ProfileState is one Server profile as the Tray lists it.
+type ProfileState struct {
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Active     bool              `json:"active"`
+	State      trust.ServerState `json:"state"`
+	StateLabel string            `json:"stateLabel"`
 }
 
 // Snapshot is the one immutable status the window and the Tray render.
@@ -152,10 +211,15 @@ type Snapshot struct {
 	Phase   runtime.Phase `json:"phase"`
 	State   State         `json:"state"`
 	Error   string        `json:"error,omitempty"`
+	// ErrorAction is the action offered with Error, or "".
+	ErrorAction Action `json:"errorAction,omitempty"`
 	// Server is the advisory reachability and authentication state of the
 	// active profile. It never changes routing.
 	Server trust.Status `json:"server"`
-	Labels Labels       `json:"labels"`
+	// Profiles lists every Server profile with its advisory health, for the
+	// Tray's profile submenu.
+	Profiles []ProfileState `json:"profiles,omitempty"`
+	Labels   Labels         `json:"labels"`
 }
 
 // NewSnapshot maps the runtime status onto the shell's render model with
@@ -189,22 +253,24 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 	state := catalog.T("state." + string(snapshot.State))
 	return Labels{
-		State:       state,
-		Status:      catalog.T("tray.status", state),
-		Start:       catalog.T("tray.start"),
-		Stop:        catalog.T("tray.stop"),
-		Settings:    catalog.T("tray.settings"),
-		Restart:     catalog.T("tray.restart"),
-		Quit:        catalog.T("tray.quit"),
-		Phase:       catalog.T("status.phase"),
-		PhaseValue:  phaseLabel(catalog, snapshot.Phase),
-		Client:      catalog.T("status.client"),
-		Profile:     catalog.T("status.profile"),
-		Version:     catalog.T("status.version"),
-		Running:     catalog.T("status.running"),
-		Stopped:     catalog.T("status.stopped"),
-		Server:      catalog.T("status.server"),
-		ServerState: serverStateLabel(catalog, snapshot.Server.State),
+		State:        state,
+		Status:       catalog.T("tray.status", state),
+		Start:        catalog.T("tray.start"),
+		Stop:         catalog.T("tray.stop"),
+		Settings:     catalog.T("tray.settings"),
+		Restart:      catalog.T("tray.restart"),
+		Quit:         catalog.T("tray.quit"),
+		Phase:        catalog.T("status.phase"),
+		PhaseValue:   phaseLabel(catalog, snapshot.Phase),
+		Client:       catalog.T("status.client"),
+		Profile:      catalog.T("status.profile"),
+		Version:      catalog.T("status.version"),
+		Running:      catalog.T("status.running"),
+		Stopped:      catalog.T("status.stopped"),
+		Server:       catalog.T("status.server"),
+		ServerState:  serverStateLabel(catalog, snapshot.Server.State),
+		Profiles:     catalog.T("tray.profiles"),
+		OpenSettings: catalog.T("action.openSettings"),
 	}
 }
 
@@ -238,6 +304,8 @@ type Options struct {
 	// Servers is the Server-profile and Device-management service. Nil renders
 	// no Servers or Devices screens.
 	Servers Servers
+	// Spool is the Spool screen's service. Nil renders no Spool screen.
+	Spool Spool
 	// ApplyConfig applies a newly saved profile list to the running runtime.
 	// Nil leaves the change for the next Client start.
 	ApplyConfig func(config.ClientConfig) error
@@ -252,6 +320,9 @@ type Options struct {
 	CheckServer func(context.Context) trust.Status
 	// CheckInterval is the slow health probe interval; 0 uses 30 seconds.
 	CheckInterval time.Duration
+	// Notifier raises the one user-facing error of a failed Dictation cycle.
+	// Nil keeps the error in the window and the Tray only.
+	Notifier Notifier
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
 }
@@ -269,6 +340,8 @@ type Shell struct {
 	tray          Tray
 	levelTest     dictation.LevelStream
 	devicesLoaded string
+	notifiedError string
+	healthState   string
 	modelsLoaded  string
 
 	quitCh    chan struct{}
@@ -314,7 +387,7 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	go s.consume(updates)
 	monitorCtx, stopMonitor := context.WithCancel(ctx)
 	defer stopMonitor()
-	if s.opts.CheckServer != nil {
+	if s.opts.CheckServer != nil || s.opts.Servers != nil {
 		go s.monitorServer(monitorCtx)
 	}
 
@@ -430,6 +503,7 @@ func (s *Shell) update(status runtime.Status) {
 	}
 	s.mu.Lock()
 	s.runtimeStatus = status
+	notification := s.failureLocked(status)
 	snapshot, window, tray := s.renderLocked()
 	s.mu.Unlock()
 	if window != nil {
@@ -437,6 +511,50 @@ func (s *Shell) update(status runtime.Status) {
 	}
 	if tray != nil {
 		tray.Update(snapshot)
+	}
+	if notification != nil {
+		s.pushSpool()
+		if s.opts.Notifier != nil {
+			s.opts.Notifier.Notify(*notification)
+		}
+	}
+}
+
+// pushSpool re-renders the Spool screen only. It is used when a failed
+// Utterance is saved and after every Spool action, so the Dictation forms keep
+// their in-progress edits.
+func (s *Shell) pushSpool() {
+	if s.opts.Spool == nil {
+		return
+	}
+	view := s.spoolView()
+	s.mu.Lock()
+	window := s.window
+	s.mu.Unlock()
+	if window != nil {
+		window.UpdateSpool(view)
+	}
+}
+
+// failureLocked returns the one notification a newly failed cycle raises. The
+// same failure seen again across a phase change is not a new event; a
+// recovered cycle resets the record so the next failure notifies. s.mu must be
+// held.
+func (s *Shell) failureLocked(status runtime.Status) *Notification {
+	if status.Error == "" {
+		s.notifiedError = ""
+		return nil
+	}
+	if status.Error == s.notifiedError {
+		return nil
+	}
+	s.notifiedError = status.Error
+	catalog := s.catalog()
+	return &Notification{
+		Title:       catalog.T("notification.failure.title"),
+		Body:        catalog.T("error.dictation.failed", s.activeProfileName(), status.Error),
+		Action:      ActionSettings,
+		ActionLabel: catalog.T("action.openSettings"),
 	}
 }
 
@@ -460,9 +578,34 @@ func (s *Shell) updateServer(status trust.Status) {
 func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 	snapshot := NewSnapshot(s.runtimeStatus, s.opts.Version, s.activeProfileName())
 	snapshot.Server = s.server
+	if snapshot.Error != "" {
+		snapshot.ErrorAction = ActionSettings
+	}
+	snapshot.Profiles = s.profileStatesLocked()
 	snapshot.Labels = labelsFor(s.catalog(), snapshot)
 	s.snapshot = snapshot
 	return snapshot, s.window, s.tray
+}
+
+// profileStatesLocked renders every Server profile and its advisory health for
+// the Tray's profile submenu. s.mu must be held.
+func (s *Shell) profileStatesLocked() []ProfileState {
+	if s.opts.Servers == nil {
+		return nil
+	}
+	catalog := s.catalog()
+	view := s.opts.Servers.View()
+	states := make([]ProfileState, 0, len(view.Profiles))
+	for _, profile := range view.Profiles {
+		states = append(states, ProfileState{
+			ID:         profile.ID,
+			Name:       profile.Name,
+			Active:     profile.Active,
+			State:      profile.Health.State,
+			StateLabel: serverStateLabel(catalog, profile.Health.State),
+		})
+	}
+	return states
 }
 
 // activeProfileName follows the profile list so pairing a Remote Server
@@ -501,6 +644,10 @@ func (s *Shell) monitorServer(ctx context.Context) {
 }
 
 func (s *Shell) checkServer(ctx context.Context) {
+	if s.opts.Servers != nil {
+		s.checkProfiles(ctx)
+		return
+	}
 	if s.opts.CheckServer == nil {
 		return
 	}
@@ -511,6 +658,52 @@ func (s *Shell) checkServer(ctx context.Context) {
 	if status.State == trust.StateOnline {
 		go s.loadDevices(ctx)
 		go s.loadModelsForCheck(ctx)
+	}
+}
+
+// checkProfiles refreshes the advisory health of every Server profile. It never
+// changes the active profile and never applies a configuration; a changed
+// health only re-renders the profile list.
+func (s *Shell) checkProfiles(ctx context.Context) {
+	view := s.opts.Servers.View()
+	active := trust.Status{State: trust.StateUnknown}
+	for _, profile := range view.Profiles {
+		checkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		status := s.opts.Servers.CheckHealth(checkCtx, profile.ID)
+		cancel()
+		if profile.Active {
+			active = status
+		}
+	}
+	s.updateServer(active)
+	s.pushSettingsIfHealthChanged()
+	if active.State == trust.StateOnline {
+		// The Models and Devices screens follow the active profile's health:
+		// the catalog is loaded once per profile, and a running download keeps
+		// refreshing its progress.
+		go s.loadDevices(ctx)
+		go s.loadModelsForCheck(ctx)
+	}
+}
+
+// pushSettingsIfHealthChanged re-renders the profile list only when the health
+// labels actually changed, so a slow background probe never rebuilds a form the
+// user is editing.
+func (s *Shell) pushSettingsIfHealthChanged() {
+	view := s.opts.Servers.View()
+	var signature strings.Builder
+	for _, profile := range view.Profiles {
+		signature.WriteString(profile.ID)
+		signature.WriteByte(':')
+		signature.WriteString(string(profile.Health.State))
+		signature.WriteByte(';')
+	}
+	s.mu.Lock()
+	changed := signature.String() != s.healthState
+	s.healthState = signature.String()
+	s.mu.Unlock()
+	if changed {
+		s.pushSettings()
 	}
 }
 
@@ -603,6 +796,10 @@ func (s *Shell) ShowSettings() error {
 
 // handleAction maps one Tray menu action.
 func (s *Shell) handleAction(action Action) {
+	if profileID, ok := action.ProfileID(); ok {
+		s.useProfile(profileID)
+		return
+	}
 	switch action {
 	case ActionToggle:
 		if s.opts.Send != nil {

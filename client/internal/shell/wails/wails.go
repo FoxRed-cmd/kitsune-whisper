@@ -258,6 +258,14 @@ func (w *window) UpdateMessages(notices, failures []string) {
 	w.win.ExecJS("window.renderMessages(" + string(payload) + ")")
 }
 
+func (w *window) UpdateSpool(view shell.SpoolView) {
+	payload, err := json.Marshal(map[string]string{"html": shell.SpoolHTML(view)})
+	if err != nil {
+		return
+	}
+	w.win.ExecJS("window.renderSpool(" + string(payload) + ")")
+}
+
 func (w *window) UpdateLevel(level float64) {
 	w.win.ExecJS("window.setLevel(" + strconv.FormatFloat(level, 'f', 4, 64) + ")")
 }
@@ -308,9 +316,25 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 		serverStateItem := menu.Add(labels.Server + ": " + serverState)
 		serverStateItem.SetEnabled(false)
 	}
+	// The profile submenu is the manual Server switch. Health labels are
+	// advisory and never change what the radio item selects.
+	if len(snapshot.Profiles) > 0 {
+		submenu := menu.AddSubmenu(labels.Profiles)
+		for _, profile := range snapshot.Profiles {
+			label := profile.Name
+			if profile.StateLabel != "" {
+				label += " — " + profile.StateLabel
+			}
+			item := submenu.AddRadio(label, profile.Active)
+			item.OnClick(func(*application.Context) { t.do(shell.ProfileAction(profile.ID)) })
+		}
+	}
 	if snapshot.Error != "" {
 		detail := menu.Add(truncate(snapshot.Error, 64))
 		detail.SetEnabled(false)
+		if snapshot.ErrorAction == shell.ActionSettings {
+			menu.Add(labels.OpenSettings).OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
+		}
 	}
 
 	toggleLabel := labels.Start
