@@ -148,9 +148,13 @@ func (b *bridge) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 		http.Error(rw, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	payload, err := io.ReadAll(io.LimitReader(req.Body, intentLimit))
+	payload, err := io.ReadAll(io.LimitReader(req.Body, intentLimit+1))
 	if err != nil {
 		http.Error(rw, "could not read the settings intent", http.StatusBadRequest)
+		return
+	}
+	if len(payload) > intentLimit {
+		http.Error(rw, "the settings intent is too large", http.StatusRequestEntityTooLarge)
 		return
 	}
 	if err := b.desktop.deliverIntent(payload); err != nil {

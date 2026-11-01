@@ -135,15 +135,57 @@ func localServerProfile() ServerProfile {
 	}
 }
 
+// Reason classifies a configuration error so callers can translate it without
+// matching message text.
+type Reason string
+
+const (
+	// ReasonUnknownKey is a key the schema does not know.
+	ReasonUnknownKey Reason = "unknown_key"
+	// ReasonNotMapping is a scalar where a group belongs.
+	ReasonNotMapping Reason = "not_mapping"
+	// ReasonRequired is a missing or empty required value.
+	ReasonRequired Reason = "required"
+	// ReasonText is a value that must be a string.
+	ReasonText Reason = "text"
+	// ReasonNumber is a value that must be a number.
+	ReasonNumber Reason = "number"
+	// ReasonBoolean is a value that must be a boolean.
+	ReasonBoolean Reason = "boolean"
+	// ReasonChoice is a value outside a fixed list; Detail names the choices.
+	ReasonChoice Reason = "choice"
+	// ReasonRange is a value outside its bounds.
+	ReasonRange Reason = "range"
+	// ReasonInvalid is any validation failure without a more specific kind.
+	ReasonInvalid Reason = "invalid"
+)
+
 // Error is raised when configuration is missing, unreadable, or invalid.
 type Error struct {
 	Message string
+	// Path is the offending field, empty for a whole-file failure.
+	Path string
+	// Reason classifies a field failure; ReasonInvalid when unclassified.
+	Reason Reason
+	// Detail carries reason-specific data, such as the allowed values for
+	// ReasonChoice.
+	Detail string
 }
 
 func (e *Error) Error() string { return e.Message }
 
 func fieldError(path, format string, args ...any) *Error {
-	return &Error{Message: fmt.Sprintf("%s: %s", path, fmt.Sprintf(format, args...))}
+	return reasonError(path, ReasonInvalid, "", format, args...)
+}
+
+func reasonError(path string, reason Reason, detail, format string, args ...any) *Error {
+	message := fmt.Sprintf(format, args...)
+	return &Error{
+		Message: fmt.Sprintf("%s: %s", path, message),
+		Path:    path,
+		Reason:  reason,
+		Detail:  detail,
+	}
 }
 
 // LoadOptions carries the inputs that override the file.
@@ -366,14 +408,14 @@ func rejectUnknown(prefix string, value map[string]any, known map[string]any) er
 		}
 		child, ok := known[key]
 		if !ok {
-			return fieldError(path, "unknown key")
+			return reasonError(path, ReasonUnknownKey, "", "unknown key")
 		}
 		if child == nil {
 			continue
 		}
 		group, ok := value[key].(map[string]any)
 		if !ok {
-			return fieldError(path, "must be a mapping")
+			return reasonError(path, ReasonNotMapping, "", "must be a mapping")
 		}
 		if err := rejectUnknown(path, group, child.(map[string]any)); err != nil {
 			return err
@@ -387,7 +429,7 @@ func asString(value any, path string) (string, error) {
 	case string:
 		return v, nil
 	default:
-		return "", fieldError(path, "must be a string")
+		return "", reasonError(path, ReasonText, "", "must be a string")
 	}
 }
 
@@ -402,11 +444,11 @@ func asFloat(value any, path string) (float64, error) {
 	case string:
 		f, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
 		if err != nil {
-			return 0, fieldError(path, "must be a number")
+			return 0, reasonError(path, ReasonNumber, "", "must be a number")
 		}
 		return f, nil
 	default:
-		return 0, fieldError(path, "must be a number")
+		return 0, reasonError(path, ReasonNumber, "", "must be a number")
 	}
 }
 
@@ -417,11 +459,11 @@ func asBool(value any, path string) (bool, error) {
 	case string:
 		b, err := strconv.ParseBool(strings.TrimSpace(v))
 		if err != nil {
-			return false, fieldError(path, "must be a boolean")
+			return false, reasonError(path, ReasonBoolean, "", "must be a boolean")
 		}
 		return b, nil
 	default:
-		return false, fieldError(path, "must be a boolean")
+		return false, reasonError(path, ReasonBoolean, "", "must be a boolean")
 	}
 }
 
@@ -431,20 +473,21 @@ func oneOf(value, path string, allowed ...string) error {
 			return nil
 		}
 	}
-	return fieldError(path, "must be one of %s", strings.Join(allowed, ", "))
+	choices := strings.Join(allowed, ", ")
+	return reasonError(path, ReasonChoice, choices, "must be one of %s", choices)
 }
 
 func stringField(m map[string]any, key, path string) (string, error) {
 	raw, ok := m[key]
 	if !ok {
-		return "", fieldError(path, "missing")
+		return "", reasonError(path, ReasonRequired, "", "missing")
 	}
 	value, err := asString(raw, path)
 	if err != nil {
 		return "", err
 	}
 	if value == "" {
-		return "", fieldError(path, "must not be empty")
+		return "", reasonError(path, ReasonRequired, "", "must not be empty")
 	}
 	return value, nil
 }
@@ -606,7 +649,7 @@ func group(m map[string]any, key, path string) (map[string]any, error) {
 	}
 	g, ok := raw.(map[string]any)
 	if !ok {
-		return nil, fieldError(path, "must be a mapping")
+		return nil, reasonError(path, ReasonNotMapping, "", "must be a mapping")
 	}
 	return g, nil
 }
@@ -649,7 +692,7 @@ func serverProfiles(raw any) ([]ServerProfile, error) {
 func serverProfile(raw any, path string) (ServerProfile, error) {
 	m, ok := raw.(map[string]any)
 	if !ok {
-		return ServerProfile{}, fieldError(path, "must be a mapping")
+		return ServerProfile{}, reasonError(path, ReasonNotMapping, "", "must be a mapping")
 	}
 	keys := make([]string, 0, len(m))
 	for key := range m {
@@ -658,7 +701,7 @@ func serverProfile(raw any, path string) (ServerProfile, error) {
 	sort.Strings(keys)
 	for _, key := range keys {
 		if !profileFields[key] {
-			return ServerProfile{}, fieldError(path+"."+key, "unknown key")
+			return ServerProfile{}, reasonError(path+"."+key, ReasonUnknownKey, "", "unknown key")
 		}
 	}
 
@@ -708,7 +751,7 @@ func nonBlankString(m map[string]any, key, path string) (string, error) {
 		return "", err
 	}
 	if strings.TrimSpace(value) == "" {
-		return "", fieldError(path, "must not be empty")
+		return "", reasonError(path, ReasonRequired, "", "must not be empty")
 	}
 	return value, nil
 }

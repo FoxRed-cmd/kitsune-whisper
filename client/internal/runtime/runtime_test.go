@@ -26,14 +26,19 @@ type fakeRecorder struct {
 	cancels  int
 	closes   int
 	startErr error
+	onStart  func()
 	audio    []byte
 	duration time.Duration
 }
 
 func (r *fakeRecorder) Start() error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.starts++
+	onStart := r.onStart
+	r.mu.Unlock()
+	if onStart != nil {
+		onStart()
+	}
 	return r.startErr
 }
 
@@ -75,18 +80,28 @@ type fakeHotkey struct {
 	exited  chan struct{}
 	runs    atomic.Int32
 	once    sync.Once
+	// emit fires one Toggle into the trigger channel when Run starts, standing
+	// in for a key press.
+	emit bool
 }
 
 func newFakeHotkey() *fakeHotkey {
 	return &fakeHotkey{started: make(chan struct{}), exited: make(chan struct{})}
 }
 
-func (h *fakeHotkey) Run(ctx context.Context, _ chan<- cycle.Trigger) error {
+func (h *fakeHotkey) Run(ctx context.Context, triggers chan<- cycle.Trigger) error {
 	h.runs.Add(1)
 	h.once.Do(func() { close(h.started) })
 	defer close(h.exited)
 	if h.runErr != nil {
 		return h.runErr
+	}
+	if h.emit {
+		select {
+		case triggers <- cycle.Toggle:
+		case <-ctx.Done():
+			return nil
+		}
 	}
 	<-ctx.Done()
 	return nil
@@ -175,6 +190,7 @@ type harness struct {
 	ind      *fakeIndicator
 	sock     string
 	settings atomic.Int32
+	prepare  func()
 	rebuild  func(config.ClientConfig) (runtime.Adapters, error)
 }
 
@@ -211,6 +227,11 @@ func newHarness(t *testing.T, transcriber *fakeTranscriber) *harness {
 		Indicator:   func(send func(cycle.Trigger)) cycle.Feedback { h.ind.send = send; return h.ind },
 		Clock:       nil,
 		Logger:      nil,
+		PrepareTrigger: func() {
+			if h.prepare != nil {
+				h.prepare()
+			}
+		},
 		Rebuild: func(cfg config.ClientConfig) (runtime.Adapters, error) {
 			if h.rebuild == nil {
 				return runtime.Adapters{}, errors.New("no rebuild configured for this test")
@@ -232,6 +253,83 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// eventLog records ordered events produced by different goroutines.
+type eventLog struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (l *eventLog) add(event string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.events = append(l.events, event)
+}
+
+func (l *eventLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.events...)
+}
+
+// assertEventOrder proves that the pre-trigger hook ran before the cycle began
+// consuming the trigger (observable as the recorder opening the device).
+func assertEventOrder(t *testing.T, log *eventLog, want ...string) {
+	t.Helper()
+	got := log.snapshot()
+	if len(got) < len(want) {
+		t.Fatalf("events = %v, want at least %v", got, want)
+	}
+	for i, event := range want {
+		if got[i] != event {
+			t.Fatalf("events = %v, want %v", got, want)
+		}
+	}
+}
+
+// recordTriggerOrder wires the pre-trigger hook and the recorder into one log.
+func recordTriggerOrder(h *harness, log *eventLog) {
+	h.prepare = func() { log.add("prepare") }
+	h.recorder.onStart = func() { log.add("start") }
+}
+
+func TestPrepareTriggerRunsBeforeTheCycleConsumesAControlSocketTrigger(t *testing.T) {
+	h := newHarness(t, nil)
+	events := &eventLog{}
+	recordTriggerOrder(h, events)
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	if err := control.Send(h.sock, string(control.Start)); err != nil {
+		t.Fatalf("send start: %v", err)
+	}
+	waitFor(t, "recording to start", func() bool {
+		starts, _, _, _ := h.recorder.counts()
+		return starts == 1
+	})
+
+	assertEventOrder(t, events, "prepare", "start")
+}
+
+func TestPrepareTriggerRunsBeforeTheCycleConsumesAHotkeyTrigger(t *testing.T) {
+	h := newHarness(t, nil)
+	events := &eventLog{}
+	recordTriggerOrder(h, events)
+	h.hotkey.emit = true
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	waitFor(t, "recording to start", func() bool {
+		starts, _, _, _ := h.recorder.counts()
+		return starts == 1
+	})
+
+	assertEventOrder(t, events, "prepare", "start")
 }
 
 func TestStartTwiceReturnsAClearError(t *testing.T) {

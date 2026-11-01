@@ -55,6 +55,7 @@ def wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiring:
     monkeypatch.setattr(cli, "_supervisor_env", lambda: environment)
     monkeypatch.setattr(cli, "_current_user", lambda: "")
     monkeypatch.setattr(cli, "_models_dir", lambda config: paths.root.parent / "models")
+    monkeypatch.setattr(cli, "_port_check", lambda host, port: None)
     return Wiring(paths, runner)
 
 
@@ -102,7 +103,11 @@ def test_start_is_the_default_command(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     captured: list[object] = []
-    monkeypatch.setattr(server, "run_server", captured.append)
+
+    def fake_run(config: object, *, log_file: Path | None = None) -> None:
+        captured.append((config, log_file))
+
+    monkeypatch.setattr(server, "run_server", fake_run)
 
     assert cli.main([]) == 0
 
@@ -112,7 +117,7 @@ def test_start_is_the_default_command(
 def test_start_reports_a_port_conflict_as_one_actionable_line(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def occupied(config: object) -> None:
+    def occupied(config: object, *, log_file: Path | None = None) -> None:
         raise server.PortInUseError(
             "server.port 8765 is already in use on 127.0.0.1; change server.port"
         )
@@ -192,6 +197,104 @@ def test_install_pins_an_absolute_config_path_in_the_unit(
     assert f"--config {config}" in unit
 
 
+def test_install_pins_the_discovered_local_config_in_the_unit(
+    tmp_path: Path, wiring: Wiring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The supervisor starts outside the shell's cwd, so discovery must be pinned."""
+    artifact = build_artifact(tmp_path)
+    config = tmp_path / "kitsune.yaml"
+    config.write_text(yaml.safe_dump({"server": {"port": 9123}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KITSUNE_CONFIG", raising=False)
+
+    assert cli.main(install_args(artifact)) == 0
+
+    unit = supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).read_text(encoding="utf-8")
+    assert f"--config {config}" in unit
+
+
+def test_install_pins_the_environment_config_in_the_unit(
+    tmp_path: Path, wiring: Wiring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = build_artifact(tmp_path)
+    config = tmp_path / "elsewhere" / "kitsune.yaml"
+    config.parent.mkdir()
+    config.write_text(yaml.safe_dump({"server": {"port": 9123}}), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("KITSUNE_CONFIG", str(config))
+
+    assert cli.main(install_args(artifact)) == 0
+
+    unit = supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).read_text(encoding="utf-8")
+    assert f"--config {config}" in unit
+
+
+def test_install_without_a_config_file_pins_no_path(
+    tmp_path: Path, wiring: Wiring, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = build_artifact(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("KITSUNE_CONFIG", raising=False)
+
+    assert cli.main(install_args(artifact)) == 0
+
+    unit = supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).read_text(encoding="utf-8")
+    assert "--config" not in unit
+
+
+def test_status_reports_the_config_file_the_supervisor_reads(
+    tmp_path: Path,
+    wiring: Wiring,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = build_artifact(tmp_path)
+    pinned = tmp_path / "pinned" / "kitsune.yaml"
+    pinned.parent.mkdir()
+    pinned.write_text(yaml.safe_dump({"server": {"port": 9123}}), encoding="utf-8")
+    assert cli.main([*install_args(artifact), "--config", str(pinned)]) == 0
+    capsys.readouterr()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    assert cli.main(["status"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"config:     {pinned}" in output
+
+
+def test_install_checks_the_port_before_replacing_the_bundle(
+    tmp_path: Path,
+    wiring: Wiring,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = build_artifact(tmp_path)
+
+    def taken(host: str, port: int) -> None:
+        raise server.PortInUseError(
+            f"server.port {port} is already in use on {host}; change server.port"
+        )
+
+    monkeypatch.setattr(cli, "_port_check", taken)
+
+    assert cli.main(install_args(artifact)) == 1
+
+    error = capsys.readouterr().err
+    assert error.startswith("error: server.port")
+    assert len(error.strip().splitlines()) == 1
+    assert not wiring.paths.root.exists()
+    assert not wiring.paths.launcher.exists()
+    assert not any("enable --now" in command for command in wiring.runner.commands)
+
+
 def test_install_requires_a_checksummed_source(
     wiring: Wiring, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -232,7 +335,9 @@ def test_install_reports_a_filesystem_error_on_one_line(
             raise AssertionError("unexpected uninstall")
 
     monkeypatch.setattr(
-        cli, "_bundle_installer", lambda paths, models_dir=None: BrokenInstaller(paths)
+        cli,
+        "_bundle_installer",
+        lambda paths, models_dir=None, config_file="": BrokenInstaller(paths),
     )
 
     assert cli.main(install_args(build_artifact(tmp_path))) == 1
@@ -263,7 +368,9 @@ def test_install_from_a_pinned_runtime_uses_the_wheelhouse(
             raise AssertionError("unexpected uninstall")
 
     monkeypatch.setattr(
-        cli, "_bundle_installer", lambda paths, models_dir=None: FakeInstaller(paths)
+        cli,
+        "_bundle_installer",
+        lambda paths, models_dir=None, config_file="": FakeInstaller(paths),
     )
     wheelhouse = tmp_path / "wheelhouse"
 
@@ -366,6 +473,48 @@ def test_uninstall_removes_the_bundle_and_supervisor_but_keeps_config_and_models
     assert config_file.is_file()
     assert (models / "weights.bin").is_file()
     assert cli.main(["uninstall"]) == 0
+
+
+def test_windows_uninstall_ends_the_task_before_removing_the_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    paths = bundle.Layout.default(
+        os_name="windows",
+        environ={
+            "HOME": str(home),
+            "APPDATA": str(home / "AppData" / "Roaming"),
+            "LOCALAPPDATA": str(home / "AppData" / "Local"),
+        },
+    )
+    runner = FakeRunner()
+    environment = supervisor.Environment(
+        os_name="windows",
+        config_home=paths.config_dir.parent,
+        run=runner,
+    )
+    monkeypatch.setattr(cli, "_layout", lambda: paths)
+    monkeypatch.setattr(cli, "_supervisor_env", lambda: environment)
+    monkeypatch.setattr(cli, "_current_user", lambda: r"DESKTOP\kim")
+    monkeypatch.setattr(cli, "_port_check", lambda host, port: None)
+
+    config_file = paths.config_dir / "kitsune.yaml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("server:\n  model: small\n", encoding="utf-8")
+    models = paths.root.parent / "models"
+    models.mkdir(parents=True)
+    (models / "weights.bin").write_bytes(b"weights")
+    paths.root.mkdir(parents=True)
+    (paths.root / "bundle.json").write_text("{}", encoding="utf-8")
+
+    assert cli.main(["uninstall"]) == 0
+
+    end = f"schtasks /End /TN {supervisor.TASK_NAME}"
+    delete = f"schtasks /Delete /TN {supervisor.TASK_NAME} /F"
+    assert runner.commands == [end, delete]
+    assert not paths.root.exists()
+    assert config_file.is_file()
+    assert (models / "weights.bin").is_file()
 
 
 def test_bundle_build_reports_a_missing_runtime(

@@ -7,11 +7,13 @@ import logging
 import socket
 import sys
 from collections.abc import Callable
+from pathlib import Path
+from typing import TextIO
 
 import uvicorn
 
 from .app import create_app
-from .config import CONFIG_FILENAME, ServerConfig, user_config_dir
+from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
 from .engine import WhisperTranscriber
 from .gpu import detect_cuda_devices
 from .llm import OpenAITextProcessor
@@ -19,6 +21,65 @@ from .processor import DisabledTextProcessor, TextProcessor
 from .transcriber import Transcriber
 
 logger = logging.getLogger("kitsune.server")
+
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+def default_log_file(env: dict[str, str] | None = None) -> Path:
+    """The log file a supervised Server writes, next to the user's state data.
+
+    Task Scheduler discards ``pythonw.exe`` output, so a hidden Windows start
+    that fails is only diagnosable through this file.
+    """
+    return user_state_dir(env) / "server.log"
+
+
+def configure_logging(
+    level: str,
+    *,
+    log_file: Path | None = None,
+    stream: TextIO = sys.stderr,
+) -> None:
+    """Send Server output to stderr and, when given, an appended log file."""
+    root = logging.getLogger("kitsune")
+    root.setLevel(level.upper())
+    # Keep records flowing to the root logger so a test harness (or an embedding
+    # process) still sees them.
+    root.propagate = True
+    for handler in list(root.handlers):
+        root.removeHandler(handler)
+        handler.close()
+    formatter = logging.Formatter(LOG_FORMAT)
+    handlers: list[logging.Handler] = [logging.StreamHandler(stream)]
+    log_failed = False
+    if log_file is not None:
+        try:
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+        except OSError:
+            # An unwritable state directory must not stop the Server; the
+            # stderr handler still carries every message.
+            log_failed = True
+    for handler in handlers:
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    if log_failed:
+        logger.warning("cannot write the Server log to %s; logging to stderr only", log_file)
+
+
+def record_failure(log_file: Path | None, message: str) -> None:
+    """Append one fatal startup line to the log; best-effort."""
+    if log_file is None:
+        return
+    line = " ".join(message.split())
+    try:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"{line}\n")
+    except OSError:
+        # A log that cannot be written must not hide the stderr message.
+        pass
+
 
 CPU_ESCAPE_HATCH = (
     "running on CPU (the slow path): use a CUDA GPU for near-instant transcription, "
@@ -83,11 +144,9 @@ def run_server(
     config: ServerConfig,
     *,
     port_check: PortCheck = check_port_available,
+    log_file: Path | None = None,
 ) -> None:
-    logging.basicConfig(
-        level=config.log_level.upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging(config.log_level, log_file=log_file)
     # Fail before downloading or loading a model when the listener cannot bind.
     port_check(config.bind_host, config.port)
     # Detect once so model loading and /health cannot disagree.

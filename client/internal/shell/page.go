@@ -198,8 +198,8 @@ const pageHTML = `<!doctype html>
 </head>
 <body>
 <main>
-  <h1>__TITLE__</h1>
-  <p class="sub">__SUBTITLE__</p>
+  <h1 id="page-title">__TITLE__</h1>
+  <p class="sub" id="page-subtitle">__SUBTITLE__</p>
   <section class="card">
     <div class="state" id="state" data-state="idle"><span class="dot"></span><strong id="state-label">—</strong></div>
     <dl>
@@ -246,6 +246,11 @@ const pageHTML = `<!doctype html>
     var host = document.getElementById("settings");
     if (host) host.innerHTML = (v && v.html) || "";
     if (v && v.language) document.documentElement.lang = v.language;
+    if (v && v.title) {
+      document.title = v.title;
+      text("page-title", v.title);
+    }
+    if (v) text("page-subtitle", v.subtitle);
     if (v && v.actions) {
       var save = document.getElementById("save-button");
       if (save && v.actions.save) save.textContent = v.actions.save;

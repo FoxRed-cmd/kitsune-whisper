@@ -61,7 +61,7 @@ func sampleView() dictation.View {
 					},
 					{
 						Path:    "client.hotkey_backend",
-						Label:   "Бэкенд горячих клавиш",
+						Label:   "Бэкенд сеанса",
 						Kind:    dictation.KindSelect,
 						Value:   "x11",
 						Source:  "default",
@@ -259,5 +259,26 @@ func TestPageIntentBridgePostsToOneEndpoint(t *testing.T) {
 	}
 	if !strings.Contains(page, `action: "validate"`) {
 		t.Fatal("the hotkey recorder does not ask Go to validate")
+	}
+}
+
+func TestPageUpdatesTheWindowChromeOnALanguageSwitch(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	if !strings.Contains(page, `<h1 id="page-title">kitsune-whisper</h1>`) {
+		t.Fatal("the page title has no element the settings renderer can update")
+	}
+	if !strings.Contains(page, `<p class="sub" id="page-subtitle">Приватная диктовка в локальной сети</p>`) {
+		t.Fatal("the page subtitle is not rendered with its id")
+	}
+	// renderSettings receives the whole view, so it must refresh the title and
+	// subtitle rather than leaving the initial language on screen.
+	for _, want := range []string{
+		`document.title = v.title`,
+		`text("page-title", v.title)`,
+		`text("page-subtitle", v.subtitle)`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("settings renderer does not update the window chrome: missing %q", want)
+		}
 	}
 }

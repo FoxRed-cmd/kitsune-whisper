@@ -176,16 +176,45 @@ class ServerConfig(_StrictModel):
         return self.host
 
 
-def user_config_dir(env: Mapping[str, str] | None = None) -> Path:
-    """Return the OS user-config directory for kitsune-whisper."""
+def platform_name(platform: str | None = None) -> str:
+    """Map ``sys.platform`` onto the names the bundle and supervisor use."""
+    raw = sys.platform if platform is None else platform
+    if raw == "win32":
+        return "windows"
+    if raw.startswith("linux"):
+        return "linux"
+    return raw
+
+
+def config_home(env: Mapping[str, str] | None = None, *, os_name: str | None = None) -> Path:
+    """Return the OS base directory for per-user configuration."""
     environ = os.environ if env is None else env
-    if sys.platform == "win32":
+    home = Path(environ.get("HOME") or Path.home())
+    if (os_name or platform_name()) == "windows":
         base = environ.get("APPDATA")
+        return Path(base) if base else home / "AppData" / "Roaming"
+    base = environ.get("XDG_CONFIG_HOME")
+    return Path(base) if base else home / ".config"
+
+
+def user_config_dir(env: Mapping[str, str] | None = None, *, os_name: str | None = None) -> Path:
+    """Return the OS user-config directory for kitsune-whisper."""
+    return config_home(env, os_name=os_name) / "kitsune-whisper"
+
+
+def user_state_dir(env: Mapping[str, str] | None = None) -> Path:
+    """Return the per-user state directory, where logs survive upgrades."""
+    environ = os.environ if env is None else env
+    home = Path(environ.get("HOME") or Path.home())
+    if platform_name() == "windows":
+        base = environ.get("LOCALAPPDATA")
         if base:
             return Path(base) / "kitsune-whisper"
-        return Path.home() / "AppData" / "Roaming" / "kitsune-whisper"
-    base = environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "kitsune-whisper"
+        return home / "AppData" / "Local" / "kitsune-whisper"
+    base = environ.get("XDG_STATE_HOME")
+    if base:
+        return Path(base) / "kitsune-whisper"
+    return home / ".local" / "state" / "kitsune-whisper"
 
 
 def find_config_file(
@@ -212,6 +241,22 @@ def find_config_file(
     if user.is_file():
         return user, False
     return None, False
+
+
+def resolve_config_file(
+    cli_path: str | None,
+    *,
+    env: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> Path | None:
+    """The absolute file startup reads, or None when no file is involved.
+
+    Discovery is exactly :func:`find_config_file`'s, so an installer can pin the
+    same file the foreground process would read. A supervisor starts outside the
+    shell's working directory, so a relative path is always made absolute.
+    """
+    path, _ = find_config_file(cli_path, env=env, cwd=cwd)
+    return path.resolve() if path is not None else None
 
 
 def read_server_section(path: Path) -> dict[str, Any]:

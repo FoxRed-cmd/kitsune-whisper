@@ -146,6 +146,11 @@ type Options struct {
 	// nil and answers the command with a clear error. A shell that cannot reach
 	// its window returns an error, which the caller sees.
 	OnSettings func() error
+	// PrepareTrigger runs before each Dictation trigger reaches the cycle, for
+	// every trigger source (hotkey, control socket, Tray, indicator). The
+	// desktop shell releases a microphone level test here so the trigger can
+	// open the capture device. It is optional.
+	PrepareTrigger func()
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
 }
@@ -189,8 +194,9 @@ func (g *generation) close() error {
 
 // Runtime is the headless Client process.
 type Runtime struct {
-	opts Options
-	log  Logger
+	opts    Options
+	log     Logger
+	prepare func()
 
 	applyMu sync.Mutex
 
@@ -216,7 +222,13 @@ func New(opts Options) *Runtime {
 	if log == nil {
 		log = nopLogger{}
 	}
-	return &Runtime{opts: opts, log: log, phase: PhaseIdle, subs: map[int]chan Status{}}
+	return &Runtime{
+		opts:    opts,
+		log:     log,
+		prepare: opts.PrepareTrigger,
+		phase:   PhaseIdle,
+		subs:    map[int]chan Status{},
+	}
 }
 
 // Start binds the control socket and starts the Dictation cycle, the hotkey
@@ -358,10 +370,28 @@ func (r *Runtime) startGeneration(runCtx context.Context, triggers chan cycle.Tr
 		_ = core.Run(genCtx, triggers)
 	}()
 	if adapters.Hotkey != nil {
+		// The hotkey source writes to its own channel and a relay feeds the
+		// cycle through send, so the pre-trigger hook runs for hotkeys too.
+		sourceTriggers := make(chan cycle.Trigger)
 		waiting.Add(1)
 		go func() {
 			defer waiting.Done()
-			err := adapters.Hotkey.Run(genCtx, triggers)
+			for {
+				select {
+				case <-genCtx.Done():
+					return
+				case trigger, ok := <-sourceTriggers:
+					if !ok {
+						return
+					}
+					r.send(trigger)
+				}
+			}
+		}()
+		waiting.Add(1)
+		go func() {
+			defer waiting.Done()
+			err := adapters.Hotkey.Run(genCtx, sourceTriggers)
 			if err == nil || genCtx.Err() != nil {
 				return
 			}
@@ -519,9 +549,12 @@ func (r *Runtime) listen() (net.Listener, string) {
 	return listener, r.opts.ControlPath
 }
 
-// send feeds one Trigger into the Dictation cycle, returning when the cycle
-// takes it or the runtime stops.
+// send runs the pre-trigger hook and then feeds one Trigger into the Dictation
+// cycle, returning when the cycle takes it or the runtime stops.
 func (r *Runtime) send(trigger cycle.Trigger) {
+	if r.prepare != nil {
+		r.prepare()
+	}
 	r.mu.Lock()
 	triggers, ctx := r.triggers, r.ctx
 	r.mu.Unlock()
@@ -627,13 +660,8 @@ func validateAdapters(adapters Adapters) error {
 }
 
 func validate(opts Options) error {
-	switch {
-	case opts.Recorder == nil:
-		return errors.New("runtime: recorder is required")
-	case opts.Transcriber == nil:
-		return errors.New("runtime: transcriber is required")
-	case opts.Injector == nil:
-		return errors.New("runtime: injector is required")
+	if err := validateAdapters(opts.initialAdapters()); err != nil {
+		return fmt.Errorf("runtime: %w", err)
 	}
 	return nil
 }

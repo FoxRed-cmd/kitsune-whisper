@@ -52,7 +52,7 @@ func (s *Service) StartLevelTest(device string) (LevelStream, error) {
 	}
 	chosen, err := mic.SelectDevice(device, devices)
 	if err != nil {
-		if len(devices) == 0 || strings.Contains(err.Error(), "no capture devices") {
+		if len(devices) == 0 || errors.Is(err, mic.ErrNoDevices) {
 			return nil, errors.New(catalog.T("error.mic.none"))
 		}
 		return nil, fmt.Errorf(catalog.T("error.mic.unknown"), deviceLabel(catalog, device, chosen), deviceNames(devices))

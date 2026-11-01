@@ -261,6 +261,50 @@ func TestSaveRejectsScalarForGroup(t *testing.T) {
 	assertFieldError(t, err, "client.audio", "must be a mapping")
 }
 
+func TestFieldErrorsCarryATypedReason(t *testing.T) {
+	path := writeConfig(t, baseDocument)
+	store := open(t, settings.Options{Path: path})
+
+	_, triggerErr := store.Save(map[string]any{"trigger": "bogus"})
+	triggerFields := fieldErrors(t, triggerErr)
+	if len(triggerFields) != 1 ||
+		triggerFields[0].Reason != settings.ReasonChoice ||
+		triggerFields[0].Detail != "toggle, hold" {
+		t.Fatalf("trigger field = %+v, want a choice reason with the allowed values", triggerFields)
+	}
+	if _, err := store.Save(map[string]any{"audio": "Yeti"}); err == nil {
+		t.Fatal("a scalar for a group was accepted")
+	} else if fields := fieldErrors(t, err); fields[0].Reason != settings.ReasonNotMapping {
+		t.Fatalf("audio field = %+v, want the not-a-mapping reason", fields)
+	}
+	if _, err := store.Save(map[string]any{"bogus": 1}); err == nil {
+		t.Fatal("an unknown key was accepted")
+	} else if fields := fieldErrors(t, err); fields[0].Reason != settings.ReasonUnknownKey {
+		t.Fatalf("bogus field = %+v, want the unknown-key reason", fields)
+	}
+}
+
+func TestLockedFieldErrorCarriesTheLockReason(t *testing.T) {
+	path := writeConfig(t, "client:\n  hotkey: Ctrl+Alt+D\n")
+	store := open(t, settings.Options{
+		Path: path,
+		Env: map[string]string{
+			"XDG_CONFIG_HOME":       t.TempDir(),
+			"KITSUNE_CLIENT_HOTKEY": "Ctrl+Shift+F9",
+		},
+	})
+
+	_, err := store.Save(map[string]any{"hotkey": "Ctrl+Alt+K"})
+
+	fields := fieldErrors(t, err)
+	if len(fields) != 1 || fields[0].Reason != settings.ReasonLocked {
+		t.Fatalf("field errors = %+v, want one locked reason", fields)
+	}
+	if !strings.Contains(fields[0].Detail, "KITSUNE_CLIENT_HOTKEY") {
+		t.Fatalf("lock detail = %q, want the environment variable", fields[0].Detail)
+	}
+}
+
 func TestSaveRejectsLockedField(t *testing.T) {
 	path := writeConfig(t, "client:\n  hotkey: Ctrl+Alt+D\n")
 	store := open(t, settings.Options{

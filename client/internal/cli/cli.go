@@ -402,6 +402,15 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			}
 			return sh.ShowSettings()
 		}
+		// A microphone level test holds the capture device, and a Dictation
+		// trigger would fail to open it. Release the test before the trigger
+		// reaches the cycle; the shell is built before the runtime starts, and
+		// the hook only runs once triggers flow.
+		opts.PrepareTrigger = func() {
+			if sh != nil {
+				sh.PrepareTrigger()
+			}
+		}
 	}
 	rt := runtime.New(opts)
 
@@ -547,9 +556,6 @@ func (f *cycleFeedback) Cue(cue cycle.Cue) {
 // The initial launch and every live Apply use the same factory, so a hot
 // change rebuilds exactly what a restart would.
 func buildAdapters(cfg config.ClientConfig, logger *logging.Logger) (runtime.Adapters, error) {
-	if level, err := logging.ParseLevel(cfg.LogLevel); err == nil {
-		logger.SetLevel(level)
-	}
 	mode, err := hotkey.ParseMode(cfg.Trigger)
 	if err != nil {
 		return runtime.Adapters{}, fmt.Errorf("hotkey: %w", err)
@@ -585,6 +591,12 @@ func buildAdapters(cfg config.ClientConfig, logger *logging.Logger) (runtime.Ada
 	if err != nil {
 		_ = recorder.Close()
 		return runtime.Adapters{}, fmt.Errorf("injection init failed: %w", err)
+	}
+
+	// Apply the new level only once every adapter exists, so a failed rebuild
+	// leaves the running Client's logging untouched, like its adapters.
+	if level, err := logging.ParseLevel(cfg.LogLevel); err == nil {
+		logger.SetLevel(level)
 	}
 
 	return runtime.Adapters{

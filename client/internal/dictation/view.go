@@ -82,7 +82,8 @@ type View struct {
 	DeviceError string `json:"deviceError,omitempty"`
 }
 
-// Component is the field/section description before values are filled in.
+// fieldSpec describes one field of a Settings screen before its value, source,
+// and translated labels are filled in.
 type fieldSpec struct {
 	path     string
 	kind     Kind

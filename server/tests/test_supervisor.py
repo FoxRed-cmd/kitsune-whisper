@@ -261,6 +261,19 @@ def test_windows_uninstall_deletes_the_task_and_is_idempotent(tmp_path: Path) ->
     assert f"schtasks /Delete /TN {supervisor.TASK_NAME} /F" in runner.commands
 
 
+def test_windows_uninstall_ends_the_task_before_deleting_it(tmp_path: Path) -> None:
+    """The running pythonw.exe holds files in the bundle; end it first."""
+    runner = FakeRunner()
+    env = windows_env(tmp_path, runner)
+
+    supervisor.uninstall(env)
+
+    assert runner.commands == [
+        f"schtasks /End /TN {supervisor.TASK_NAME}",
+        f"schtasks /Delete /TN {supervisor.TASK_NAME} /F",
+    ]
+
+
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
@@ -377,7 +390,7 @@ def test_default_runner_reports_a_missing_command(
 def test_default_environment_reports_an_unsupported_platform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(supervisor.sys, "platform", "darwin")
+    monkeypatch.setattr(supervisor, "platform_name", lambda: "darwin")
 
     env = supervisor.Environment.default(run=FakeRunner())
 

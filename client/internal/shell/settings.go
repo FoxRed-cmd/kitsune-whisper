@@ -45,8 +45,8 @@ func (s *Shell) settingsView() dictation.View {
 // Intent is the JSON the Settings page sends for one user action. The page
 // collects values and sends them; Go validates, saves, and applies them.
 type Intent struct {
-	// Action is one of ActionSave, ActionValidate, ActionTestMic,
-	// ActionStopMic, or ActionRestart.
+	// Action is one of IntentSave, IntentValidate, IntentTestMic,
+	// IntentStopMic, or IntentRestart.
 	Action string `json:"action"`
 	// Patch is a nested "client:"-shaped patch for ActionSave.
 	Patch json.RawMessage `json:"patch,omitempty"`
@@ -184,6 +184,15 @@ func (s *Shell) pumpLevels(test dictation.LevelStream) {
 	if window != nil {
 		window.UpdateLevel(0)
 	}
+}
+
+// PrepareTrigger releases a running microphone level test so the Dictation
+// trigger that is about to arrive can open the capture device. The runtime
+// calls it before the trigger reaches the cycle, for hotkey, control-socket,
+// Tray, and Recording-indicator triggers alike. Releasing on PhaseRecording
+// stays as a backstop.
+func (s *Shell) PrepareTrigger() {
+	s.stopLevelTest()
 }
 
 // stopLevelTest releases a running microphone test. It is idempotent.

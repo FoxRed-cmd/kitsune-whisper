@@ -1,6 +1,7 @@
 package mic_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -76,5 +77,12 @@ func TestSelectDeviceUnknownNameListsAvailable(t *testing.T) {
 func TestSelectDeviceNoneFound(t *testing.T) {
 	if _, err := mic.SelectDevice("", nil); err == nil {
 		t.Fatal("expected an error when no devices exist")
+	}
+}
+
+func TestSelectDeviceNoneFoundReturnsTheSentinel(t *testing.T) {
+	_, err := mic.SelectDevice("", nil)
+	if !errors.Is(err, mic.ErrNoDevices) {
+		t.Fatalf("error = %v, want ErrNoDevices", err)
 	}
 }

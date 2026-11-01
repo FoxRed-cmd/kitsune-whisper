@@ -263,8 +263,14 @@ The defaults are `client.hotkey: Ctrl+Shift+Space` and
 ## Server (Docker for a dedicated host)
 
 For a laptop or desktop that already runs the Client, install the native
-per-user bundle instead: it needs no Docker and no system Python, and its unit
-or task starts and restarts it. See [the native Server bundle](docs/server-bundle.md).
+per-user bundle instead: its unit or task starts and restarts it, and running
+it needs no system Python and no Docker. Installing it is a Python command, so
+a host without Python needs a bootstrap interpreter (the release installers
+own that; see [the native Server bundle](docs/server-bundle.md)). `install`
+pins the config file it resolves into the supervisor, so the Client and the
+supervised Server read the same `kitsune.yaml`; `kitsune-server status` prints
+the pinned path, and Windows log output goes to
+`%LOCALAPPDATA%\kitsune-whisper\server.log`.
 
 The same Server also ships as a Docker image with two profiles:
 
