@@ -454,6 +454,8 @@ def _pair(args: argparse.Namespace) -> int:
             return _fail(str(exc))
         fingerprint = certificate.fingerprint
 
+    config_file = resolve_config_file(getattr(args, "config", None))
+    print(f"config:      {config_file or '(built-in defaults)'}")
     print(f"code:        {generated.code}")
     print(f"expires:     {format_expiry(generated.expires_at)}")
     print(f"fingerprint: {fingerprint or '(TLS is disabled)'}")

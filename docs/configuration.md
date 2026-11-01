@@ -76,18 +76,18 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `device` | `auto`\|`cpu`\|`cuda` | `auto` | `auto` uses CTranslate2's CUDA detection and falls back to CPU. |
 | `compute_type` | enum | `auto` | `auto` → `float16` on CUDA, `int8` on CPU. Other values: `int8`, `int8_float16`, `int8_float32`, `int16`, `float16`, `bfloat16`, `float32`. |
 | `workers` | int | `0` | One knob for both HTTP concurrency and engine threads. `0` = auto (1 on GPU, 2 on CPU). A request beyond the cap gets an immediate `503` + `Retry-After`; there is no wait backlog. |
-| `download_root` | string | `~/.cache/kitsune-whisper/models` | Hugging Face cache for models. In Docker this is overridden to `/models` (a named volume). |
+| `download_root` | string | `~/.cache/kitsune-whisper/models` | Hugging Face cache for models. In Docker this is overridden to `/models` (the `kitsune-models` volume). |
 | `catalog_file` | string | `""` | Model catalog metadata file; `""` uses the catalog bundled with the release. |
 | `offline` | bool | `false` | Sets `HF_HUB_OFFLINE`/`local_files_only`; no network, and the model must already be cached. |
-| `devices_file` | string | `""` | Paired Device store; `""` uses `devices.json` in the OS state directory. The file stores names, timestamps, and token **hashes**, never plaintext tokens. |
+| `devices_file` | string | `""` | Paired Device store; `""` uses `devices.json` in the OS state directory. The file stores names, timestamps, and token **hashes**, never plaintext tokens. In Docker it is pinned to `/state/devices.json` on the `kitsune-state` volume. |
 | `max_audio_seconds` | int | `300` | Requests longer than this return `413`. |
 | `max_upload_mb` | float | `30` | Requests larger than this return `413`. |
 | `idle_unload_seconds` | int | `600` | Unload the model after this many idle seconds; `0` keeps it resident. |
 | `tls.enabled` | bool | `true` | TLS is on by default. On first start the Server generates a self-signed certificate in the state directory (`tls/server.crt` and `tls/server.key`), reuses it on later starts, and logs its SHA-256 fingerprint. `false` is the explicit insecure-HTTP opt-out. |
-| `tls.cert_file` | string | unset | Certificate override; must be set together with `tls.key_file`. |
-| `tls.key_file` | string | unset | Private-key override; must be set together with `tls.cert_file`. |
-| `allow_anonymous` | bool | `false` | `POST /transcribe` and the authenticated status endpoint require a Device token by default; set `true` only to allow anonymous access. |
-| `log_level` | `debug`\|`info`\|`warning`\|`error` | `info` | Logs to stderr and appends to `server.log` in the user state directory (`~/.local/state/kitsune-whisper/`, `%LOCALAPPDATA%\kitsune-whisper\` on Windows). |
+| `tls.cert_file` | string | unset | Certificate override; must be set together with `tls.key_file`. In Docker the image pins `/state/tls/server.crt`. |
+| `tls.key_file` | string | unset | Private-key override; must be set together with `tls.cert_file`. In Docker the image pins `/state/tls/server.key`. |
+| `allow_anonymous` | bool | `false` | `POST /transcribe` and the authenticated status endpoint require a Device token by default; set `true` only to allow anonymous access. The image does not set it. |
+| `log_level` | `debug`\|`info`\|`warning`\|`error` | `info` | Logs to stderr and appends to `server.log` in the user state directory (`~/.local/state/kitsune-whisper/`, `%LOCALAPPDATA%\kitsune-whisper\` on Windows). In Docker `XDG_STATE_HOME=/state` puts it at `/state/kitsune-whisper/server.log` on the `kitsune-state` volume. |
 | `decode.task` | `transcribe`\|`translate` | `transcribe` | Whisper task. |
 | `decode.language` | string | `auto` | Fallback language when a request omits one; `auto` detects. |
 | `decode.beam_size` | int | `5` | Beam search width (≥1). |
@@ -101,6 +101,35 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `processing.extra_body` | map | `{}` | Keys merged into each request body, e.g. `{chat_template_kwargs: {enable_thinking: false}}`. |
 | `processing.max_output_tokens` | int | `1024` | Per-utterance cap on tokens the model may generate (`max_tokens`). |
 | `processing.stage_timeout_seconds` | float | `30` | Per-stage timeout; a stage that exceeds it degrades to the previous text. |
+
+### Docker: paths and env-locked fields
+
+The image sets these in its `ENV`; compose repeats the config, state, and
+TLS/Device paths so a `docker exec` sees the same values even with an older
+image:
+
+| Variable | Value | Why |
+| --- | --- | --- |
+| `KITSUNE_CONFIG` | `/config/kitsune.yaml` | `docker exec` does not inherit `CMD`; `kitsune-server pair` must read the same file as the Server. |
+| `XDG_STATE_HOME` | `/state` | Puts `lifecycle.json` and `server.log` on the `kitsune-state` volume. |
+| `KITSUNE_SERVER_TLS__CERT_FILE` / `..._KEY_FILE` | `/state/tls/server.crt` / `.key` | Keeps the pinned certificate identity across recreation. |
+| `KITSUNE_SERVER_DEVICES_FILE` | `/state/devices.json` | Keeps paired Devices; pairing codes live beside it. |
+| `KITSUNE_SERVER_DOWNLOAD_ROOT` | `/models` | Keeps downloaded models on the `kitsune-models` volume. |
+| `KITSUNE_SERVER_PORT` | `8765` | Must match `EXPOSE`, the healthcheck, and the compose mapping. |
+
+Environment wins over the file, so `ConfigStore.patch()` treats those fields as
+locked: the Admin API reports them as `locked` with a reason and refuses to
+write them. Change the image/compose environment (or the host port through
+`KITSUNE_HOST_PORT`) instead. The same applies to `expose_to_network`, which
+the image sets to `true`: LAN exposure in Docker is controlled by the published
+port in `compose.yaml`, not by the Admin exposure endpoint.
+
+`./config` is a writable **directory** bind mount, not a single file. The
+config store writes by creating a temporary file next to the target and
+renaming it; a file mount is a different filesystem mount point, so the rename
+fails and the API returns `503 config_unavailable`. Keep the directory and the
+`kitsune.yaml` inside it. A read-only `kitsune.yaml` is still enough for
+`kitsune-server pair` to read, but state must be writable.
 
 `/transcribe` accepts per-request `language`, `initial_prompt`, `refine`, and
 `summarize` form fields; when omitted, the `decode:` values above and processing
@@ -143,9 +172,10 @@ sidecar.
 The Server identifies itself with a self-signed certificate generated on first
 start. The certificate stays in `tls/` under the Server's state directory (or
 `tls.cert_file`/`tls.key_file` when set), so a restart keeps the same identity.
-Its SHA-256 fingerprint is logged at startup and returned by pairing; it is not
-a secret. Regenerate it only by deleting the pair, which forces every Device to
-pair again.
+In Docker that is `/state/tls/` on the `kitsune-state` volume. Its SHA-256
+fingerprint is logged at startup and returned by pairing; it is not a secret.
+Regenerate it only by deleting the pair, which forces every Device to pair
+again. (`docker compose down -v` deletes the volume and therefore the pair.)
 
 Every `/transcribe` and `/status` request needs `Authorization: Bearer
 <Device token>`. Missing, malformed, unknown, and revoked tokens all return
@@ -175,11 +205,14 @@ host, or inside a Docker container:
 
 ```sh
 kitsune-server pair
+docker exec <container> kitsune-server pair   # Docker
 ```
 
-The command prints an 8-character code, its expiry, and the certificate
-fingerprint to check. The code is single use, valid for 10 minutes, and failed
-attempts are rate-limited. On the Client, open **Settings → Servers and Devices**,
+The command prints the config file it read, an 8-character code, its expiry, and
+the certificate fingerprint to check. It reads `KITSUNE_CONFIG` (the image sets
+`/config/kitsune.yaml`), so `docker exec` uses the same config as the running
+Server. The code is single use, valid for 10 minutes, and failed attempts are
+rate-limited. On the Client, open **Settings → Servers and Devices**,
 enter the Server address and the code, and press **Pair**. The Client pins the
 certificate, stores the Device token in the keychain, and makes the new profile
 active.

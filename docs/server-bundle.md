@@ -6,6 +6,18 @@ its resolved dependencies, and a launcher, installed under the user's library
 directory and kept alive by an OS supervisor. Docker remains the supported
 deployment for a dedicated host (see `docs/adr/0007-native-server-bundle.md`).
 
+Both deployments run the same Server code and expose the same API, TLS,
+Device tokens, Admin API, and Model catalog; only the storage layout differs.
+The native bundle keeps configuration under the OS config directory and state
+under the OS state directory (table below). The Docker image mounts a writable
+`./config` directory at `/config`, pins `KITSUNE_CONFIG=/config/kitsune.yaml`,
+and sets `XDG_STATE_HOME=/state` so the TLS pair, Device and pairing stores,
+the soft-stop flag (`/state/kitsune-whisper/lifecycle.json`), and the log
+(`/state/kitsune-whisper/server.log`) live on the `kitsune-state` volume.
+`/models` is the model volume. See
+[install.md#docker](install.md#docker) for the container flow and
+[verification/docker-smoke.md](verification/docker-smoke.md) for its smoke.
+
 ## Layout
 
 | Piece | Linux | Windows |
@@ -117,6 +129,11 @@ supervisor is missing.
 
 Soft-stop through the Admin API unloads the model while the Admin API keeps
 serving, and `POST /admin/restart` is a supervised self-exit with code `75`.
+On a native install the supervisor restarts on that exit; in Docker the
+container restart policy (`restart: unless-stopped` in compose, or
+`--restart unless-stopped` for a bare `docker run`) does. The soft-stop flag
+lives on the state volume, so a recreated container starts stopped until
+`POST /admin/start`, exactly like a restart of the native process.
 `kitsune-server stop` remains the hard process stop and is available only on the
 Server host.
 

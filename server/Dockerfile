@@ -17,9 +17,14 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON=3.11 \
     UV_PROJECT_ENVIRONMENT=/opt/venv \
+    KITSUNE_CONFIG=/config/kitsune.yaml \
     KITSUNE_SERVER_EXPOSE_TO_NETWORK=true \
     KITSUNE_SERVER_PORT=8765 \
     KITSUNE_SERVER_DOWNLOAD_ROOT=/models \
+    KITSUNE_SERVER_TLS__CERT_FILE=/state/tls/server.crt \
+    KITSUNE_SERVER_TLS__KEY_FILE=/state/tls/server.key \
+    KITSUNE_SERVER_DEVICES_FILE=/state/devices.json \
+    XDG_STATE_HOME=/state \
     PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /app
@@ -31,10 +36,10 @@ ARG UV_SYNC_ARGS=""
 RUN uv sync --frozen --no-dev --no-editable ${UV_SYNC_ARGS}
 
 EXPOSE 8765
-VOLUME ["/models"]
+VOLUME ["/models", "/state"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=300s --retries=3 \
     CMD python -m kitsune_server.healthcheck
 
 ENTRYPOINT ["kitsune-server"]
-CMD ["--config", "/config/kitsune.yaml"]
+CMD ["start"]
