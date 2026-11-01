@@ -108,14 +108,22 @@ func (h *fakeHotkey) Run(ctx context.Context, triggers chan<- cycle.Trigger) err
 }
 
 type fakeInjector struct {
-	mu    sync.Mutex
-	texts []string
+	mu     sync.Mutex
+	texts  []string
+	copied []string
 }
 
 func (i *fakeInjector) Inject(text string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	i.texts = append(i.texts, text)
+	return nil
+}
+
+func (i *fakeInjector) Copy(text string) error {
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	i.copied = append(i.copied, text)
 	return nil
 }
 
@@ -794,6 +802,80 @@ func TestApplyFailureKeepsTheRunningAdapters(t *testing.T) {
 		starts, _, _, _ := h.recorder.counts()
 		return starts == 1
 	})
+}
+
+// TestTranscribeInjectAndCopyUseTheCurrentGeneration proves the Spool's retry
+// path always reaches the active profile: after a live Server switch the
+// runtime's transcriber, injector, and clipboard are the new generation's.
+func TestTranscribeInjectAndCopyUseTheCurrentGeneration(t *testing.T) {
+	before := &fakeTranscriber{text: "before"}
+	h := newHarness(t, before)
+	if err := h.rt.Start(context.Background()); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer func() { _ = h.rt.Stop() }()
+
+	result, err := h.rt.Transcribe(context.Background(), []byte("audio"))
+	if err != nil || result.Text != "before" {
+		t.Fatalf("transcribe = %+v, %v", result, err)
+	}
+	if err := h.rt.Inject("typed"); err != nil {
+		t.Fatalf("inject: %v", err)
+	}
+	if err := h.rt.Copy("copied"); err != nil {
+		t.Fatalf("copy: %v", err)
+	}
+
+	after := &fakeTranscriber{text: "after"}
+	afterInjector := &fakeInjector{}
+	h.rebuild = func(config.ClientConfig) (runtime.Adapters, error) {
+		return runtime.Adapters{
+			Hotkey:      newFakeHotkey(),
+			Recorder:    &fakeRecorder{},
+			Transcriber: after,
+			Injector:    afterInjector,
+			Spool:       h.spool,
+		}, nil
+	}
+	if err := h.rt.Apply(config.Default()); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+
+	result, err = h.rt.Transcribe(context.Background(), []byte("audio"))
+	if err != nil || result.Text != "after" {
+		t.Fatalf("transcribe after apply = %+v, %v", result, err)
+	}
+	if got := before.calls.Load(); got != 1 {
+		t.Fatalf("old transcriber calls = %d, want 1", got)
+	}
+	if err := h.rt.Inject("typed again"); err != nil {
+		t.Fatalf("inject after apply: %v", err)
+	}
+	if err := h.rt.Copy("copied again"); err != nil {
+		t.Fatalf("copy after apply: %v", err)
+	}
+	if len(afterInjector.texts) != 1 || afterInjector.texts[0] != "typed again" {
+		t.Fatalf("new injector texts = %v", afterInjector.texts)
+	}
+	if len(afterInjector.copied) != 1 || afterInjector.copied[0] != "copied again" {
+		t.Fatalf("new injector copied = %v", afterInjector.copied)
+	}
+	if len(h.injector.texts) != 1 || len(h.injector.copied) != 1 {
+		t.Fatalf("old injector received extra work: %+v", h.injector)
+	}
+}
+
+func TestTranscribeBeforeStartFails(t *testing.T) {
+	h := newHarness(t, nil)
+	if _, err := h.rt.Transcribe(context.Background(), []byte("audio")); !errors.Is(err, runtime.ErrNotRunning) {
+		t.Fatalf("transcribe = %v, want ErrNotRunning", err)
+	}
+	if err := h.rt.Inject("text"); !errors.Is(err, runtime.ErrNotRunning) {
+		t.Fatalf("inject = %v, want ErrNotRunning", err)
+	}
+	if err := h.rt.Copy("text"); !errors.Is(err, runtime.ErrNotRunning) {
+		t.Fatalf("copy = %v, want ErrNotRunning", err)
+	}
 }
 
 func TestApplyWithoutARebuilderIsReported(t *testing.T) {

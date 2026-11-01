@@ -8,15 +8,37 @@
 package spool
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
 )
+
+// nameLayout is the timestamp embedded in a spool file name.
+const nameLayout = "20060102T150405.000000"
+
+// Entry is one failed Utterance as the Spool screen lists it.
+type Entry struct {
+	// ID is the file name; the Spool screen passes it back for every action.
+	ID string `json:"id"`
+	// SavedAt is when the Utterance was captured, as Unix seconds.
+	SavedAt float64 `json:"saved_at"`
+	// Duration is the recording length in seconds.
+	Duration float64 `json:"duration_seconds"`
+	// Size is the WAV file size in bytes.
+	Size int64 `json:"size"`
+}
 
 // Options configures a Spool.
 type Options struct {
@@ -91,4 +113,146 @@ func (s *Spool) Save(utterance cycle.Utterance) error {
 		s.onLog(path)
 	}
 	return nil
+}
+
+// Entries lists the saved Utterances, newest first. A missing spool directory
+// is empty rather than an error.
+func (s *Spool) Entries() ([]Entry, error) {
+	items, err := os.ReadDir(s.dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read spool dir %s: %w", s.dir, err)
+	}
+	entries := make([]Entry, 0, len(items))
+	for _, item := range items {
+		if item.IsDir() || !isEntryName(item.Name()) {
+			continue
+		}
+		info, err := item.Info()
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(s.dir, item.Name())
+		entries = append(entries, Entry{
+			ID:       item.Name(),
+			SavedAt:  savedAt(item.Name(), info.ModTime()),
+			Duration: wavSeconds(path, info.Size()),
+			Size:     info.Size(),
+		})
+	}
+	sort.SliceStable(entries, func(i, j int) bool {
+		if entries[i].SavedAt == entries[j].SavedAt {
+			return entries[i].ID > entries[j].ID
+		}
+		return entries[i].SavedAt > entries[j].SavedAt
+	})
+	return entries, nil
+}
+
+// Load reads one saved Utterance for a Spool retry.
+func (s *Spool) Load(id string) (cycle.Utterance, error) {
+	path, err := s.entryPath(id)
+	if err != nil {
+		return cycle.Utterance{}, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cycle.Utterance{}, fmt.Errorf("read spool file: %w", err)
+	}
+	duration, err := audio.WAVDuration(data)
+	if err != nil {
+		return cycle.Utterance{}, fmt.Errorf("read spool file: %w", err)
+	}
+	return cycle.Utterance{Audio: data, Duration: duration}, nil
+}
+
+// Delete removes one saved Utterance. Deleting an already removed entry is not
+// an error, so a repeated click is harmless.
+func (s *Spool) Delete(id string) error {
+	path, err := s.entryPath(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("delete spool file: %w", err)
+	}
+	return nil
+}
+
+// entryPath resolves one entry id inside the spool directory and rejects
+// anything that is not a plain spool file name, so a hostile id can never read
+// or delete a file outside the directory.
+func (s *Spool) entryPath(id string) (string, error) {
+	if !isEntryName(id) {
+		return "", fmt.Errorf("spool: %q is not a saved utterance", id)
+	}
+	return filepath.Join(s.dir, id), nil
+}
+
+func isEntryName(name string) bool {
+	return name != "" &&
+		filepath.Base(name) == name &&
+		!strings.ContainsAny(name, `/\`) &&
+		strings.HasPrefix(name, "utterance-") &&
+		strings.HasSuffix(name, ".wav")
+}
+
+// savedAt reads the capture time from the file name, falling back to the file
+// modification time for a renamed file.
+func savedAt(name string, modified time.Time) float64 {
+	inner := strings.TrimSuffix(strings.TrimPrefix(name, "utterance-"), ".wav")
+	if idx := strings.LastIndex(inner, "-"); idx > 0 {
+		if stamp, err := time.ParseInLocation(nameLayout, inner[:idx], time.UTC); err == nil {
+			return float64(stamp.UnixNano()) / float64(time.Second)
+		}
+	}
+	return float64(modified.UnixNano()) / float64(time.Second)
+}
+
+// wavSeconds reads the duration of a canonical PCM WAV from its header without
+// loading the whole recording.
+func wavSeconds(path string, size int64) float64 {
+	file, err := os.Open(path)
+	if err != nil {
+		return 0
+	}
+	defer file.Close()
+	head := make([]byte, 4096)
+	count, err := io.ReadFull(file, head)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return 0
+	}
+	head = head[:count]
+	if len(head) < 12 || string(head[0:4]) != "RIFF" || string(head[8:12]) != "WAVE" {
+		return 0
+	}
+	var byteRate uint32
+	dataOffset := int64(-1)
+	for offset := 12; offset+8 <= len(head); {
+		id := string(head[offset : offset+4])
+		chunkSize := binary.LittleEndian.Uint32(head[offset+4 : offset+8])
+		body := offset + 8
+		switch id {
+		case "fmt ":
+			if body+12 <= len(head) {
+				byteRate = binary.LittleEndian.Uint32(head[body+8 : body+12])
+			}
+		case "data":
+			dataOffset = int64(body)
+		}
+		if byteRate != 0 && dataOffset >= 0 {
+			break
+		}
+		next := int64(body) + int64(chunkSize) + int64(chunkSize%2)
+		if next <= int64(offset) || next > int64(len(head)) {
+			break
+		}
+		offset = int(next)
+	}
+	if byteRate == 0 || dataOffset < 0 || size < dataOffset {
+		return 0
+	}
+	return float64(size-dataOffset) / float64(byteRate)
 }

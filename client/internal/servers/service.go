@@ -58,6 +58,10 @@ type Profile struct {
 	URL         string `json:"url"`
 	Fingerprint string `json:"fingerprint"`
 	Active      bool   `json:"active"`
+	// Health is the advisory reachability and authentication state of this
+	// profile. It is refreshed on demand and in the background, and never
+	// changes routing.
+	Health trust.Status `json:"health"`
 }
 
 // PairingCode is a one-time code generated for a new Device.
@@ -95,6 +99,10 @@ type View struct {
 	Exposure *ExposureResult `json:"exposure,omitempty"`
 }
 
+// CheckFunc probes one Server profile's health. Production uses
+// trust.CheckServer; tests inject a fake so no network peer is needed.
+type CheckFunc func(context.Context, config.ServerProfile, string, time.Duration) trust.Status
+
 // Options wires the service to the settings and token stores.
 type Options struct {
 	// Store is the settings store. It is required.
@@ -103,6 +111,8 @@ type Options struct {
 	Tokens Tokens
 	// Timeout bounds one Admin API request; 0 uses 10 seconds.
 	Timeout time.Duration
+	// Check probes one profile's health. Nil uses trust.CheckServer.
+	Check CheckFunc
 }
 
 // Service is the Server-profile and Device-management service.
@@ -116,6 +126,7 @@ type Service struct {
 	pairingCode  *PairingCode
 	pairingError string
 	exposure     *ExposureResult
+	health       map[string]trust.Status
 }
 
 // New builds a Service. It performs no I/O.
@@ -123,7 +134,10 @@ func New(opts Options) *Service {
 	if opts.Timeout <= 0 {
 		opts.Timeout = 10 * time.Second
 	}
-	return &Service{opts: opts}
+	if opts.Check == nil {
+		opts.Check = trust.CheckServer
+	}
+	return &Service{opts: opts, health: map[string]trust.Status{}}
 }
 
 // Config returns the current effective Client configuration. The shell uses it
@@ -143,7 +157,9 @@ func (s *Service) View() View {
 	snapshot := s.opts.Store.Snapshot()
 	profiles := make([]Profile, 0, len(snapshot.Config.Servers))
 	for _, profile := range snapshot.Config.Servers {
-		profiles = append(profiles, profileView(snapshot.Config, profile))
+		view := profileView(snapshot.Config, profile)
+		view.Health = s.healthForLocked(profile.ID)
+		profiles = append(profiles, view)
 	}
 	view := View{
 		Profiles:     profiles,
@@ -157,6 +173,77 @@ func (s *Service) View() View {
 		view.DevicesError = s.devicesError
 	}
 	return view
+}
+
+// SetActive persists one profile as the Client's active Server profile. The
+// profile list is written unchanged; only the selection and the legacy
+// single-Server alias move, atomically in one config write. The caller applies
+// the new configuration to the running Client.
+func (s *Service) SetActive(profileID string) (Profile, error) {
+	s.mu.Lock()
+	snapshot := s.opts.Store.Snapshot()
+	s.mu.Unlock()
+	var target config.ServerProfile
+	found := false
+	for _, profile := range snapshot.Config.Servers {
+		if profile.ID == profileID {
+			target, found = profile, true
+			break
+		}
+	}
+	if !found {
+		return Profile{}, fmt.Errorf("servers: no profile has id %q", profileID)
+	}
+	patch := map[string]any{"active_server": profileID}
+	// Keep the deprecated single-Server alias in step so a hand-edited file
+	// still names the profile the Client routes to. A locked alias is left for
+	// the environment or the command line to decide.
+	if field, ok := snapshot.Field("client.server_url"); !ok || !field.Locked {
+		patch["server_url"] = target.URL
+	}
+	if _, err := s.opts.Store.Save(patch); err != nil {
+		return Profile{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.profileByIDLocked(profileID), nil
+}
+
+// CheckHealth probes one profile and caches the result for View. The token is
+// advisory here: a profile without one reports "not paired" after /health
+// answers, and the check never changes routing.
+func (s *Service) CheckHealth(ctx context.Context, profileID string) trust.Status {
+	s.mu.Lock()
+	snapshot := s.opts.Store.Snapshot()
+	s.mu.Unlock()
+	var profile config.ServerProfile
+	found := false
+	for _, candidate := range snapshot.Config.Servers {
+		if candidate.ID == profileID {
+			profile, found = candidate, true
+			break
+		}
+	}
+	if !found {
+		return trust.Status{State: trust.StateUnknown, Error: "no profile has id " + profileID}
+	}
+	token := ""
+	if stored, err := s.opts.Tokens.Load(profileID); err == nil {
+		token = stored
+	}
+	status := s.opts.Check(ctx, profile, token, s.opts.Timeout)
+	s.mu.Lock()
+	s.health[profileID] = status
+	s.mu.Unlock()
+	return status
+}
+
+// healthForLocked returns the cached health of one profile. s.mu must be held.
+func (s *Service) healthForLocked(profileID string) trust.Status {
+	if status, ok := s.health[profileID]; ok {
+		return status
+	}
+	return trust.Status{State: trust.StateUnknown}
 }
 
 // AddRemote pairs with a Remote Server and makes its profile active.
@@ -333,7 +420,9 @@ func (s *Service) profileByIDLocked(id string) Profile {
 	snapshot := s.opts.Store.Snapshot()
 	for _, profile := range snapshot.Config.Servers {
 		if profile.ID == id {
-			return profileView(snapshot.Config, profile)
+			view := profileView(snapshot.Config, profile)
+			view.Health = s.healthForLocked(profile.ID)
+			return view
 		}
 	}
 	return Profile{}
