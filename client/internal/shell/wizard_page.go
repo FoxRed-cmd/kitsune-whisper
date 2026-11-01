@@ -80,7 +80,8 @@ func wizardWelcomeHTML(view wizard.View) string {
 		{view.Labels.WelcomeServer, view.ServerState},
 		{view.Labels.WelcomeModel, valueOr(view.ModelName, view.Labels.ModelNone)},
 	} {
-		out.WriteString(`<dt>` + escape(row[0]) + `</dt><dd>` + escape(valueOr(row[1], "—")) + `</dd>`)
+		value := valueOr(row[1], "—")
+		out.WriteString(`<dt>` + escape(fmt.Sprintf(row[0], value)) + `</dt><dd>` + escape(value) + `</dd>`)
 	}
 	out.WriteString(`</dl>`)
 	out.WriteString(`<div class="actions-inline"><button type="button" data-action="wizard-refresh">` +
@@ -113,7 +114,7 @@ func wizardMicHTML(view wizard.View) string {
 	out.WriteString(`<div class="meter" role="meter" aria-label="` + escape(view.Labels.MicTest) +
 		`" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="meter-fill"></div></div>`)
 	if view.DeviceError != "" {
-		out.WriteString(`<p class="failure">` + escape(view.DeviceError) + `</p>`)
+		out.WriteString(`<p class="failure">` + escape(fmt.Sprintf(view.Labels.MicListError, view.DeviceError)) + `</p>`)
 	}
 	return out.String()
 }

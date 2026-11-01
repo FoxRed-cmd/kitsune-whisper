@@ -538,7 +538,7 @@ func (s *Shell) ensureWizardLocal(address string) {
 			return
 		}
 		// The profile was saved before pairing, so apply it and explain that
-		// the Local Server is not reachable yet.
+		// pairing did not finish.
 		s.applyServerConfig()
 		s.pushMessages(nil, []string{
 			s.catalog().T("wizard.server.localUnpaired", err.Error()),

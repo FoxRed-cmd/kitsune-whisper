@@ -413,6 +413,8 @@ var russian = map[string]string{
 	"wizard.model.needChoice":  "Скачайте и активируйте модель или выберите «Скачать позже».",
 	"wizard.model.device":      "Устройство",
 	"wizard.model.progress":    "%s из %s",
+	"wizard.model.error":       "Сервер сообщил об ошибке модели: %s",
+	"wizard.model.warning":     "Сервер предупредил: %s",
 
 	"wizard.server.title":         "Сервер",
 	"wizard.server.localTitle":    "Локальный сервер",
@@ -421,7 +423,7 @@ var russian = map[string]string{
 	"wizard.server.useLocal":      "Создать или использовать профиль локального сервера",
 	"wizard.server.localExists":   "Профиль локального сервера активен.",
 	"wizard.server.localCreated":  "Профиль локального сервера активен и подключён.",
-	"wizard.server.localUnpaired": "Профиль локального сервера сохранён, но сервер пока недоступен: %s",
+	"wizard.server.localUnpaired": "Профиль локального сервера сохранён, но сопряжение не завершилось: %s",
 	"wizard.server.remoteTitle":   "Удалённый сервер (необязательно)",
 	"wizard.server.remoteHelp":    "На машине сервера откройте «Настройки → Серверы и устройства → Создать код подключения».",
 	"wizard.server.address":       "Адрес",
@@ -455,7 +457,7 @@ var russian = map[string]string{
 	"wizard.try.missing.mismatch":        "Сертификат %s изменился; подключите сервер заново.",
 	"wizard.try.missing.runtime":         "Среда выполнения клиента не запущена.",
 	"wizard.try.missing.model":           "На сервере %s нет активной модели.",
-	"wizard.try.missing.modelFailed":     "Модель на сервере %s не загрузилась: %s",
+	"wizard.try.missing.modelFailed":     "Модель на сервере %s не загрузилась; выберите другую модель.",
 	"wizard.try.missing.stopped":         "Сервер %s мягко остановлен; сначала запустите его.",
 	"wizard.try.missing.mic":             "Микрофон недоступен: %s",
 
