@@ -378,6 +378,36 @@ func TestStartingDictationReleasesTheMicrophoneTest(t *testing.T) {
 	}
 }
 
+// The runtime calls PrepareTrigger before a trigger reaches the cycle, so the
+// device is released even though the cycle has not emitted a phase yet.
+func TestPrepareTriggerReleasesTheMicrophoneTest(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	sh := newSettingsShell(t, rt, desktop, settings)
+
+	done := startWithWindow(t, sh, desktop)
+	if err := desktop.getWindow().sendIntent(t, shell.Intent{Action: shell.IntentTestMic}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+
+	sh.PrepareTrigger()
+
+	if settings.stream.stopCount() == 0 {
+		t.Fatal("the microphone test still holds the device when a trigger arrives")
+	}
+	// A second trigger finds nothing open.
+	sh.PrepareTrigger()
+	if got := settings.stream.stopCount(); got != 1 {
+		t.Fatalf("level test stops = %d, want 1", got)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
 func TestMicrophoneTestFailureShowsOneActionableMessage(t *testing.T) {
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
