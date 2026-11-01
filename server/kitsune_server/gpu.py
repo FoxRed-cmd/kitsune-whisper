@@ -8,7 +8,6 @@ cannot disagree.
 
 from __future__ import annotations
 
-import importlib
 import logging
 from dataclasses import dataclass
 
@@ -21,7 +20,8 @@ logger = logging.getLogger("kitsune.server")
 def detect_cuda_devices() -> int:
     """Number of CUDA devices CTranslate2 can see (0 when none/CPU-only)."""
     try:
-        ctranslate2 = importlib.import_module("ctranslate2")
+        import ctranslate2
+
         return int(ctranslate2.get_cuda_device_count())
     except Exception:  # detection must never take the server down
         logger.debug("CUDA device detection failed", exc_info=True)

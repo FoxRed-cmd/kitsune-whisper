@@ -295,19 +295,17 @@ def start(env: Environment) -> None:
 
 
 def stop(env: Environment) -> None:
-    """Stop the supervised Server.
+    """Stop the supervised Server. Idempotent: stopping a stopped Server is fine.
 
     Soft-stop through the Admin API (unload the model but keep serving) lands
     with #77; this hard-stops the process.
     """
-    _check(
-        env,
-        _command_for(
-            env,
-            ["systemctl", "--user", "stop", UNIT_NAME],
-            ["schtasks", "/End", "/TN", TASK_NAME],
-        ),
-    )
+    if env.os_name == "windows":
+        # schtasks /End reports an error for a task that is not running; a
+        # second stop must still succeed.
+        _try(env, ["schtasks", "/End", "/TN", TASK_NAME])
+        return
+    _check(env, _command_for(env, ["systemctl", "--user", "stop", UNIT_NAME], []))
 
 
 def restart(env: Environment) -> None:

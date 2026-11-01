@@ -44,7 +44,6 @@ def wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiring:
         os_name="linux",
         environ={
             "HOME": str(home),
-            "XDG_DATA_HOME": str(home / ".local" / "share"),
             "XDG_CONFIG_HOME": str(home / ".config"),
         },
     )
@@ -166,6 +165,19 @@ def test_install_stops_a_running_server_before_replacing_the_bundle(
     assert stop_index < enable_index
 
 
+def test_install_stops_an_installed_but_stopped_unit_before_replacing(
+    tmp_path: Path, wiring: Wiring
+) -> None:
+    artifact = build_artifact(tmp_path)
+    cli.main(install_args(artifact))
+    wiring.runner.calls.clear()
+    wiring.runner.replies["is-active"] = CommandResult(3, "inactive\n")
+
+    assert cli.main(install_args(artifact)) == 0
+
+    assert f"systemctl --user stop {supervisor.UNIT_NAME}" in wiring.runner.commands
+
+
 def test_install_requires_a_checksummed_source(
     wiring: Wiring, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -285,6 +297,17 @@ def test_status_without_an_installation_says_so(
     assert "not installed" in output
 
 
+def test_status_reports_an_unreadable_manifest(
+    wiring: Wiring, capsys: pytest.CaptureFixture[str]
+) -> None:
+    wiring.paths.root.mkdir(parents=True)
+    wiring.paths.manifest_path.write_text("not json", encoding="utf-8")
+
+    assert cli.main(["status"]) == 0
+
+    assert "unreadable" in capsys.readouterr().out
+
+
 def test_stop_and_restart_delegate_to_the_supervisor(tmp_path: Path, wiring: Wiring) -> None:
     artifact = build_artifact(tmp_path)
     cli.main(install_args(artifact))
@@ -331,18 +354,16 @@ def test_uninstall_removes_the_bundle_and_supervisor_but_keeps_config_and_models
     assert cli.main(["uninstall"]) == 0
 
 
-def test_bundle_build_writes_an_artifact(
+def test_bundle_build_reports_a_missing_runtime(
     tmp_path: Path, wiring: Wiring, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    output = tmp_path / "dist" / "bundle.tar.gz"
-
     assert (
         cli.main(
             [
                 "bundle",
                 "build",
                 "--output",
-                str(output),
+                str(tmp_path / "dist" / "bundle.tar.gz"),
                 "--runtime",
                 str(tmp_path / "runtime-dir"),
                 "--site-packages",
@@ -351,9 +372,14 @@ def test_bundle_build_writes_an_artifact(
         )
         == 1
     )
-    error = capsys.readouterr().err
-    assert "runtime directory" in error
 
+    assert "runtime directory" in capsys.readouterr().err
+
+
+def test_bundle_build_writes_an_artifact(
+    tmp_path: Path, wiring: Wiring, capsys: pytest.CaptureFixture[str]
+) -> None:
+    output = tmp_path / "dist" / "bundle.tar.gz"
     runtime = tmp_path / "runtime-dir"
     (runtime / "bin").mkdir(parents=True)
     (runtime / "bin" / "python3").write_text("", encoding="utf-8")
@@ -397,5 +423,5 @@ def test_supervisor_invocation_points_at_the_launcher(wiring: Wiring) -> None:
     invocation = bundle.supervisor_invocation(wiring.paths, command="start")
 
     assert invocation == Invocation(
-        str(wiring.paths.python), (str(wiring.paths.launcher_module), "start")
+        str(wiring.paths.python), ("-s", str(wiring.paths.launcher_module), "start")
     )

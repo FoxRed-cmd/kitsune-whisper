@@ -13,8 +13,8 @@ from kitsune_server.supervisor import (
     SupervisorOptions,
 )
 
-LINUX_PYTHON = "/home/kim/.local/share/kitsune-whisper/server/runtime/bin/python3"
-LAUNCHER = "/home/kim/.local/share/kitsune-whisper/server/launcher.py"
+LINUX_PYTHON = "/home/kim/.local/lib/kitsune-whisper/server/runtime/bin/python3"
+LAUNCHER = "/home/kim/.local/lib/kitsune-whisper/server/launcher.py"
 CONFIG = "/home/kim/.config/kitsune-whisper/kitsune.yaml"
 
 
@@ -281,6 +281,16 @@ def test_windows_lifecycle_delegates_to_schtasks(
     getattr(supervisor, command)(env)
 
     assert runner.commands == expected
+
+
+def test_windows_stop_is_idempotent(tmp_path: Path) -> None:
+    runner = FakeRunner({"/End": CommandResult(1, stderr="the task is not running")})
+    env = windows_env(tmp_path, runner)
+
+    supervisor.stop(env)
+    supervisor.stop(env)
+
+    assert runner.commands == [f"schtasks /End /TN {supervisor.TASK_NAME}"] * 2
 
 
 def test_windows_restart_starts_a_stopped_task_anyway(tmp_path: Path) -> None:

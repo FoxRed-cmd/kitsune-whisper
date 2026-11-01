@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import socket
 import sys
@@ -55,15 +56,20 @@ def check_port_available(
     except OSError as exc:
         reason = exc.strerror or str(exc)
         location = user_config_dir() / CONFIG_FILENAME
+        problem = "is already in use" if exc.errno == errno.EADDRINUSE else "cannot be bound"
         raise PortInUseError(
-            f"server.port {port} is already in use on {host} ({reason}); "
+            f"server.port {port} {problem} on {host} ({reason}); "
             f"change server.port in {location} or set KITSUNE_SERVER_PORT "
             "to a free port"
         ) from exc
 
 
-def build_transcriber(config: ServerConfig) -> Transcriber:
-    return WhisperTranscriber.load(config)
+def build_transcriber(
+    config: ServerConfig,
+    *,
+    cuda_device_count: int | None = None,
+) -> Transcriber:
+    return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
 
 
 def build_processor(config: ServerConfig) -> TextProcessor:
@@ -84,7 +90,9 @@ def run_server(
     )
     # Fail before downloading or loading a model when the listener cannot bind.
     port_check(config.bind_host, config.port)
-    transcriber = build_transcriber(config)
+    # Detect once so model loading and /health cannot disagree.
+    cuda_devices = detect_cuda_devices()
+    transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
     info = transcriber.info
     resolved_note = (
         " (resolved from auto)" if "auto" in (config.device, config.compute_type) else ""
@@ -103,7 +111,7 @@ def run_server(
         config,
         transcriber,
         processor,
-        cuda_device_count=detect_cuda_devices(),
+        cuda_device_count=cuda_devices,
     )
     if config.expose_to_network:
         logger.warning(

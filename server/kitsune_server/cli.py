@@ -2,8 +2,9 @@
 
 The same binary serves the supervisor (``start`` in the foreground) and the
 user (``install``/``uninstall``/``status``/``stop``/``restart``). Release CI
-assembles the bundle artifact with ``bundle build``. Every failure prints one
-actionable ``error: ...`` line and exits non-zero.
+assembles the bundle artifact with ``bundle build``. Command failures print one
+actionable ``error: ...`` line and exit non-zero; configuration errors keep the
+``config error: ...`` form shared with startup.
 """
 
 from __future__ import annotations
@@ -27,6 +28,10 @@ INSTALL_REQUIREMENT = (
     "install needs a verified source: --artifact PATH_OR_URL --sha256 HEX, "
     "or --runtime-url URL --runtime-sha256 HEX --wheelhouse DIR"
 )
+
+
+class _UsageError(Exception):
+    """A flag combination the command cannot act on."""
 
 
 def _common_parser() -> argparse.ArgumentParser:
@@ -252,11 +257,17 @@ def _start(args: argparse.Namespace) -> int:
 def _status() -> int:
     layout = _layout()
     print(f"kitsune-server {__version__}")
-    manifest = _read_manifest(layout)
-    if manifest is None:
+    if not layout.manifest_path.is_file():
         print(f"bundle:     not installed ({layout.root})")
     else:
-        print(f"bundle:     {layout.root} (version {manifest.version}, python {manifest.python})")
+        try:
+            manifest = bundle.Manifest.from_path(layout.manifest_path)
+        except bundle.BundleError as exc:
+            print(f"bundle:     unreadable at {layout.root} ({exc})")
+        else:
+            print(
+                f"bundle:     {layout.root} (version {manifest.version}, python {manifest.python})"
+            )
     try:
         state = supervisor.status(_supervisor_env())
     except supervisor.SupervisorError as exc:
@@ -267,15 +278,6 @@ def _status() -> int:
         print("supervisor: not installed")
     print(f"config:     {layout.config_dir / 'kitsune.yaml'}")
     return 0
-
-
-def _read_manifest(layout: bundle.Layout) -> bundle.Manifest | None:
-    if not layout.manifest_path.is_file():
-        return None
-    try:
-        return bundle.Manifest.from_path(layout.manifest_path)
-    except bundle.BundleError:
-        return None
 
 
 def _supervised(action: str, done: str) -> int:
@@ -293,9 +295,10 @@ def _supervised(action: str, done: str) -> int:
 
 
 def _install(args: argparse.Namespace) -> int:
-    source = _install_source(args)
-    if isinstance(source, int):
-        return source
+    try:
+        source = _install_source(args)
+    except _UsageError as exc:
+        return _fail(str(exc))
     try:
         config = _load(args)
     except ConfigError as exc:
@@ -310,9 +313,8 @@ def _install(args: argparse.Namespace) -> int:
     try:
         # Replacing the runtime under a running Server would leave it serving
         # from deleted files; stop it so the enable/start below picks up the
-        # upgrade.
-        state = supervisor.status(env)
-        if state.installed and state.running:
+        # upgrade. Both stops are idempotent, so no running check is needed.
+        if supervisor.status(env).installed:
             supervisor.stop(env)
         manifest = installer.install(source)
         supervisor.install(
@@ -332,27 +334,29 @@ def _install(args: argparse.Namespace) -> int:
     return 0
 
 
-def _install_source(args: argparse.Namespace) -> bundle.ArtifactSource | bundle.RuntimeSource | int:
+def _install_source(
+    args: argparse.Namespace,
+) -> bundle.ArtifactSource | bundle.RuntimeSource:
     artifact = getattr(args, "artifact", None)
     runtime_url = getattr(args, "runtime_url", None)
     if artifact:
         checksum = getattr(args, "sha256", None)
         if not checksum:
-            return _fail("--artifact requires --sha256 to verify the download")
+            raise _UsageError("--artifact requires --sha256 to verify the download")
         return bundle.ArtifactSource(location=artifact, sha256=checksum)
     if runtime_url:
         checksum = getattr(args, "runtime_sha256", None)
         if not checksum:
-            return _fail("--runtime-url requires --runtime-sha256 to verify the download")
+            raise _UsageError("--runtime-url requires --runtime-sha256 to verify the download")
         wheelhouse = getattr(args, "wheelhouse", None)
         if not wheelhouse:
-            return _fail("--runtime-url requires --wheelhouse DIR")
+            raise _UsageError("--runtime-url requires --wheelhouse DIR")
         return bundle.RuntimeSource(
             url=runtime_url,
             sha256=checksum,
             wheelhouse=Path(wheelhouse),
         )
-    return _fail(INSTALL_REQUIREMENT)
+    raise _UsageError(INSTALL_REQUIREMENT)
 
 
 def _uninstall() -> int:

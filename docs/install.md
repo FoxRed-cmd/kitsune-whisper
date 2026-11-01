@@ -1,7 +1,8 @@
 # Install, upgrade, and uninstall
 
-The Server runs under Docker; the Client is a single binary installed per user.
-Both read the same `kitsune.yaml` (each process reads only its own section).
+The Client is a single binary installed per user. The Server runs either as a
+native per-user bundle or under Docker. Both processes read the same
+`kitsune.yaml` (each reads only its own section).
 
 ## Client
 

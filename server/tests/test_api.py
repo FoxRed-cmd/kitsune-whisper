@@ -64,7 +64,8 @@ async def test_health_shape() -> None:
 
 
 async def test_health_reports_gpu_availability() -> None:
-    app, _ = build(cuda_device_count=2)
+    transcriber = FakeTranscriber(info=EngineInfo("fake", "cuda", "float16"))
+    app, _ = build(transcriber=transcriber, cuda_device_count=2)
     async with make_client(app) as client:
         response = await client.get("/health")
     assert response.json()["gpu"] == {"available": True, "device_count": 2, "device": "cuda"}

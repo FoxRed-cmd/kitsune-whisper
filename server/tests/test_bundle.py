@@ -75,7 +75,6 @@ def layout(tmp_path: Path, os_name: str = "linux") -> Layout:
         os_name="linux",
         environ={
             "HOME": str(tmp_path / "home"),
-            "XDG_DATA_HOME": str(tmp_path / "home" / ".local" / "share"),
             "XDG_CONFIG_HOME": str(tmp_path / "home" / ".config"),
         },
     )
@@ -142,7 +141,7 @@ def test_linux_layout_is_per_user_and_keeps_config_separate(tmp_path: Path) -> N
     paths = layout(tmp_path)
 
     home = tmp_path / "home"
-    assert paths.root == home / ".local" / "share" / "kitsune-whisper" / "server"
+    assert paths.root == home / ".local" / "lib" / "kitsune-whisper" / "server"
     assert paths.bin_dir == home / ".local" / "bin"
     assert paths.launcher == home / ".local" / "bin" / "kitsune-server"
     assert paths.config_dir == home / ".config" / "kitsune-whisper"
@@ -357,8 +356,7 @@ def test_launcher_module_uses_the_bundled_lib(tmp_path: Path) -> None:
     assert f"sys.path.insert(0, {str(paths.lib_dir)!r})" in module
     assert "from kitsune_server.cli import main" in module
     script = paths.launcher.read_text(encoding="utf-8")
-    assert str(paths.python) in script
-    assert str(paths.launcher_module) in script
+    assert f"{paths.python} -s {paths.launcher_module}" in script
 
 
 def test_windows_launcher_uses_python_and_the_hidden_invocation_uses_pythonw(
@@ -376,6 +374,7 @@ def test_windows_launcher_uses_python_and_the_hidden_invocation_uses_pythonw(
     invocation = bundle.supervisor_invocation(paths, config="C:/config/kitsune.yaml")
     assert invocation.command == str(paths.pythonw)
     assert invocation.args == (
+        "-s",
         str(paths.launcher_module),
         "start",
         "--config",
@@ -389,18 +388,28 @@ def test_linux_supervisor_invocation_uses_the_bundled_python(tmp_path: Path) -> 
     invocation = bundle.supervisor_invocation(paths)
 
     assert invocation.command == str(paths.python)
-    assert invocation.args == (str(paths.launcher_module), "start")
+    assert invocation.args == ("-s", str(paths.launcher_module), "start")
+
+
+def fake_build_inputs(
+    tmp_path: Path,
+    *,
+    packages: tuple[str, ...] = ("kitsune_server",),
+) -> tuple[Path, Path]:
+    """A standalone-runtime tree and a resolved site-packages directory."""
+    runtime = tmp_path / "python"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "bin" / "python3").write_text("#!/bin/sh\n", encoding="utf-8")
+    site_packages = tmp_path / "site-packages"
+    site_packages.mkdir()
+    for package in packages:
+        (site_packages / package).mkdir()
+        (site_packages / package / "__init__.py").write_text("", encoding="utf-8")
+    return runtime, site_packages
 
 
 def test_build_bundle_stages_runtime_packages_and_manifest(tmp_path: Path) -> None:
-    runtime = tmp_path / "python"
-    (runtime / "bin").mkdir(parents=True)
-    (runtime / "bin" / "python3").write_text("", encoding="utf-8")
-    site_packages = tmp_path / "site-packages"
-    (site_packages / "kitsune_server").mkdir(parents=True)
-    (site_packages / "kitsune_server" / "__init__.py").write_text("", encoding="utf-8")
-    (site_packages / "fastapi").mkdir()
-    (site_packages / "fastapi" / "__init__.py").write_text("", encoding="utf-8")
+    runtime, site_packages = fake_build_inputs(tmp_path, packages=("kitsune_server", "fastapi"))
     output = tmp_path / "dist" / "kitsune-server_linux_amd64.tar.gz"
 
     built = build_bundle(output, runtime_dir=runtime, site_packages=[site_packages])
@@ -415,11 +424,7 @@ def test_build_bundle_stages_runtime_packages_and_manifest(tmp_path: Path) -> No
 
 
 def test_built_bundle_manifest_names_the_version_and_layout(tmp_path: Path) -> None:
-    runtime = tmp_path / "python"
-    (runtime / "bin").mkdir(parents=True)
-    (runtime / "bin" / "python3").write_text("", encoding="utf-8")
-    site_packages = tmp_path / "site-packages"
-    (site_packages / "kitsune_server").mkdir(parents=True)
+    runtime, site_packages = fake_build_inputs(tmp_path)
     output = tmp_path / "bundle.tar.gz"
 
     build_bundle(
@@ -438,6 +443,22 @@ def test_built_bundle_manifest_names_the_version_and_layout(tmp_path: Path) -> N
     assert manifest["arch"] == "x86_64"
 
 
+def test_build_bundle_requires_a_resolved_environment(tmp_path: Path) -> None:
+    runtime, _ = fake_build_inputs(tmp_path)
+
+    with pytest.raises(BundleError, match="site-packages"):
+        build_bundle(tmp_path / "bundle.tar.gz", runtime_dir=runtime, site_packages=[])
+
+
+def test_build_bundle_rejects_an_empty_environment_directory(tmp_path: Path) -> None:
+    runtime, _ = fake_build_inputs(tmp_path)
+    empty = tmp_path / "empty"
+    empty.mkdir()
+
+    with pytest.raises(BundleError, match="environment is empty"):
+        build_bundle(tmp_path / "bundle.tar.gz", runtime_dir=runtime, site_packages=[empty])
+
+
 def test_build_bundle_rejects_a_runtime_without_python(tmp_path: Path) -> None:
     runtime = tmp_path / "python"
     runtime.mkdir()
@@ -449,12 +470,7 @@ def test_build_bundle_rejects_a_runtime_without_python(tmp_path: Path) -> None:
 
 
 def test_build_then_install_round_trips(tmp_path: Path) -> None:
-    runtime = tmp_path / "python"
-    (runtime / "bin").mkdir(parents=True)
-    (runtime / "bin" / "python3").write_text("#!/bin/sh\n", encoding="utf-8")
-    site_packages = tmp_path / "site-packages"
-    (site_packages / "kitsune_server").mkdir(parents=True)
-    (site_packages / "kitsune_server" / "__init__.py").write_text("", encoding="utf-8")
+    runtime, site_packages = fake_build_inputs(tmp_path)
     artifact = build_bundle(
         tmp_path / "bundle.tar.gz", runtime_dir=runtime, site_packages=[site_packages]
     )

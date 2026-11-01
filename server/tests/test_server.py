@@ -80,6 +80,15 @@ def test_check_port_available_names_server_port_when_taken() -> None:
     assert "KITSUNE_SERVER_PORT" in message
 
 
+def test_check_port_available_explains_other_bind_errors() -> None:
+    probe = FakeSocket(OSError(errno.EACCES, "Permission denied"))
+
+    with pytest.raises(server.PortInUseError) as caught:
+        server.check_port_available("127.0.0.1", 80, socket_factory=socket_factory(probe))
+
+    assert "server.port 80 cannot be bound" in str(caught.value)
+
+
 def test_run_server_fails_fast_when_the_port_is_taken(monkeypatch: pytest.MonkeyPatch) -> None:
     loaded: list[ServerConfig] = []
     monkeypatch.setattr(server, "build_transcriber", loaded.append)
@@ -97,7 +106,7 @@ def test_run_server_logs_resolved_engine(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
@@ -114,7 +123,7 @@ def test_run_server_warns_on_cpu_with_escape_hatch(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
@@ -130,7 +139,7 @@ def test_run_server_does_not_warn_on_cuda(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake = FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
@@ -142,7 +151,7 @@ def test_run_server_does_not_warn_on_cuda(
 def _capture_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     captured: dict[str, object] = {}
     fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
 
     def fake_run(app: object, **kwargs: object) -> None:
         captured.update(kwargs)
@@ -170,6 +179,24 @@ def test_run_server_binds_all_interfaces_when_exposed(
 
     assert captured["host"] == "0.0.0.0"
     assert any("LAN" in record.getMessage() for record in caplog.records)
+
+
+def test_run_server_detects_cuda_once_and_shares_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    detections: list[bool] = []
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: detections.append(True) or 2)
+    seen: dict[str, object] = {}
+
+    def fake_build(config: ServerConfig, *, cuda_device_count: int | None = None) -> Any:
+        seen["devices"] = cuda_device_count
+        return FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
+
+    monkeypatch.setattr(server, "build_transcriber", fake_build)
+    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
+
+    server.run_server(ServerConfig(), port_check=allow_port)
+
+    assert detections == [True]
+    assert seen["devices"] == 2
 
 
 def test_build_transcriber_loads_whisper_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
