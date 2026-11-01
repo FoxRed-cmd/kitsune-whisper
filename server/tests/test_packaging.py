@@ -150,6 +150,16 @@ def test_dockerfile_is_single_stage_and_carries_no_toolchain() -> None:
         assert tool not in lowered
 
 
+def test_container_listens_on_the_spec_port_and_exposes_only_when_asked() -> None:
+    text = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "KITSUNE_SERVER_EXPOSE_TO_NETWORK=true" in text
+    assert "KITSUNE_SERVER_PORT=8765" in text
+    assert "EXPOSE 8765" in text
+    assert "127.0.0.1:8765/health" in text
+    for profile in ("cpu", "gpu"):
+        assert _service_for_profile(profile)["ports"] == ["8765:8765"]
+
+
 def test_dockerfile_is_parameterized_for_both_bases() -> None:
     text = DOCKERFILE_PATH.read_text(encoding="utf-8")
     assert "ARG BASE_IMAGE=python:3.11-slim" in text

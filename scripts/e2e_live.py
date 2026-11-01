@@ -174,7 +174,7 @@ class Harness:
     def _start_docker(self, profile: str, port: int) -> ServerHandle:
         image = DOCKER_IMAGES[profile]
         name = f"kitsune-e2e-{uuid.uuid4().hex[:8]}"
-        config = self._write_server_config("cuda" if profile.endswith("gpu") else "cpu", 8000)
+        config = self._write_server_config("cuda" if profile.endswith("gpu") else "cpu", 8765)
         command = [
             "docker",
             "run",
@@ -183,7 +183,7 @@ class Harness:
             "--name",
             name,
             "-p",
-            f"{port}:8000",
+            f"{port}:8765",
             "-v",
             f"{config}:/config/kitsune.yaml:ro",
         ]
@@ -210,6 +210,7 @@ class Harness:
         config = self.workdir / "server.yaml"
         config.write_text(
             "server:\n"
+            "  expose_to_network: true\n"
             "  host: 0.0.0.0\n"
             f"  port: {port}\n"
             f"  model: {model}\n"

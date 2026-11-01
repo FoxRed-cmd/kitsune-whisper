@@ -6,10 +6,15 @@
 # typos out.
 
 server:
-  host: 0.0.0.0
-  port: 8000
+  # The Server binds loopback by default. Set expose_to_network: true to accept
+  # Devices from the LAN; it then binds 0.0.0.0 (needs a restart). The Docker
+  # image sets this via KITSUNE_SERVER_EXPOSE_TO_NETWORK=true.
+  expose_to_network: false
+  host: 127.0.0.1
+  port: 8765
   # Model size (tiny/base/small/medium/large-v3) or a local CTranslate2 path.
-  # GPU is recommended; on CPU use base/tiny for lower latency.
+  # This is the active model. GPU is recommended; on CPU use base/tiny for
+  # lower latency.
   model: small
   # auto resolves CUDA when available, else CPU (see docs/adr/0003).
   device: auto
@@ -19,9 +24,24 @@ server:
   # The Docker image overrides this with KITSUNE_SERVER_DOWNLOAD_ROOT=/models,
   # which lives on a named volume that persists between runs.
   download_root: ~/.cache/kitsune-whisper/models
+  # Model catalog metadata: "" uses the catalog bundled with the Server.
+  catalog_file: ""
   offline: false
   max_audio_seconds: 300
   max_upload_mb: 30
+  # Unload the model after this many idle seconds; 0 keeps it resident.
+  idle_unload_seconds: 600
+  # TLS is on by default (a self-signed certificate is generated on first
+  # start). Set enabled: false only for an explicit insecure-HTTP setup.
+  # cert_file/key_file are optional overrides and must be set together.
+  tls:
+    enabled: true
+    cert_file: null
+    key_file: null
+  # Device tokens are required unless an operator opts into anonymous access.
+  allow_anonymous: false
+  # Paired Device records: "" uses the OS data directory.
+  devices_file: ""
   log_level: info
   decode:
     task: transcribe
@@ -60,7 +80,7 @@ server:
 client:
   # The Client addresses the Server here; the top-level server: section above
   # is the Server process's own config and is not read by the Client.
-  server_url: http://localhost:8000
+  server_url: http://localhost:8765
   hotkey: Ctrl+Shift+Space
   # auto | portal | x11. auto uses the GlobalShortcuts portal on Wayland when
   # available (GNOME >=48 / KDE Plasma >=5.27) and the external trigger

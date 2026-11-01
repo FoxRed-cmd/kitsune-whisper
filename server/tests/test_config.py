@@ -23,11 +23,24 @@ def write_config(tmp_path: Path, server: dict[str, object]) -> Path:
 def test_defaults_when_no_file(tmp_path: Path) -> None:
     config = load_config(env={}, cwd=tmp_path)
     assert config == ServerConfig()
-    assert config.port == 8000
+    assert config.host == "127.0.0.1"
+    assert config.port == 8765
+    assert config.expose_to_network is False
     assert config.model == "small"
     assert config.device == "auto"
     assert config.decode.beam_size == 5
     assert config.decode.vad_filter is True
+
+
+def test_security_and_device_defaults_are_safe(tmp_path: Path) -> None:
+    config = load_config(env={}, cwd=tmp_path)
+    assert config.tls.enabled is True
+    assert config.tls.cert_file is None
+    assert config.tls.key_file is None
+    assert config.allow_anonymous is False
+    assert config.devices_file == ""
+    assert config.catalog_file == ""
+    assert config.idle_unload_seconds == 600
 
 
 def test_reads_only_server_section(tmp_path: Path) -> None:
@@ -136,6 +149,67 @@ def test_unknown_processing_key_names_field_path(tmp_path: Path) -> None:
     assert "server.processing.bogus" in str(excinfo.value)
 
 
+def test_non_loopback_host_requires_explicit_exposure(tmp_path: Path) -> None:
+    write_config(tmp_path, {"host": "0.0.0.0"})
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env={}, cwd=tmp_path)
+    assert "server.host" in str(excinfo.value)
+    assert "expose_to_network" in str(excinfo.value)
+
+
+def test_expose_to_network_binds_all_interfaces(tmp_path: Path) -> None:
+    write_config(tmp_path, {"expose_to_network": True})
+    config = load_config(env={}, cwd=tmp_path)
+    assert config.host == "127.0.0.1"
+    assert config.bind_host == "0.0.0.0"
+
+
+def test_default_bind_host_is_loopback(tmp_path: Path) -> None:
+    config = load_config(env={}, cwd=tmp_path)
+    assert config.bind_host == "127.0.0.1"
+
+
+def test_explicit_lan_host_is_used_when_exposed(tmp_path: Path) -> None:
+    write_config(tmp_path, {"host": "192.168.1.10", "expose_to_network": True})
+    assert load_config(env={}, cwd=tmp_path).bind_host == "192.168.1.10"
+
+
+@pytest.mark.parametrize(
+    ("server", "path"),
+    [
+        ({"port": 0}, "server.port"),
+        ({"insecure": True}, "server.insecure"),
+        ({"tls": {"bogus": True}}, "server.tls.bogus"),
+        ({"tls": {"enabled": "sometimes"}}, "server.tls.enabled"),
+        ({"tls": {"cert_file": "cert.pem"}}, "server.tls"),
+        ({"allow_anonymous": "sometimes"}, "server.allow_anonymous"),
+        ({"expose_to_network": "sometimes"}, "server.expose_to_network"),
+        ({"idle_unload_seconds": -1}, "server.idle_unload_seconds"),
+        ({"devices_file": 1}, "server.devices_file"),
+        ({"catalog_file": 1}, "server.catalog_file"),
+    ],
+)
+def test_new_keys_validate_with_field_paths(
+    tmp_path: Path, server: dict[str, object], path: str
+) -> None:
+    write_config(tmp_path, server)
+    with pytest.raises(ConfigError) as excinfo:
+        load_config(env={}, cwd=tmp_path)
+    assert path in str(excinfo.value)
+
+
+def test_idle_unload_zero_disables(tmp_path: Path) -> None:
+    write_config(tmp_path, {"idle_unload_seconds": 0})
+    assert load_config(env={}, cwd=tmp_path).idle_unload_seconds == 0
+
+
+def test_tls_cert_and_key_accepted_together(tmp_path: Path) -> None:
+    write_config(tmp_path, {"tls": {"cert_file": "cert.pem", "key_file": "key.pem"}})
+    config = load_config(env={}, cwd=tmp_path)
+    assert config.tls.cert_file == "cert.pem"
+    assert config.tls.key_file == "key.pem"
+
+
 def test_unknown_key_names_field_path(tmp_path: Path) -> None:
     write_config(tmp_path, {"bogus": 1})
     with pytest.raises(ConfigError) as excinfo:
@@ -222,6 +296,30 @@ def test_main_check_config_prints_and_exits_zero(
     printed = yaml.safe_load(capsys.readouterr().out)
     assert printed["server"]["model"] == "base"
     assert printed["server"]["device"] == "cuda"
+
+
+def test_main_check_config_prints_new_keys_with_defaults(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["--check-config", "--config", str(write_config(tmp_path, {}))])
+    assert code == 0
+    server = yaml.safe_load(capsys.readouterr().out)["server"]
+    assert server["host"] == "127.0.0.1"
+    assert server["port"] == 8765
+    assert server["expose_to_network"] is False
+    assert server["tls"] == {"enabled": True, "cert_file": None, "key_file": None}
+    assert server["allow_anonymous"] is False
+    assert server["devices_file"] == ""
+    assert server["catalog_file"] == ""
+    assert server["idle_unload_seconds"] == 600
+
+
+def test_main_check_config_rejects_unknown_tls_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["--check-config", "--config", str(write_config(tmp_path, {"tls": {"bogus": 1}}))])
+    assert code == 1
+    assert "server.tls.bogus" in capsys.readouterr().err
 
 
 def test_main_check_config_exits_nonzero_on_error(

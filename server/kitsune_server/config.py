@@ -7,6 +7,7 @@ is strict and fails fast, naming the offending field path.
 
 from __future__ import annotations
 
+import ipaddress
 import os
 import sys
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -14,7 +15,15 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 ENV_PREFIX = "KITSUNE_SERVER_"
 CONFIG_ENV = "KITSUNE_CONFIG"
@@ -69,20 +78,88 @@ class ProcessingConfig(_StrictModel):
     stage_timeout_seconds: float = Field(default=30.0, gt=0)
 
 
+def is_loopback_host(host: str) -> bool:
+    """Return True when ``host`` names the loopback interface only."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class TlsConfig(_StrictModel):
+    """TLS placeholders for the HTTPS listener (setup lands in a later ticket).
+
+    TLS is on by default. ``cert_file``/``key_file`` are optional: when both are
+    unset the Server generates and persists a self-signed certificate in its data
+    directory at first start. Setting ``enabled: false`` is the explicit
+    insecure-HTTP opt-out for advanced setups.
+    """
+
+    enabled: bool = True
+    cert_file: str | None = None
+    key_file: str | None = None
+
+    @model_validator(mode="after")
+    def _cert_and_key_travel_together(self) -> TlsConfig:
+        if bool(self.cert_file) != bool(self.key_file):
+            raise ValueError("cert_file and key_file must be set together or both omitted")
+        return self
+
+
 class ServerConfig(_StrictModel):
-    host: str = Field(default="0.0.0.0", min_length=1)
-    port: int = Field(default=8000, ge=1, le=65535)
+    """Effective Server settings, validated with the same rules as startup."""
+
+    # Network exposure first so ``host`` can validate against it.
+    expose_to_network: bool = False
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8765, ge=1, le=65535)
+    # ``model`` is the active model: a faster-whisper size name or a local
+    # CTranslate2 directory. It stays the single source of truth for the model
+    # the Server loads (the Model catalog metadata lives in ``catalog_file``).
     model: str = Field(default="small", min_length=1)
     device: Device = "auto"
     compute_type: ComputeType = "auto"
     workers: int = Field(default=0, ge=0)
     download_root: str = "~/.cache/kitsune-whisper/models"
+    # Catalog metadata is pinned with the release by default; point this at a
+    # file to override it.
+    catalog_file: str = ""
     offline: bool = False
+    # "" = the OS data directory resolved by the Device store (later ticket).
+    devices_file: str = ""
     max_audio_seconds: int = Field(default=300, ge=1)
     max_upload_mb: float = Field(default=30.0, gt=0)
+    # 0 disables idle unloading: the model stays resident until restarted.
+    idle_unload_seconds: int = Field(default=600, ge=0)
+    tls: TlsConfig = TlsConfig()
+    # Device tokens are required unless an operator opts into anonymous access.
+    allow_anonymous: bool = False
     decode: DecodeConfig = DecodeConfig()
     processing: ProcessingConfig = ProcessingConfig()
     log_level: LogLevel = "info"
+
+    @field_validator("host")
+    @classmethod
+    def _loopback_unless_exposed(cls, value: str, info: ValidationInfo) -> str:
+        if info.data.get("expose_to_network", False):
+            return value
+        if not is_loopback_host(value):
+            raise ValueError("must be a loopback address unless server.expose_to_network is true")
+        return value
+
+    @property
+    def bind_host(self) -> str:
+        """Address the HTTP listener binds to.
+
+        LAN exposure is the explicit ``expose_to_network`` switch: when it is on
+        the Server binds all interfaces (or an explicitly pinned non-loopback
+        ``host``); when it is off the listener stays on loopback.
+        """
+        if not self.expose_to_network:
+            return self.host
+        return "0.0.0.0" if is_loopback_host(self.host) else self.host
 
 
 def user_config_dir(env: Mapping[str, str] | None = None) -> Path:
@@ -123,7 +200,7 @@ def find_config_file(
     return None, False
 
 
-def _read_server_section(path: Path) -> dict[str, Any]:
+def read_server_section(path: Path) -> dict[str, Any]:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -144,7 +221,7 @@ def _read_server_section(path: Path) -> dict[str, Any]:
     return section
 
 
-def _env_overrides(env: Mapping[str, str]) -> dict[str, Any]:
+def env_overrides(env: Mapping[str, str]) -> dict[str, Any]:
     overrides: dict[str, Any] = {}
     for key, value in env.items():
         if not key.startswith(ENV_PREFIX) or key == ENV_PREFIX:
@@ -163,12 +240,12 @@ def _env_overrides(env: Mapping[str, str]) -> dict[str, Any]:
     return overrides
 
 
-def _deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+def deep_merge(base: Mapping[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
     merged = dict(base)
     for key, value in override.items():
         existing = merged.get(key)
         if isinstance(existing, Mapping) and isinstance(value, Mapping):
-            merged[key] = _deep_merge(existing, value)
+            merged[key] = deep_merge(existing, value)
         else:
             merged[key] = value
     return merged
@@ -204,10 +281,10 @@ def load_config(
             if required:
                 raise ConfigError(f"config file not found: {path}")
         else:
-            file_values = _read_server_section(path)
+            file_values = read_server_section(path)
 
-    effective = _deep_merge(file_values, _env_overrides(environ))
-    effective = _deep_merge(effective, dict(cli_overrides or {}))
+    effective = deep_merge(file_values, env_overrides(environ))
+    effective = deep_merge(effective, dict(cli_overrides or {}))
 
     try:
         return ServerConfig.model_validate(effective)

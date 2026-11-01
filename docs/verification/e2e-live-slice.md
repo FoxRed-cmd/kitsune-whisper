@@ -35,7 +35,7 @@ speech WAV (Windows SAPI / espeak-ng, or `--speech <file>`), and checks:
 ./scripts/e2e-live.sh --profile local-gpu --capture --report e2e-gpu.md
 
 # Against an already-running Server
-./scripts/e2e-live.ps1 -Profile external -ServerUrl http://192.168.1.10:8000
+./scripts/e2e-live.ps1 -Profile external -ServerUrl http://192.168.1.10:8765
 ```
 
 Profiles: `local-cpu` (default), `local-gpu`, `docker-cpu`, `docker-gpu`,
