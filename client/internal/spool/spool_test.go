@@ -151,7 +151,7 @@ func TestEntriesListsSavedUtterancesNewestFirst(t *testing.T) {
 	if entries[0].SavedAt <= entries[1].SavedAt {
 		t.Fatalf("saved times = %v, %v, want newest first", entries[0].SavedAt, entries[1].SavedAt)
 	}
-	if entries[0].ID == "" || entries[0].Size != int64(len(second)) {
+	if entries[0].ID == "" {
 		t.Fatalf("entry = %+v", entries[0])
 	}
 }

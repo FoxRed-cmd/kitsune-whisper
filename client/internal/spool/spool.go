@@ -34,8 +34,6 @@ type Entry struct {
 	SavedAt float64 `json:"saved_at"`
 	// Duration is the recording length in seconds.
 	Duration float64 `json:"duration_seconds"`
-	// Size is the WAV file size in bytes.
-	Size int64 `json:"size"`
 }
 
 // Options configures a Spool.
@@ -137,7 +135,6 @@ func (s *Spool) Entries() ([]Entry, error) {
 			ID:       item.Name(),
 			SavedAt:  savedAt(item.Name(), info.ModTime()),
 			Duration: wavSeconds(path, info.Size()),
-			Size:     info.Size(),
 		})
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
