@@ -20,10 +20,10 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-import ctranslate2
 from faster_whisper import WhisperModel
 
 from .config import DecodeConfig, ServerConfig
+from .gpu import detect_cuda_devices, resolve_engine
 from .transcriber import AudioClip, EngineInfo, Transcription, resolve_workers
 
 logger = logging.getLogger("kitsune.server")
@@ -36,28 +36,6 @@ CUDA_EXTRA_HINT = (
 
 class EngineLoadError(Exception):
     """Raised when the faster-whisper engine cannot be constructed."""
-
-
-def detect_cuda_devices() -> int:
-    """Number of CUDA devices CTranslate2 can see (0 when none/CPU-only)."""
-    try:
-        return int(ctranslate2.get_cuda_device_count())
-    except Exception:  # detection must never take the server down
-        logger.debug("CUDA device detection failed", exc_info=True)
-        return 0
-
-
-def resolve_engine(config: ServerConfig, *, cuda_device_count: int) -> EngineInfo:
-    """Resolve ``auto`` device/compute_type to concrete values (ADR 0003)."""
-    device = config.device
-    if device == "auto":
-        device = "cuda" if cuda_device_count > 0 else "cpu"
-
-    compute_type = config.compute_type
-    if compute_type == "auto":
-        compute_type = "float16" if device == "cuda" else "int8"
-
-    return EngineInfo(model=config.model, device=device, compute_type=compute_type)
 
 
 def _cuda_library_subdir() -> str:

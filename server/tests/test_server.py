@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import errno
 import logging
+import socket
+import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -11,15 +15,102 @@ from kitsune_server.engine import EngineLoadError
 from kitsune_server.transcriber import EngineInfo, FakeTranscriber
 
 
+def allow_port(host: str, port: int) -> None:
+    """Skip the real bind check in tests that only exercise runtime wiring."""
+
+
+class FakeSocket:
+    """Minimal socket double for the port preflight."""
+
+    def __init__(self, failure: OSError | None = None) -> None:
+        self.failure = failure
+        self.bound: tuple[str, int] | None = None
+        self.options: list[tuple[int, int, int]] = []
+        self.closed = False
+
+    def setsockopt(self, level: int, option: int, value: int) -> None:
+        self.options.append((level, option, value))
+
+    def bind(self, address: tuple[str, int]) -> None:
+        if self.failure is not None:
+            raise self.failure
+        self.bound = address
+
+    def __enter__(self) -> FakeSocket:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        self.closed = True
+
+
+def socket_factory(probe: FakeSocket) -> Any:
+    def factory(family: int, kind: int) -> FakeSocket:
+        return probe
+
+    return factory
+
+
+def test_check_port_available_binds_the_configured_address() -> None:
+    probe = FakeSocket()
+
+    server.check_port_available("127.0.0.1", 8765, socket_factory=socket_factory(probe))
+
+    assert probe.bound == ("127.0.0.1", 8765)
+    assert probe.closed
+
+
+def test_check_port_available_reuses_a_waiting_socket_on_posix() -> None:
+    probe = FakeSocket()
+
+    server.check_port_available("127.0.0.1", 8765, socket_factory=socket_factory(probe))
+
+    if sys.platform != "win32":
+        assert probe.options == [(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)]
+
+
+def test_check_port_available_names_server_port_when_taken() -> None:
+    probe = FakeSocket(OSError(errno.EADDRINUSE, "Address already in use"))
+
+    with pytest.raises(server.PortInUseError) as caught:
+        server.check_port_available("127.0.0.1", 8765, socket_factory=socket_factory(probe))
+
+    message = str(caught.value)
+    assert "server.port 8765" in message
+    assert "127.0.0.1" in message
+    assert "KITSUNE_SERVER_PORT" in message
+
+
+def test_check_port_available_explains_other_bind_errors() -> None:
+    probe = FakeSocket(OSError(errno.EACCES, "Permission denied"))
+
+    with pytest.raises(server.PortInUseError) as caught:
+        server.check_port_available("127.0.0.1", 80, socket_factory=socket_factory(probe))
+
+    assert "server.port 80 cannot be bound" in str(caught.value)
+
+
+def test_run_server_fails_fast_when_the_port_is_taken(monkeypatch: pytest.MonkeyPatch) -> None:
+    loaded: list[ServerConfig] = []
+    monkeypatch.setattr(server, "build_transcriber", loaded.append)
+
+    def taken(host: str, port: int) -> None:
+        raise server.PortInUseError(f"server.port {port} is already in use on {host}")
+
+    with pytest.raises(server.PortInUseError):
+        server.run_server(ServerConfig(), port_check=taken)
+
+    assert loaded == []
+
+
 def test_run_server_logs_resolved_engine(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
-        server.run_server(ServerConfig())
+        server.run_server(ServerConfig(), port_check=allow_port)
 
     messages = [record.getMessage() for record in caplog.records]
     assert any(
@@ -32,11 +123,11 @@ def test_run_server_warns_on_cpu_with_escape_hatch(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
-        server.run_server(ServerConfig())
+        server.run_server(ServerConfig(), port_check=allow_port)
 
     warnings = [
         record.getMessage() for record in caplog.records if record.levelno == logging.WARNING
@@ -48,11 +139,11 @@ def test_run_server_does_not_warn_on_cuda(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     fake = FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
-        server.run_server(ServerConfig())
+        server.run_server(ServerConfig(), port_check=allow_port)
 
     assert not any(record.levelno == logging.WARNING for record in caplog.records)
 
@@ -60,7 +151,7 @@ def test_run_server_does_not_warn_on_cuda(
 def _capture_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     captured: dict[str, object] = {}
     fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config: fake)
+    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
 
     def fake_run(app: object, **kwargs: object) -> None:
         captured.update(kwargs)
@@ -72,7 +163,7 @@ def _capture_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
 def test_run_server_binds_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = _capture_uvicorn(monkeypatch)
 
-    server.run_server(ServerConfig())
+    server.run_server(ServerConfig(), port_check=allow_port)
 
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8765
@@ -84,10 +175,28 @@ def test_run_server_binds_all_interfaces_when_exposed(
     captured = _capture_uvicorn(monkeypatch)
 
     with caplog.at_level(logging.WARNING, logger="kitsune.server"):
-        server.run_server(ServerConfig(expose_to_network=True))
+        server.run_server(ServerConfig(expose_to_network=True), port_check=allow_port)
 
     assert captured["host"] == "0.0.0.0"
     assert any("LAN" in record.getMessage() for record in caplog.records)
+
+
+def test_run_server_detects_cuda_once_and_shares_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    detections: list[bool] = []
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: detections.append(True) or 2)
+    seen: dict[str, object] = {}
+
+    def fake_build(config: ServerConfig, *, cuda_device_count: int | None = None) -> Any:
+        seen["devices"] = cuda_device_count
+        return FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
+
+    monkeypatch.setattr(server, "build_transcriber", fake_build)
+    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
+
+    server.run_server(ServerConfig(), port_check=allow_port)
+
+    assert detections == [True]
+    assert seen["devices"] == 2
 
 
 def test_build_transcriber_loads_whisper_adapter(monkeypatch: pytest.MonkeyPatch) -> None:

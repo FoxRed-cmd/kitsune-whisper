@@ -1,7 +1,8 @@
 # Install, upgrade, and uninstall
 
-The Server runs under Docker; the Client is a single binary installed per user.
-Both read the same `kitsune.yaml` (each process reads only its own section).
+The Client is a single binary installed per user. The Server runs either as a
+native per-user bundle or under Docker. Both processes read the same
+`kitsune.yaml` (each reads only its own section).
 
 ## Client
 
@@ -246,6 +247,14 @@ Uninstall stops and removes the autostart entry and the binary; `--purge` /
 `-Purge` additionally removes the config, Spool, and log.
 
 ## Server
+
+The Server has two deployments. The **native per-user bundle** needs neither
+Docker nor a system Python and is supervised by a systemd user unit or a
+per-user Task Scheduler task; see [server-bundle.md](server-bundle.md) for its
+layout, install sources, commands, and uninstall behaviour. The **Docker image**
+remains the supported deployment for a dedicated host.
+
+### Docker
 
 The Server runs as a Docker container with `restart: unless-stopped`
 (`compose.yaml`), so it comes back after a reboot or crash. Start it with one

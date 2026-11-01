@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import errno
 import logging
+import socket
+import sys
+from collections.abc import Callable
 
 import uvicorn
 
 from .app import create_app
-from .config import ServerConfig
+from .config import CONFIG_FILENAME, ServerConfig, user_config_dir
 from .engine import WhisperTranscriber
+from .gpu import detect_cuda_devices
 from .llm import OpenAITextProcessor
 from .processor import DisabledTextProcessor, TextProcessor
 from .transcriber import Transcriber
@@ -20,9 +25,51 @@ CPU_ESCAPE_HATCH = (
     "or set server.model to base/tiny for a smaller, faster CPU model"
 )
 
+PortCheck = Callable[[str, int], None]
 
-def build_transcriber(config: ServerConfig) -> Transcriber:
-    return WhisperTranscriber.load(config)
+
+class PortInUseError(RuntimeError):
+    """The configured address is already bound, so the listener cannot start."""
+
+
+def check_port_available(
+    host: str,
+    port: int,
+    *,
+    socket_factory: Callable[[int, int], socket.socket] = socket.socket,
+) -> None:
+    """Bind-check ``host:port`` so a taken port fails with one actionable line.
+
+    uvicorn's own bind failure surfaces as a traceback; the preflight turns the
+    common "something else already listens on 8765" case into a message that
+    names the setting to change.
+    """
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    try:
+        with socket_factory(family, socket.SOCK_STREAM) as probe:
+            # Mirror uvicorn: reuse a port left in TIME_WAIT after a crash or a
+            # supervised restart. On Windows SO_REUSEADDR would hijack an
+            # actively bound port, so the preflight keeps the strict check there.
+            if sys.platform != "win32":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            probe.bind((host, port))
+    except OSError as exc:
+        reason = exc.strerror or str(exc)
+        location = user_config_dir() / CONFIG_FILENAME
+        problem = "is already in use" if exc.errno == errno.EADDRINUSE else "cannot be bound"
+        raise PortInUseError(
+            f"server.port {port} {problem} on {host} ({reason}); "
+            f"change server.port in {location} or set KITSUNE_SERVER_PORT "
+            "to a free port"
+        ) from exc
+
+
+def build_transcriber(
+    config: ServerConfig,
+    *,
+    cuda_device_count: int | None = None,
+) -> Transcriber:
+    return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
 
 
 def build_processor(config: ServerConfig) -> TextProcessor:
@@ -32,12 +79,20 @@ def build_processor(config: ServerConfig) -> TextProcessor:
     return OpenAITextProcessor(config.processing)
 
 
-def run_server(config: ServerConfig) -> None:
+def run_server(
+    config: ServerConfig,
+    *,
+    port_check: PortCheck = check_port_available,
+) -> None:
     logging.basicConfig(
         level=config.log_level.upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    transcriber = build_transcriber(config)
+    # Fail before downloading or loading a model when the listener cannot bind.
+    port_check(config.bind_host, config.port)
+    # Detect once so model loading and /health cannot disagree.
+    cuda_devices = detect_cuda_devices()
+    transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
     info = transcriber.info
     resolved_note = (
         " (resolved from auto)" if "auto" in (config.device, config.compute_type) else ""
@@ -52,7 +107,12 @@ def run_server(config: ServerConfig) -> None:
     if info.device == "cpu":
         logger.warning(CPU_ESCAPE_HATCH)
     processor = build_processor(config)
-    app = create_app(config, transcriber, processor)
+    app = create_app(
+        config,
+        transcriber,
+        processor,
+        cuda_device_count=cuda_devices,
+    )
     if config.expose_to_network:
         logger.warning(
             "server.expose_to_network is on: listening on %s:%s and reachable from the LAN",
