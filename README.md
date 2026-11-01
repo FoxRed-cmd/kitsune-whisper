@@ -187,10 +187,11 @@ those two and auto-enables their profiles):
 docker compose up -d server-gpu llama-gpu
 ```
 
-The Server reads `/config/kitsune.yaml` (the directory above), so restart it
-after later file edits (`docker compose restart server-gpu`). Hot settings such
-as `log_level` can also be changed from the Admin API/Settings window without a
-restart; the Server writes them back into `config/kitsune.yaml`. The Client
+The Server reads `/config/kitsune.yaml` (mounted from the directory above), so
+restart it after later file edits (`docker compose restart server-gpu`). Hot
+settings such as `log_level` can also be changed from the Admin API/Settings
+window without a restart; the Server writes them back into
+`config/kitsune.yaml`. The Client
 reads the `client:` section from its own config (see [step 2](#2-client)); you can
 point it at this same file instead with `--config ./config/kitsune.yaml` or
 `KITSUNE_CONFIG=$PWD/config/kitsune.yaml`.

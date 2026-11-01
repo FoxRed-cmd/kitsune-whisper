@@ -268,16 +268,18 @@ bundle needs no system Python and no Docker: its pinned runtime, the Server and
 all dependencies live inside the bundle. Release installers (#80/#81) own
 providing that bootstrap interpreter on a host that has none.
 
-Both deployments read the same user config file the Client does
+The native bundle reads the same user config file the Client does
 (`~/.config/kitsune-whisper/kitsune.yaml`,
 `%APPDATA%\kitsune-whisper\kitsune.yaml` on Windows). `install` pins the file it
-found; `status` prints the pinned path.
+found; `status` prints the pinned path. The Docker deployment reads the mounted
+`config/kitsune.yaml` instead (see [Docker](#docker)).
 
-The Server writes a log next to the user's state data — on Windows
+The native Server writes a log next to the user's state data — on Windows
 `%LOCALAPPDATA%\kitsune-whisper\server.log`, on Linux
 `~/.local/state/kitsune-whisper/server.log`. A hidden Windows start has no
 console, so this file is where a failed start (a taken port, an unreadable
-config, a model that cannot load) is diagnosed.
+config, a model that cannot load) is diagnosed. In Docker the log is on the
+state volume at `/state/kitsune-whisper/server.log`.
 
 ### Docker
 
