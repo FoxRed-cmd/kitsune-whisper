@@ -17,19 +17,22 @@ deployment for a dedicated host (see `docs/adr/0007-native-server-bundle.md`).
 | Manifest | `<root>/bundle.json` | `<root>\bundle.json` |
 | Configuration | `$XDG_CONFIG_HOME/kitsune-whisper/kitsune.yaml` (default `~/.config/…`) | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Models | `server.download_root` (default `~/.cache/kitsune-whisper/models`) | `server.download_root` |
+| Log | `~/.local/state/kitsune-whisper/server.log` | `%LOCALAPPDATA%\kitsune-whisper\server.log` |
 
 The launcher puts `<root>/lib` first on `sys.path`, runs the interpreter with
 `-s` so user site-packages cannot mix in, and calls `kitsune_server.cli`, so the
 bundle never imports a system Python or system site-packages. `bundle.json`
-records the version, runtime Python version, platform, source, and the
-configuration and model directories.
+records the version, runtime Python version, platform, source, the
+configuration and model directories, and the config file pinned for the
+supervisor.
 
 ## Install
 
 Two verified install sources exist; both require a SHA-256 and neither needs a
-system Python or Docker at runtime. This command is the reference implementation
-of the layout and supervisor steps; on a machine with no Python at all the
-release installers (later tickets) unpack and verify the same artifact directly.
+system Python or Docker **at runtime**. The `install` command itself is Python,
+so a host with no Python at all needs a bootstrap interpreter; the release
+installers (later tickets) unpack and verify the same artifact directly. This
+command is the reference implementation of the layout and supervisor steps.
 
 Prebuilt artifact from release CI:
 
@@ -61,6 +64,18 @@ the packaging tests run offline in temporary directories.
 login. Re-run it to upgrade: a running Server is stopped, the bundle root is
 replaced, and configuration and models are left alone.
 
+`install` resolves the effective config file the same way startup does
+(`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user config) and
+pins its absolute path into the unit or task with `--config`, because the
+supervisor does not start in the shell's working directory. The path is stored
+in `bundle.json`, so `kitsune-server status` reports what the supervisor really
+reads. With no config file anywhere, no path is pinned and the Server uses its
+own discovery with defaults.
+
+Before replacing the bundle or registering the supervisor, install also runs
+the same port preflight as startup: a taken `server.port` fails here with the
+same actionable line instead of at the next login.
+
 ## Supervisor
 
 - **Linux** — `~/.config/systemd/user/kitsune-server.service`, run by the user
@@ -72,8 +87,10 @@ replaced, and configuration and models are left alone.
   logon from a UTF-16 XML definition. It runs the bundle's `pythonw.exe`, sets
   `<Hidden>true</Hidden>`, and restarts on failure, so no console window opens.
   The cached XML lives in `%APPDATA%\kitsune-whisper\kitsune-server-task.xml`.
-  Task Scheduler discards the process output, so there is no log sink on Windows
-  yet; the diagnostics work will add one.
+  Task Scheduler discards the process output, so every start (including fatal
+  startup failures) appends to `%LOCALAPPDATA%\kitsune-whisper\server.log`;
+  check that file first when the Tray or a client cannot reach the Server. The
+  foreground `kitsune-server start` still prints the same messages to stderr.
 
 Never a system service: both run as the installing user without elevation.
 
@@ -99,7 +116,9 @@ supervised self-exit restart land with #77. This ticket hard-stops the process.
 ## Port preflight
 
 The Server binds loopback on the configured port (`server.port`, default
-`8765`) and checks the address before loading a model. If the port is taken it
+`8765`) and checks the address before loading a model. `kitsune-server install`
+runs the same check before it replaces the bundle or registers the supervisor,
+so a taken port fails both at install and at startup. If the port is taken it
 exits non-zero with one line naming the setting:
 
 ```
@@ -136,7 +155,8 @@ CUDA wheels and models are never bundled.
 ## Uninstall
 
 `kitsune-server uninstall` stops and removes the unit/task, deletes the cached
-task XML on Windows, removes the launcher, and deletes the bundle root. It is
-idempotent and preserves `kitsune.yaml` and `server.download_root` (models). A
-future installer offers a separate purge step for those (see the spec's
-uninstall stories).
+task XML on Windows, removes the launcher, and deletes the bundle root. On
+Windows the task is ended before anything is deleted: a running `pythonw.exe`
+holds files inside the bundle. It is idempotent and preserves `kitsune.yaml`
+and `server.download_root` (models). A future installer offers a separate purge
+step for those (see the spec's uninstall stories).

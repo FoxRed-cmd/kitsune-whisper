@@ -4,6 +4,14 @@ The Client is a single binary installed per user. The Server runs either as a
 native per-user bundle or under Docker. Both processes read the same
 `kitsune.yaml` (each reads only its own section).
 
+For the native bundle, `kitsune-server install` resolves the config file exactly
+as startup would (`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user
+config) and pins that absolute path into the unit or task with `--config`. The
+supervised Server therefore reads the same file the Client sees. Create the file
+before installing; when no file exists, no path is pinned and the Server keeps
+its own discovery. `kitsune-server status` prints the path that is actually
+pinned.
+
 ## Client
 
 ### Requirements
@@ -249,10 +257,27 @@ Uninstall stops and removes the autostart entry and the binary; `--purge` /
 ## Server
 
 The Server has two deployments. The **native per-user bundle** needs neither
-Docker nor a system Python and is supervised by a systemd user unit or a
-per-user Task Scheduler task; see [server-bundle.md](server-bundle.md) for its
-layout, install sources, commands, and uninstall behaviour. The **Docker image**
-remains the supported deployment for a dedicated host.
+Docker nor a system Python at runtime and is supervised by a systemd user unit
+or a per-user Task Scheduler task; see [server-bundle.md](server-bundle.md) for
+its layout, install sources, commands, and uninstall behaviour. The **Docker
+image** remains the supported deployment for a dedicated host.
+
+Installing the bundle needs a **bootstrap Python interpreter** on the host (the
+`kitsune-server install` command itself is Python). Running the installed
+bundle needs no system Python and no Docker: its pinned runtime, the Server and
+all dependencies live inside the bundle. Release installers (#80/#81) own
+providing that bootstrap interpreter on a host that has none.
+
+Both deployments read the same user config file the Client does
+(`~/.config/kitsune-whisper/kitsune.yaml`,
+`%APPDATA%\kitsune-whisper\kitsune.yaml` on Windows). `install` pins the file it
+found; `status` prints the pinned path.
+
+The Server writes a log next to the user's state data — on Windows
+`%LOCALAPPDATA%\kitsune-whisper\server.log`, on Linux
+`~/.local/state/kitsune-whisper/server.log`. A hidden Windows start has no
+console, so this file is where a failed start (a taken port, an unreadable
+config, a model that cannot load) is diagnosed.
 
 ### Docker
 

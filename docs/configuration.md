@@ -85,7 +85,7 @@ kitsune-client --check-config   # prints the effective client: section, exits 0/
 | `tls.cert_file` | string | unset | Certificate override; must be set together with `tls.key_file`. |
 | `tls.key_file` | string | unset | Private-key override; must be set together with `tls.cert_file`. |
 | `allow_anonymous` | bool | `false` | Device tokens are required by default; set `true` only to allow anonymous access. Enforcement lands with the desktop install, so the safe default is recorded now. |
-| `log_level` | `debug`\|`info`\|`warning`\|`error` | `info` | Logs to stdout (Docker-friendly). |
+| `log_level` | `debug`\|`info`\|`warning`\|`error` | `info` | Logs to stderr and appends to `server.log` in the user state directory (`~/.local/state/kitsune-whisper/`, `%LOCALAPPDATA%\kitsune-whisper\` on Windows). |
 | `decode.task` | `transcribe`\|`translate` | `transcribe` | Whisper task. |
 | `decode.language` | string | `auto` | Fallback language when a request omits one; `auto` detects. |
 | `decode.beam_size` | int | `5` | Beam search width (≥1). |
