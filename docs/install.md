@@ -1,8 +1,9 @@
 # Install, upgrade, and uninstall
 
-The Client is a single binary installed per user. The Server runs either as a
-native per-user bundle or under Docker. Both processes read the same
-`kitsune.yaml` (each reads only its own section).
+The Client is a single binary. On Linux the one-line installer also places the
+native per-user Server bundle and the bundled Wayland helpers, so a fresh
+machine can dictate from the Tray without hand-assembling two projects. Both
+processes read the same `kitsune.yaml` (each reads only its own section).
 
 For the native bundle, `kitsune-server install` resolves the config file exactly
 as startup would (`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user
@@ -18,29 +19,72 @@ pinned.
 
 - **Windows 10/11 (x64)** or **Linux (x64)** with a working microphone.
 - A reachable Server, named by the active Server profile in `client.servers`.
+  The Linux installer puts the Local Server on the same machine by default.
 - **Desktop shell**: GTK4 and WebKitGTK 6.0 on Linux, WebView2 on Windows. The
   headless `run` role does not need either.
 - **Linux**: a systemd user session for autostart. X11 is first-class; Wayland is
-  best-effort (see `docs/adr/0002-wayland-v1-stance.md`).
+  best-effort but works out of the box through the bundled helpers (see
+  [Wayland](#wayland-injection-is-set-up-for-you)).
+
+The default Linux build is **GTK4 + WebKitGTK 6.0** (Ubuntu 24.04+, Fedora 40+,
+and current Arch). A **GTK3 + WebKit2GTK 4.1** build is published for older LTS
+distributions; the installer selects it when those are the only libraries the
+host has.
 
 ### Install
 
-Linux:
+Linux — the all-in-one installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
 ```
 
-Windows (PowerShell 7+):
+It downloads the Client, the native Server bundle, and the bundled Wayland
+helpers, verifies every SHA-256 against `checksums.txt`, installs them under your
+home directory, and registers three systemd **user** units. It asks for `sudo`
+at most once:
+
+- install the GTK/WebKitGTK runtime packages the selected build needs;
+- write the udev `uaccess` rule and the `modules-load.d` entry for
+  `/dev/uinput`, so the bundled `ydotoold` can inject text without adding you to
+  a group or asking you to log out and back in.
+
+Nothing else runs as root, and re-running the installer never asks again once
+those pieces exist. Decline elevation with `--no-elevate` (or by answering the
+prompt with no): the Client still installs and dictates, Settings open in your
+browser instead of an embedded window, and Wayland injection stays
+clipboard-only ("press Ctrl+V") until you re-run with elevation.
+
+Useful installer options:
+
+```sh
+install.sh --no-server        # Client and Wayland helpers only
+install.sh --no-wayland       # skip the bundled helpers and the ydotoold unit
+install.sh --gui gtk3         # force the legacy build (auto by default)
+install.sh --from ./release   # install verified artifacts from a directory
+install.sh --dry-run          # print the plan and change nothing
+```
+
+On Debian or Ubuntu you can use the package instead. It installs the Client and
+the udev rule, declares GTK/WebKitGTK as dependencies (the package manager owns
+the only elevated step), and ships a per-user finisher for the Server:
+
+```sh
+sudo apt install ./kitsune-whisper_<version>_amd64.deb
+kitsune-whisper-setup        # no sudo: Server bundle, helpers, user units
+```
+
+Older LTS distributions use `kitsune-whisper-legacy_<version>_amd64.deb`.
+
+Windows (PowerShell 7+) — the Client only:
 
 ```powershell
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-Both scripts download the matching GitHub Release archive, verify its SHA-256
-against `checksums.txt`, install the binary, drop a config template **only if
-`kitsune.yaml` does not already exist**, and register autostart. Pin a release
-with `KITSUNE_VERSION=vX.Y.Z`, or pass `-Version vX.Y.Z` on Windows.
+Both scripts drop a config template **only if `kitsune.yaml` does not already
+exist**, and register autostart. Pin a release with `KITSUNE_VERSION=vX.Y.Z`, or
+pass `-Version vX.Y.Z` on Windows.
 
 From source (requires a C toolchain — `malgo` uses cgo):
 
@@ -51,65 +95,33 @@ cd client && go build -tags "desktop purego" -o kitsune-client ./cmd/kitsune-cli
 
 The `desktop` tag adds the Wails Settings window and Tray; on Linux `purego`
 loads GTK4 and WebKitGTK 6.0 at runtime instead of linking their development
-headers. Leave both tags off to build the headless Client, which keeps the
-`run` role and every one-shot command but has no window or Tray.
+headers. Add `gtk3` to build the legacy GTK3 + WebKit2GTK 4.1 variant
+(`-tags "desktop purego gtk3"`). Leave both tags off to build the headless
+Client, which keeps the `run` role and every one-shot command but has no window
+or Tray.
 
-### Wayland: synthetic paste needs a helper
+### Wayland injection is set up for you
 
-On **Windows and X11** the Client synthesizes the paste itself — you need
-nothing extra. On **Wayland** it cannot: the compositor gives no unprivileged
-way to inject a keystroke, so the Client shells out to a helper. With
-`client.wayland_tool: auto` it tries **`wtype`** first (simple, but wlroots-only —
-it does not work on GNOME/Mutter) and then **`ydotool`** (works everywhere, but
-needs setup). If neither is usable the transcription is left on the clipboard
-and the Client logs a "press Ctrl+V" hint instead of pasting.
+On **Windows and X11** the Client synthesizes the paste itself — nothing extra.
+On **Wayland** the compositor gives no unprivileged way to inject a keystroke,
+so the Client shells out to a helper. The Linux installer bundles and supervises
+both helpers, so a fresh install needs no manual `ydotool` setup:
 
-`ydotool` is not bundled, and it only works while its background daemon
-**`ydotoold`** is running with access to `/dev/uinput`. Install and start both:
+- **`ydotoold`** runs as a systemd user unit (`kitsune-ydotoold.service`) with a
+  socket in your `$XDG_RUNTIME_DIR` and access to `/dev/uinput` through the
+  `uaccess` rule. This is the universal path (GNOME, KDE, wlroots).
+- **`wtype`** is installed for wlroots compositors, where it needs no
+  privileges.
+- With `client.wayland_tool: auto` the Client tries `wtype` first (wlroots) and
+  then `ydotool` (everywhere). If neither works it leaves the transcription on
+  the clipboard and logs a "press Ctrl+V" hint.
 
-1. **Install `ydotool`.** Check your distro first — many ship it as the package
-   `ydotool` (e.g. `sudo pacman -S ydotool`, `sudo dnf install ydotool`,
-   `sudo apt install ydotool`). If it is not packaged, build it from source:
+Verify with a text field focused:
 
-   ```sh
-   git clone https://github.com/ReimuNotMoe/ydotool.git
-   cd ydotool
-   mkdir build && cd build
-   cmake ..
-   make -j"$(nproc)"
-   sudo make install
-   ```
-
-   See the upstream repository for details and the latest instructions:
-   <https://github.com/ReimuNotMoe/ydotool>.
-
-2. **Grant `/dev/uinput` access.** `ydotoold` needs to write to `/dev/uinput`.
-   The usual approach is a udev rule plus membership in the `input` group:
-
-   ```sh
-   sudo modprobe uinput
-   echo 'KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"' \
-     | sudo tee /etc/udev/rules.d/80-uinput.rules
-   sudo udevadm control --reload-rules && sudo udevadm trigger
-   sudo usermod -aG input "$USER"   # log out and back in for the group to apply
-   ```
-
-3. **Run `ydotoold`.** Start the daemon in your user session so its socket lands
-   in your `$XDG_RUNTIME_DIR` (the path `ydotool` looks in by default):
-
-   ```sh
-   ydotoold &          # or wire it into a systemd --user unit
-   ```
-
-   If you run the daemon elsewhere, point the Client's environment at the socket
-   with `YDOTOOL_SOCKET=/path/to/.ydotool_socket`.
-
-4. **Verify.** With a text field focused:
-
-   ```sh
-   ydotool type "hello"            # types text
-   ydotool key 29:1 47:1 47:0 29:0 # Ctrl+V
-   ```
+```sh
+ydotool type "hello"            # types text
+ydotool key 29:1 47:1 47:0 29:0 # Ctrl+V
+```
 
 If `ydotoold` is not running, `ydotool` fails instantly; the Client detects this
 and degrades to clipboard-only (the error is in
@@ -117,15 +129,37 @@ and degrades to clipboard-only (the error is in
 `client.wayland_tool` (`wtype`|`ydotool`|`none`). See
 [Wayland support and known limitations](wayland.md) for the full session matrix.
 
+If you build from source or deliberately skip the helpers (`--no-wayland`), the
+manual setup is still:
+
+1. Install `ydotool` from your distribution (or build it from
+   <https://github.com/ReimuNotMoe/ydotool>) and `wtype` where available.
+2. Grant `/dev/uinput` access. The release installer's rule is
+   `KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess",
+   OPTIONS+="static_node=uinput"` in
+   `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules`. A group-based
+   alternative is `GROUP="input", MODE="0660"` plus membership in `input` (that
+   one needs a re-login).
+3. Run `ydotoold` in your user session so its socket lands in
+   `$XDG_RUNTIME_DIR` (the path `ydotool` looks in by default), for example
+   `ydotoold &` or a systemd user unit. If it runs elsewhere, point the Client's
+   environment at the socket with `YDOTOOL_SOCKET=/path/to/.ydotool_socket`.
+4. Verify with the two commands above.
+
 ### Where things go
 
 | | Linux | Windows |
 | --- | --- | --- |
-| Binary | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-client.exe` |
+| Client binary | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-client.exe` |
+| Server bundle | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\kitsune-whisper\Server` |
+| Bundled Wayland helpers | `~/.local/lib/kitsune-whisper/wayland/bin` | — |
 | Config | `~/.config/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
 | Spool | `~/.cache/kitsune-whisper/spool` | `%LOCALAPPDATA%\kitsune-whisper\spool` |
-| Log | `~/.cache/kitsune-whisper/client.log` | `%LOCALAPPDATA%\kitsune-whisper\client.log` |
+| Models | `~/.cache/kitsune-whisper/models` | `server.download_root` |
+| Client log | `~/.cache/kitsune-whisper/client.log` | `%LOCALAPPDATA%\kitsune-whisper\client.log` |
+| Server state | `~/.local/state/kitsune-whisper` (TLS, Devices, pairing, log, soft-stop) | `%LOCALAPPDATA%\kitsune-whisper` |
+| udev rule | `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` | — |
 
 An explicit `--config PATH`, `KITSUNE_CONFIG`, or a `./kitsune.yaml` in the
 current directory overrides the default config location. Validate a config
@@ -190,11 +224,17 @@ in the Tray with no window, and the hotkey is available immediately.
   `graphical-session.target`, `Restart=on-failure`. No linger (linger would start
   it at boot with no display). The installer also writes the
   `io.github.FoxRed-cmd.kitsune-whisper.desktop` file the Wayland
-  GlobalShortcuts portal needs.
+  GlobalShortcuts portal needs, and a drop-in that puts the bundled
+  `ydotool`/`wtype` directory on the unit's `PATH`.
 - **Windows** — a per-user **Task Scheduler** task `kitsune-client` at logon,
   running interactively with least privilege and restart-on-failure. If task
   registration is denied, it falls back to the
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `kitsune-whisper`.
+
+The Linux installer also registers `kitsune-server.service` and
+`kitsune-ydotoold.service`. The Server unit starts at login (no
+`graphical-session.target` dependency; it serves the network) and restarts on
+failure. The ydotool unit starts with the graphical session.
 
 ### Managing the running client
 
@@ -211,6 +251,19 @@ systemctl --user disable --now kitsune-client.service   # stop and don't start a
 systemctl --user enable --now kitsune-client.service    # re-enable and start
 journalctl --user -u kitsune-client.service -e          # the service log
 ```
+
+The Server and the injection daemon have their own units:
+
+```sh
+systemctl --user status kitsune-server.service          # local Server
+systemctl --user restart kitsune-server.service         # after editing server settings
+systemctl --user status kitsune-ydotoold.service        # Wayland injection daemon
+journalctl --user -u kitsune-server.service -e          # Server log
+```
+
+`kitsune-server status` also prints the bundle version and the config file the
+supervisor pinned; `kitsune-server start|stop|restart` drive the same unit
+without the full `systemctl` line.
 
 On Windows it is the Task Scheduler task `kitsune-client`:
 
@@ -231,16 +284,21 @@ fallbacks, injections — is at `~/.cache/kitsune-whisper/client.log`
 
 ### Upgrade
 
-Re-run the installer. It replaces the binary and refreshes the unit/task and the
-`.desktop` file, and leaves `kitsune.yaml` untouched. Config-schema changes are
+Re-run the installer. It replaces the Client binary, refreshes the units and the
+`.desktop` file, and replaces the Server bundle while keeping `kitsune.yaml`,
+models, Devices, and TLS certificates. The Server unit restarts on failure and
+the Client service is restarted after the upgrade. Config-schema changes are
 surfaced by the fail-fast validation (`--check-config`).
 
 ### Uninstall
 
 ```sh
 # Linux
-curl -fsSL .../install.sh | bash -s -- --uninstall          # keeps config/spool/logs
-curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # also removes them
+curl -fsSL .../install.sh | bash -s -- --uninstall          # keeps config, models, Devices, logs
+curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything, including the udev rule
+
+# From a checkout, use the script directly:
+./install.sh --uninstall --purge
 ```
 
 ```powershell
@@ -252,8 +310,12 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # also removes them
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -Uninstall
 ```
 
-Uninstall stops and removes the autostart entry and the binary; `--purge` /
-`-Purge` additionally removes the config and Setup progress, Spool, and log.
+Linux uninstall stops and removes the Client, Server, and ydotool user units,
+their binaries, the bundled helpers, and the `.desktop` file. It keeps
+`kitsune.yaml`, Setup progress, Spool, logs, the certificate, Devices, and
+models. `--purge` additionally removes all of those and, with `sudo`, the
+`/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On Windows `-Purge`
+removes config, Setup progress, Spool, and log.
 
 ## Server
 
@@ -263,11 +325,12 @@ or a per-user Task Scheduler task; see [server-bundle.md](server-bundle.md) for
 its layout, install sources, commands, and uninstall behaviour. The **Docker
 image** remains the supported deployment for a dedicated host.
 
-Installing the bundle needs a **bootstrap Python interpreter** on the host (the
-`kitsune-server install` command itself is Python). Running the installed
-bundle needs no system Python and no Docker: its pinned runtime, the Server and
-all dependencies live inside the bundle. Release installers (#80/#81) own
-providing that bootstrap interpreter on a host that has none.
+Installing the bundle needs no system Python and no Docker: the release archive
+carries its own pinned runtime and a `bootstrap.py` that prepends the sibling
+`lib/` and runs `kitsune-server install`. The Linux one-line installer and the
+`.deb` finisher use that bootstrap, so a host with no Python still installs.
+`kitsune-server install --artifact` remains the reference implementation for a
+host that already has Python.
 
 The native bundle reads the same user config file the Client does
 (`~/.config/kitsune-whisper/kitsune.yaml`,

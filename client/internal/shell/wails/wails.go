@@ -213,7 +213,18 @@ func (d *desktop) NewTray(initial shell.Snapshot) (port shell.Tray, err error) {
 }
 
 func (d *desktop) Run() error { return d.app.Run() }
-func (d *desktop) Quit()      { d.app.Quit() }
+
+// Quit stops the event loop. Wails' Quit waits for the GTK main loop to run the
+// destroy callback, while the shell calls it from its watch goroutine. A tray
+// update already queued on the main loop can then deadlock the two, so quit is
+// dispatched asynchronously: the shell stops the runtime and returns, and the
+// process exits even if the platform loop is still draining.
+func (d *desktop) Quit() {
+	if d.app == nil {
+		return
+	}
+	go d.app.Quit()
+}
 
 // window is the Wails Settings window.
 type window struct {

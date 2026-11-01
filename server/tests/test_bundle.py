@@ -471,6 +471,27 @@ def test_build_bundle_stages_runtime_packages_and_manifest(tmp_path: Path) -> No
     assert "lib/kitsune_server/__init__.py" in names
     assert "lib/fastapi/__init__.py" in names
     assert "bundle.json" in names
+    assert "bootstrap.py" in names
+
+
+def test_built_bundle_bootstrap_runs_the_cli_from_the_extracted_stage(tmp_path: Path) -> None:
+    """The installer can run ``install`` before anything is on disk.
+
+    The artifact carries its own interpreter and libraries, so a tiny script at
+    the archive root is the bootstrap: prepend the sibling ``lib/`` and hand
+    off to the CLI. That keeps the one-line installer free of a system Python.
+    """
+
+    runtime, site_packages = fake_build_inputs(tmp_path)
+    output = tmp_path / "bundle.tar.gz"
+
+    build_bundle(output, runtime_dir=runtime, site_packages=[site_packages])
+
+    with tarfile.open(output) as archive:
+        source = archive.extractfile("bootstrap.py").read().decode("utf-8")  # type: ignore[union-attr]
+    assert "sys.path.insert" in source
+    assert '"lib"' in source
+    assert "kitsune_server.cli" in source
 
 
 def test_built_bundle_manifest_names_the_version_and_layout(tmp_path: Path) -> None:

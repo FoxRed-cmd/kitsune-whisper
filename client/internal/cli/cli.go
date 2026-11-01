@@ -41,6 +41,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/browser"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
@@ -487,6 +488,18 @@ func serverCheck(
 	}
 }
 
+// desktopPort picks the embedded Settings window when the build and host have
+// a desktop toolkit, and the loopback browser page otherwise. The fallback is
+// what lets a host that declined installer elevation keep its settings: the
+// Client still dictates, and Settings open in the browser on demand.
+func desktopPort(desktop shell.Desktop, logger *logging.Logger) shell.Desktop {
+	if desktop != nil {
+		return desktop
+	}
+	logger.Warning("GTK/WebKitGTK is unavailable; Settings open in the browser")
+	return browser.New(browser.Options{Logger: logger})
+}
+
 // newSpoolService builds the Spool screen's service. The directory is read per
 // operation, so a live spool_dir change is followed without a restart.
 func newSpoolService(
@@ -605,7 +618,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 		}
 		sh = shell.New(shell.Options{
 			Runtime:     rt,
-			Desktop:     wails.New(wails.Options{Version: Version, Logger: logger}),
+			Desktop:     desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
 			Settings:    settingsService,
 			Servers:     serverService,
 			Wizard:      wizardService,

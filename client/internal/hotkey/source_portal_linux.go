@@ -20,9 +20,9 @@ const (
 
 	sessionIface = "org.freedesktop.portal.Session"
 
-	registryBusName = "org.freedesktop.host.portal.Registry"
+	registryBusName = portalBusName
 	registryIface   = "org.freedesktop.host.portal.Registry"
-	registryPath    = dbus.ObjectPath("/org/freedesktop/host/portal/Registry")
+	registryPath    = portalObjectPath
 
 	// Shortcut ids reported back by the portal.
 	mainShortcutID   = "toggle"
@@ -109,15 +109,26 @@ func (s *portalSource) Run(ctx context.Context, triggers chan<- cycle.Trigger) e
 }
 
 func (s *portalSource) runPortal(ctx context.Context, triggers chan<- cycle.Trigger) error {
-	conn, err := dbus.SessionBus()
+	// The host registry declaration is accepted once per connection and only
+	// before the first portal call on it. A private connection guarantees the
+	// declaration is first even though portalAvailable already probed the
+	// shared session bus.
+	conn, err := sessionBusPrivate()
 	if err != nil {
 		return fmt.Errorf("connect to the session bus: %w", err)
 	}
+	defer func() { _ = conn.Close() }()
 	signals := make(chan *dbus.Signal, 16)
 	conn.Signal(signals)
 	defer conn.RemoveSignal(signals)
 
-	s.registerAppID(conn)
+	if err := s.registerAppID(conn); err != nil {
+		// A portal older than 1.20 does not serve the host registry and derives
+		// the app id from the systemd scope instead. CreateSession then decides
+		// whether the id is acceptable; a failure still degrades to the external
+		// trigger.
+		s.log(fmt.Sprintf("hotkey: host portal registry unavailable: %v", err))
+	}
 
 	session, err := s.createSession(ctx, conn, signals)
 	if err != nil {
@@ -134,14 +145,35 @@ func (s *portalSource) runPortal(ctx context.Context, triggers chan<- cycle.Trig
 	return s.listen(ctx, conn, signals, session, triggers)
 }
 
-// registerAppID associates the D-Bus connection with the app id so the portal
-// can name the Client in its dialog. Best-effort: a failure just means the
-// portal falls back to identifying the executable.
-func (s *portalSource) registerAppID(conn *dbus.Conn) {
+// registerAppID declares the Client's app id to the host portal registry.
+// xdg-desktop-portal 1.20+ requires this for non-sandboxed apps before an
+// app-id-gated portal such as GlobalShortcuts accepts a session. It must run
+// before any other portal call on the connection, which is why runPortal uses
+// a private connection.
+func (s *portalSource) registerAppID(conn *dbus.Conn) error {
 	if err := conn.Object(registryBusName, registryPath).
 		Call(registryIface+".Register", 0, s.appID, map[string]dbus.Variant{}).Err; err != nil {
-		s.log(fmt.Sprintf("hotkey: could not register app id %s: %v", s.appID, err))
+		return fmt.Errorf("register app id %s: %w", s.appID, err)
 	}
+	return nil
+}
+
+// sessionBusPrivate opens an unshared session-bus connection for the one
+// registry declaration the portal accepts per connection.
+func sessionBusPrivate() (*dbus.Conn, error) {
+	conn, err := dbus.SessionBusPrivate()
+	if err != nil {
+		return nil, err
+	}
+	if err := conn.Auth(nil); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	if err := conn.Hello(); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (s *portalSource) createSession(ctx context.Context, conn *dbus.Conn, signals chan *dbus.Signal) (dbus.ObjectPath, error) {

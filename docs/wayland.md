@@ -10,8 +10,8 @@ recorded in [`adr/0002-wayland-v1-stance.md`](adr/0002-wayland-v1-stance.md).
 | Session | Hotkey | Injection | Recording indicator |
 | --- | --- | --- | --- |
 | **X11** | Full: `XGrabKey` global grab | Synthetic paste; previous clipboard restored where possible | Native X11 window on the focused monitor |
-| **Wayland — GNOME ≥48 / KDE Plasma ≥5.27** | `GlobalShortcuts` portal (one-time approval dialog) | `ydotool` if present, else clipboard-only with a "press Ctrl+V" hint | KDE: native layer-shell; GNOME: X11 window through XWayland |
-| **Wayland — wlroots (Sway, Hyprland, …) and any portal-less/denied session** | External trigger: bind `kitsune-client toggle` (compositor keybind or GNOME custom shortcut) | `wtype`, else `ydotool`, else clipboard-only | Native `wlr-layer-shell` overlay |
+| **Wayland — GNOME ≥48 / KDE Plasma ≥5.27** | `GlobalShortcuts` portal (one-time approval dialog) | Bundled `ydotool` through `/dev/uinput`; clipboard-only if `ydotoold` is unavailable | KDE: native layer-shell; GNOME: X11 window through XWayland |
+| **Wayland — wlroots (Sway, Hyprland, …) and any portal-less/denied session** | External trigger: bind `kitsune-client toggle` (compositor keybind or GNOME custom shortcut) | Bundled `wtype`, then `ydotool`, then clipboard-only | Native `wlr-layer-shell` overlay |
 
 `client.hotkey_backend` (`auto`|`portal`|`x11`) and `client.wayland_tool`
 (`auto`|`wtype`|`ydotool`|`none`) pin these choices. `auto` detects the session.
@@ -26,11 +26,13 @@ the native layer surface.
 
 - **Portal** (GNOME ≥48 / KDE Plasma ≥5.27): the Client registers the stable
   app-id `io.github.FoxRed-cmd.kitsune-whisper` and binds `toggle`/`cancel`
-  shortcuts. The portal shows a one-time approve/assign dialog; a deny or bind
-  error is treated as "hotkey unavailable" and the Client falls back to the
-  external trigger (it never fails to start). This needs the
-  `io.github.FoxRed-cmd.kitsune-whisper.desktop` file the installer writes — the
-  basename **must** equal the app-id exactly.
+  shortcuts. It declares that id to the host portal registry first, which
+  xdg-desktop-portal 1.20+ requires for non-sandboxed apps, and the
+  `io.github.FoxRed-cmd.kitsune-whisper.desktop` file must exist for the portal
+  to accept it. The portal shows a one-time approve/assign dialog; a deny or
+  bind error is treated as "hotkey unavailable" and the Client falls back to the
+  external trigger (it never fails to start). The `.desktop` basename **must**
+  equal the app-id exactly.
 - **External trigger** (wlroots, or when the portal is unavailable): the Client
   listens on a local unix socket under `$XDG_RUNTIME_DIR` (which is mode `0700`).
   `kitsune-client toggle` sends start/stop. Bind it in your compositor, e.g.:
@@ -60,11 +62,12 @@ the native layer surface.
 ## Injection
 
 Wayland injection tries, in order: **`wtype`** (no privileges, but wlroots only —
-it cannot work on GNOME/Mutter) → **`ydotool`** (universal, but needs a running
-`ydotoold` with `/dev/uinput` access; detected, never bundled) →
-**clipboard-only**. With clipboard-only the Client sets the transcription and
-logs an explicit "press Ctrl+V" hint instead of synthesizing a paste. Force one
-with `client.wayland_tool`.
+it cannot work on GNOME/Mutter) → **`ydotool`** (universal, through
+`/dev/uinput`) → **clipboard-only**. The Linux installer bundles both helpers,
+installs a `udev` `uaccess` rule for `/dev/uinput`, and runs `ydotoold` as a
+systemd user unit, so no group change or re-login is needed. With clipboard-only
+the Client sets the transcription and logs an explicit "press Ctrl+V" hint
+instead of synthesizing a paste. Force one with `client.wayland_tool`.
 
 The clipboard uses `golang.design/x/clipboard` (native Wayland data-control where
 the desktop supports it), falling back to `wl-copy`/`wl-paste` if installed, and
@@ -74,10 +77,12 @@ otherwise errors with an actionable message.
 
 - **No global hotkey on Wayland by design.** Without the portal you must bind
   the external trigger yourself.
-- **`wtype` is wlroots-only.** GNOME/Mutter does not support it; use `ydotool`
-  (requires setup) or clipboard-only.
-- **`ydotool` is not bundled.** It needs `/dev/uinput` access and a running
-  `ydotoold`.
+- **`wtype` is wlroots-only.** GNOME/Mutter does not support it; use the bundled
+  `ydotool` or clipboard-only.
+- **`ydotool` needs `/dev/uinput`.** The installer's `uaccess` rule gives the
+  active session access without a group change; the `kitsune-ydotoold.service`
+  user unit provides the daemon. If you install from source or decline
+  elevation, set both up manually (or accept clipboard-only).
 - **Clipboard restore is best-effort.** On Wayland it works only through native
   data-control; when the previous clipboard can't be read it isn't restored —
   same as Windows.

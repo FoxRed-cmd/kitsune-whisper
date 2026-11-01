@@ -231,19 +231,28 @@ have this limitation: the Client auto-pairs over loopback on the same machine.
 ### 2. Client
 
 ```sh
-# Linux
+# Linux: Client, Tray, local Server bundle, and Wayland helpers in one command
 curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
 ```
 
 ```powershell
-# Windows (PowerShell 7+)
+# Windows (PowerShell 7+): Client only
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-The installer verifies the archive checksum, installs the binary, drops a
-`kitsune.yaml` template (only if absent), and registers autostart in the user
-session. Point the active Server profile at the Server in the Client's config
-(path in [`docs/install.md`](docs/install.md#where-things-go)):
+The Linux installer verifies every archive checksum, installs the Client, the
+native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**
+units for all three. It asks for `sudo` once to install GTK/WebKitGTK and the
+udev `uaccess` rule, then never again. Docker remains the supported deployment
+for a dedicated GPU host; the one-liner installs both parts locally by default.
+On Ubuntu 24.04+/Fedora 40+ the default build is GTK4/WebKitGTK 6.0; older LTS
+hosts automatically get the GTK3/WebKit2GTK 4.1 build. A `.deb` is published for
+Debian/Ubuntu: install it, then run `kitsune-whisper-setup` as your user.
+
+Declining elevation still installs a working headless Client: Settings open in
+the browser and Wayland injection stays clipboard-only until you re-run with
+`sudo`. Both installers drop a `kitsune.yaml` template **only if absent**. The
+active Server profile is `local` by default:
 
 ```yaml
 client:
@@ -407,13 +416,16 @@ docker compose --profile gpu build
 Server and run the live slice — speech round trip, latency, silence, and error
 paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). See
 `docs/verification/e2e-live-slice.md` for the automated checks and the manual
-hotkey/capture/injection checklist.
+hotkey/capture/injection checklist. The Linux installer's one-sudo, `uaccess`,
+bundled-helper, and full-cycle checks are recorded in
+[`docs/verification/linux-installer.md`](docs/verification/linux-installer.md).
 
 ### Releases
 
-Tagging `v*` runs `.github/workflows/release-client.yml`: it builds the Client on
-native Linux and Windows runners and attaches checksummed archives to the GitHub
-Release. `publish-server-image.yml` publishes the Server images to GHCR.
+Tagging `v*` runs `.github/workflows/release.yml`: it builds the GTK4 and GTK3
+Clients, the native Server bundle, the bundled Wayland helpers, and both `.deb`
+packages on native runners, then attaches them with `checksums.txt` to the
+GitHub Release. `publish-server-image.yml` publishes the Server images to GHCR.
 
 ## License
 

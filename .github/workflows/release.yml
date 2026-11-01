@@ -1,0 +1,202 @@
+name: Release
+
+# Builds every Linux and Windows artifact from native runners (the Client uses
+# cgo, so no cross-compilation) and attaches them with checksums to the GitHub
+# Release. The Linux set is the contract install.sh relies on:
+#   kitsune-client_linux_amd64.tar.gz          GTK4/WebKitGTK 6.0
+#   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1
+#   kitsune-server_linux_amd64.tar.gz          native Server bundle
+#   kitsune-wayland_linux_amd64.tar.gz         ydotool/ydotoold/wtype
+#   kitsune-whisper_*_amd64.deb                Debian/Ubuntu package
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  client-linux:
+    name: client linux (GTK4 + GTK3)
+    runs-on: ubuntu-24.04
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Ensure build deps
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+
+      - name: Build both Linux clients
+        run: |
+          set -euo pipefail
+          scripts/build-linux-artifacts.sh \
+            --no-server --no-wayland --no-deb \
+            --output dist --version "${GITHUB_REF_NAME:-dev}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-client
+          path: |
+            dist/kitsune-client_linux_amd64.tar.gz
+            dist/kitsune-client_linux_amd64-legacy.tar.gz
+          if-no-files-found: error
+
+  client-windows:
+    name: client windows
+    runs-on: windows-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Ensure a C compiler
+        shell: pwsh
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            choco install mingw --no-progress -y
+          }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          go build -C client -trimpath -ldflags `
+            "-X github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli.Version=$version -H=windowsgui" `
+            -o "../dist/kitsune-client.exe" ./cmd/kitsune-client
+          Copy-Item kitsune.example.yaml dist/
+          Compress-Archive -Path dist/kitsune-client.exe, dist/kitsune.example.yaml `
+            -DestinationPath "kitsune-client_windows_amd64.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-client
+          path: kitsune-client_windows_amd64.zip
+          if-no-files-found: error
+
+  server-bundle:
+    name: server bundle
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Resolve a standalone 3.11 runtime and the Server environment
+        run: |
+          set -euo pipefail
+          uv python install 3.11
+          uv venv --python 3.11 .bundle-venv
+          uv pip install --python .bundle-venv/bin/python ./server
+          echo "KITSUNE_SERVER_RUNTIME=$(dirname "$(dirname "$(uv python find 3.11)")")" >> "$GITHUB_ENV"
+          echo "KITSUNE_SERVER_SITE_PACKAGES=$(ls -d .bundle-venv/lib/python3.11/site-packages)" >> "$GITHUB_ENV"
+          echo "KITSUNE_SERVER_PYTHON=.bundle-venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Build the bundle
+        run: |
+          set -euo pipefail
+          scripts/build-linux-artifacts.sh \
+            --no-client --no-wayland --no-deb \
+            --output dist --version "${GITHUB_REF_NAME:-dev}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-bundle
+          path: dist/kitsune-server_linux_amd64.tar.gz
+          if-no-files-found: error
+
+  wayland-tools:
+    name: wayland helpers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ydotool and wtype
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake meson ninja-build pkg-config \
+            libwayland-dev libxkbcommon-dev wayland-protocols
+          scripts/build-wayland-tools.sh --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist/kitsune-wayland_linux_amd64.tar.gz
+          if-no-files-found: error
+
+  deb:
+    name: debian package
+    runs-on: ubuntu-24.04
+    needs: client-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-client
+          path: dist
+
+      - name: Build the GTK4 and legacy packages
+        run: |
+          set -euo pipefail
+          tar -xzf dist/kitsune-client_linux_amd64.tar.gz -C dist
+          mkdir -p dist/legacy
+          tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
+          packaging/deb/build-deb.sh \
+            --client dist/kitsune-client \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+          packaging/deb/build-deb.sh \
+            --client dist/legacy/kitsune-client --legacy \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: dist/kitsune-whisper*.deb
+          if-no-files-found: error
+
+  release:
+    name: publish
+    runs-on: ubuntu-24.04
+    needs: [client-linux, client-windows, server-bundle, wayland-tools, deb]
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          rm -f checksums.txt
+          sha256sum kitsune-* > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/kitsune-client_linux_amd64.tar.gz
+            dist/kitsune-client_linux_amd64-legacy.tar.gz
+            dist/kitsune-client_windows_amd64.zip
+            dist/kitsune-server_linux_amd64.tar.gz
+            dist/kitsune-wayland_linux_amd64.tar.gz
+            dist/kitsune-whisper*_amd64.deb
+            dist/checksums.txt

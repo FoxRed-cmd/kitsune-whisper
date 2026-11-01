@@ -27,6 +27,7 @@ the soft-stop flag (`/state/kitsune-whisper/lifecycle.json`), and the log
 | Resolved environment | `<root>/lib` | `<root>\lib` |
 | Launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-server.cmd` |
 | Manifest | `<root>/bundle.json` | `<root>\bundle.json` |
+| Bootstrap (archive only) | `bootstrap.py` | `bootstrap.py` |
 | Configuration | `$XDG_CONFIG_HOME/kitsune-whisper/kitsune.yaml` (default `~/.config/…`) | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Models | `server.download_root` (default `~/.cache/kitsune-whisper/models`) | `server.download_root` |
 | Log | `~/.local/state/kitsune-whisper/server.log` | `%LOCALAPPDATA%\kitsune-whisper\server.log` |
@@ -42,9 +43,18 @@ supervisor.
 
 Two verified install sources exist; both require a SHA-256 and neither needs a
 system Python or Docker **at runtime**. The `install` command itself is Python,
-so a host with no Python at all needs a bootstrap interpreter; the release
-installers (later tickets) unpack and verify the same artifact directly. This
-command is the reference implementation of the layout and supervisor steps.
+so the release artifacts also carry a `bootstrap.py` at their root: extract the
+archive anywhere, then run
+
+```sh
+./runtime/bin/python3 -s ./bootstrap.py install \
+  --artifact ./kitsune-server_linux_amd64.tar.gz --sha256 <hex>
+```
+
+The bootstrap prepends the sibling `lib/` and calls the CLI, so the Linux
+one-line installer and the `.deb` finisher install a host with no system Python.
+`kitsune-server install --artifact` is the reference implementation of the
+layout and supervisor steps for a host that already has Python.
 
 Prebuilt artifact from release CI:
 
@@ -172,10 +182,10 @@ kitsune-server bundle build \
 ```
 
 The command copies the runtime tree to `runtime/`, every child of each
-site-packages directory to `lib/`, writes `bundle.json`, and archives the three
-at the archive root. Publish the archive with a `sha256sum` entry; `install
---artifact` verifies it before extracting. Publish natively per platform;
-CUDA wheels and models are never bundled.
+site-packages directory to `lib/`, writes `bundle.json` and `bootstrap.py`, and
+archives the four at the archive root. Publish the archive with a `sha256sum`
+entry; `install --artifact` verifies it before extracting. Publish natively per
+platform; CUDA wheels and models are never bundled.
 
 ## Uninstall
 
