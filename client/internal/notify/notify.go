@@ -35,11 +35,12 @@ type Notifier struct {
 
 // New builds a Notifier.
 func New(opts Options) *Notifier {
-	if opts.Run == nil {
-		opts.Run = systemRun
-	}
 	if opts.Timeout <= 0 {
 		opts.Timeout = 5 * time.Second
+	}
+	if opts.Run == nil {
+		timeout := opts.Timeout
+		opts.Run = func(title, body string) error { return systemRun(timeout, title, body) }
 	}
 	return &Notifier{opts: opts}
 }
@@ -57,11 +58,11 @@ func (n *Notifier) Notify(title, body string) {
 }
 
 // systemRun runs the platform's notification command.
-func systemRun(title, body string) error {
+func systemRun(timeout time.Duration, title, body string) error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("no desktop notification command on %s", runtime.GOOS)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	return runCommand(ctx, "notify-send", "--app-name=kitsune-whisper", "--urgency=normal", "--", title, body)
 }

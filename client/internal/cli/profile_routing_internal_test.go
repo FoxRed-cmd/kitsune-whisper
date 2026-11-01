@@ -204,11 +204,15 @@ func runFailingCycle(
 // other Server profile.
 func TestAFailedUtteranceSpoolsOnceAndInjectsNothing(t *testing.T) {
 	cases := []struct {
-		name    string
-		status  int
-		delay   time.Duration
-		timeout time.Duration
+		name string
+		// status 0 closes the server before the request, simulating a
+		// connection error.
+		status     int
+		delay      time.Duration
+		timeout    time.Duration
+		connection bool
 	}{
+		{name: "connection error", connection: true, timeout: 2 * time.Second},
 		{name: "5xx", status: http.StatusInternalServerError, timeout: 2 * time.Second},
 		{name: "timeout", status: http.StatusOK, delay: 500 * time.Millisecond, timeout: 50 * time.Millisecond},
 	}
@@ -216,6 +220,9 @@ func TestAFailedUtteranceSpoolsOnceAndInjectsNothing(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			active := newCountingServer(t, tc.status, "late")
 			active.delay = tc.delay
+			if tc.connection {
+				active.Close()
+			}
 			other := newCountingServer(t, http.StatusOK, "other")
 			cfg := config.ClientConfig{
 				ActiveServer: "a",
@@ -240,8 +247,12 @@ func TestAFailedUtteranceSpoolsOnceAndInjectsNothing(t *testing.T) {
 			if got := other.requests.Load(); got != 0 {
 				t.Fatalf("the other profile received %d requests, want 0", got)
 			}
-			if got := active.requests.Load(); got != 1 {
-				t.Fatalf("active requests = %d, want exactly 1", got)
+			wantActive := int32(1)
+			if tc.connection {
+				wantActive = 0
+			}
+			if got := active.requests.Load(); got != wantActive {
+				t.Fatalf("active requests = %d, want %d", got, wantActive)
 			}
 		})
 	}

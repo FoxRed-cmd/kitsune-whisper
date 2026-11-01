@@ -205,7 +205,7 @@ func spoolHTML(view SpoolView) string {
 	if view.Selected != "" {
 		out.WriteString(`<h3>` + escape(view.Labels.Text) + `</h3>`)
 		if view.Text == "" {
-			out.WriteString(`<p class="help">` + escape(view.Labels.Empty) + `</p>`)
+			out.WriteString(`<p class="help">` + escape(view.Labels.EmptyText) + `</p>`)
 		} else {
 			out.WriteString(`<pre class="spool-text" data-entry-id="` + escape(view.Selected) + `">` +
 				escape(view.Text) + `</pre>`)

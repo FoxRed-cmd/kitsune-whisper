@@ -411,6 +411,7 @@ func TestPageRendersTheSpoolScreen(t *testing.T) {
 			SavedAt:       "Сохранено",
 			Duration:      "Длительность",
 			Text:          "Транскрипция",
+			EmptyText:     "Сервер не вернул текст.",
 			Retry:         "Повторить",
 			Copy:          "Скопировать текст",
 			Insert:        "Вставить текст",
@@ -455,17 +456,27 @@ func TestPageShowsAnEmptySpool(t *testing.T) {
 	}
 }
 
-func TestServerFieldsEscapeHostileValues(t *testing.T) {
+func TestServerAndSpoolFieldsEscapeHostileValues(t *testing.T) {
 	const hostile = `</section><img src=x onerror="alert(1)">&`
 	view := sampleView()
 	view.Servers.Profiles = []servers.Profile{{ID: hostile, Name: hostile, URL: hostile}}
 	view.Servers.Devices = []servers.Device{{ID: hostile, Name: hostile}}
 	view.Servers.PairingCode = &servers.PairingCode{Code: hostile}
+	view.Spool = shell.SpoolView{
+		Entries:  []spool.Entry{{ID: hostile, Duration: 1}},
+		Selected: hostile,
+		Text:     hostile,
+		Labels: shell.SpoolLabels{
+			Title: hostile, Help: hostile, Empty: hostile, Text: hostile,
+			EmptyText: hostile, Retry: hostile, Copy: hostile, Insert: hostile,
+			Delete: hostile, DeleteConfirm: hostile,
+		},
+	}
 	html := shell.SettingsHTML(view)
 	if strings.Contains(html, "<img") {
-		t.Fatal("Servers screen allowed an image injection")
+		t.Fatal("the Settings screens allowed an image injection")
 	}
 	if !strings.Contains(html, "&lt;/section&gt;") {
-		t.Fatal("Servers screen did not escape a hostile value")
+		t.Fatal("the Settings screens did not escape a hostile value")
 	}
 }

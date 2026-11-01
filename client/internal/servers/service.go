@@ -180,9 +180,11 @@ func (s *Service) View() View {
 // single-Server alias move, atomically in one config write. The caller applies
 // the new configuration to the running Client.
 func (s *Service) SetActive(profileID string) (Profile, error) {
+	// Hold the service lock across the write, like AddRemote, so two profile
+	// changes can never interleave into one another's config file.
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	snapshot := s.opts.Store.Snapshot()
-	s.mu.Unlock()
 	var target config.ServerProfile
 	found := false
 	for _, profile := range snapshot.Config.Servers {
@@ -204,8 +206,6 @@ func (s *Service) SetActive(profileID string) (Profile, error) {
 	if _, err := s.opts.Store.Save(patch); err != nil {
 		return Profile{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.profileByIDLocked(profileID), nil
 }
 

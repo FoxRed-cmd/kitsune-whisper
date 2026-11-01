@@ -146,6 +146,7 @@ var english = map[string]string{
 	"spool.savedAt":       "Saved",
 	"spool.duration":      "Length",
 	"spool.text":          "Transcription",
+	"spool.emptyText":     "The Server returned no text for this recording.",
 	"spool.deleteConfirm": "Delete this saved recording? Its audio cannot be recovered.",
 
 	"badge.restart": "Restart required",
@@ -207,14 +208,13 @@ var english = map[string]string{
 	"error.field.locked":   "This setting is locked: %s.",
 	"error.field.invalid":  "Invalid value: %s.",
 
-	"tray.status":       "kitsune-whisper — %s",
-	"tray.start":        "Start dictation",
-	"tray.stop":         "Stop dictation",
-	"tray.settings":     "Settings…",
-	"tray.restart":      "Restart Client",
-	"tray.quit":         "Quit",
-	"tray.profiles":     "Server profile",
-	"tray.openSettings": "Open Settings",
+	"tray.status":   "kitsune-whisper — %s",
+	"tray.start":    "Start dictation",
+	"tray.stop":     "Stop dictation",
+	"tray.settings": "Settings…",
+	"tray.restart":  "Restart Client",
+	"tray.quit":     "Quit",
+	"tray.profiles": "Server profile",
 
 	"page.restartHint": "Restart the Client to apply changes marked “Restart required”.",
 }

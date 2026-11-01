@@ -8,10 +8,8 @@
 package spool
 
 import (
-	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -163,7 +161,7 @@ func (s *Spool) Load(id string) (cycle.Utterance, error) {
 	}
 	duration, err := audio.WAVDuration(data)
 	if err != nil {
-		return cycle.Utterance{}, fmt.Errorf("read spool file: %w", err)
+		return cycle.Utterance{}, fmt.Errorf("decode the saved audio: %w", err)
 	}
 	return cycle.Utterance{Audio: data, Duration: duration}, nil
 }
@@ -220,39 +218,13 @@ func wavSeconds(path string, size int64) float64 {
 	}
 	defer file.Close()
 	head := make([]byte, 4096)
-	count, err := io.ReadFull(file, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+	count, _ := file.Read(head)
+	if count == 0 {
 		return 0
 	}
-	head = head[:count]
-	if len(head) < 12 || string(head[0:4]) != "RIFF" || string(head[8:12]) != "WAVE" {
+	duration, err := audio.WAVDurationHeader(head[:count], size)
+	if err != nil {
 		return 0
 	}
-	var byteRate uint32
-	dataOffset := int64(-1)
-	for offset := 12; offset+8 <= len(head); {
-		id := string(head[offset : offset+4])
-		chunkSize := binary.LittleEndian.Uint32(head[offset+4 : offset+8])
-		body := offset + 8
-		switch id {
-		case "fmt ":
-			if body+12 <= len(head) {
-				byteRate = binary.LittleEndian.Uint32(head[body+8 : body+12])
-			}
-		case "data":
-			dataOffset = int64(body)
-		}
-		if byteRate != 0 && dataOffset >= 0 {
-			break
-		}
-		next := int64(body) + int64(chunkSize) + int64(chunkSize%2)
-		if next <= int64(offset) || next > int64(len(head)) {
-			break
-		}
-		offset = int(next)
-	}
-	if byteRate == 0 || dataOffset < 0 || size < dataOffset {
-		return 0
-	}
-	return float64(size-dataOffset) / float64(byteRate)
+	return duration.Seconds()
 }

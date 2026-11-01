@@ -270,7 +270,7 @@ func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 		Server:       catalog.T("status.server"),
 		ServerState:  serverStateLabel(catalog, snapshot.Server.State),
 		Profiles:     catalog.T("tray.profiles"),
-		OpenSettings: catalog.T("tray.openSettings"),
+		OpenSettings: catalog.T("action.openSettings"),
 	}
 }
 

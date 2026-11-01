@@ -227,11 +227,6 @@ func (i *Injector) Copy(text string) error {
 	if err := i.clipboard.Write(text); err != nil {
 		return fmt.Errorf("write clipboard: %w", err)
 	}
-	if i.primary != nil {
-		if err := i.primary.WritePrimary(text); err != nil {
-			i.log(fmt.Sprintf("primary selection write failed: %v", err))
-		}
-	}
 	return nil
 }
 

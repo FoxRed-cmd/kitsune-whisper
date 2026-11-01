@@ -52,6 +52,7 @@ type SpoolLabels struct {
 	SavedAt       string `json:"savedAt"`
 	Duration      string `json:"duration"`
 	Text          string `json:"text"`
+	EmptyText     string `json:"emptyText"`
 	Retry         string `json:"retry"`
 	Copy          string `json:"copy"`
 	Insert        string `json:"insert"`
@@ -118,16 +119,7 @@ func (s *SpoolService) Retry(ctx context.Context, id string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	timeout := 120 * time.Second
-	if deadline, ok := ctx.Deadline(); ok {
-		timeout = time.Until(deadline)
-	}
-	if timeout <= 0 {
-		timeout = 120 * time.Second
-	}
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	transcription, err := s.opts.Runtime.Transcribe(requestCtx, utterance.Audio)
+	transcription, err := s.opts.Runtime.Transcribe(ctx, utterance.Audio)
 	if err != nil {
 		return "", fmt.Errorf("spool: retry on the active Server profile: %w", err)
 	}
@@ -197,6 +189,7 @@ func (s *Shell) spoolLabels() SpoolLabels {
 		SavedAt:       catalog.T("spool.savedAt"),
 		Duration:      catalog.T("spool.duration"),
 		Text:          catalog.T("spool.text"),
+		EmptyText:     catalog.T("spool.emptyText"),
 		Retry:         catalog.T("action.retry"),
 		Copy:          catalog.T("action.copyText"),
 		Insert:        catalog.T("action.insertText"),
