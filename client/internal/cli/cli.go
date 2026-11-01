@@ -31,6 +31,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
@@ -244,9 +245,10 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose 
 	return 0
 }
 
-// runClient is the interactive Client: it grabs the global hotkeys and drives
-// the Dictation cycle, injecting each Transcription into the focused field via
-// the clipboard plus a synthetic paste.
+// runClient is the interactive Client: the headless runtime owns the hotkeys,
+// capture, Dictation cycle, Recording indicator, Spool, and control socket,
+// injecting each Transcription into the focused field via the clipboard plus a
+// synthetic paste. This function only builds the real adapters and waits.
 func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 	logger := newLogger(cfg, verbose, stderr)
 	defer func() { _ = logger.Close() }()
@@ -278,7 +280,6 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 		logger.Error("capture init failed: %v", err)
 		return 1
 	}
-	defer func() { _ = recorder.Close() }()
 
 	injector, err := inject.New(inject.Options{
 		Paste:            cfg.Paste,
@@ -289,84 +290,44 @@ func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
 	})
 	if err != nil {
 		logger.Error("injection init failed: %v", err)
+		_ = recorder.Close()
 		return 1
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	triggers := make(chan cycle.Trigger)
-	// The Recording indicator exists only for the interactive client; record
-	// and transcribe-file stay quiet.
-	indic := newIndicator(cfg, logger, recorder, triggers)
-	if indic != nil {
-		defer indic.Close()
-	}
-	extraFeedback := []cycle.Feedback{}
-	if indic != nil {
-		extraFeedback = append(extraFeedback, indic)
-	}
-
-	core := cycle.New(cycle.Options{
+	rt := runtime.New(runtime.Options{
+		Config:      cfg,
+		Hotkey:      source,
 		Recorder:    recorder,
 		Transcriber: newTranscriber(cfg, logger),
 		Injector:    injector,
-		Feedback:    newFeedback(cfg, logger, extraFeedback...),
 		Spool:       newSpool(cfg, logger),
-		OnError:     func(err error) { logger.Error("dictation failed: %v", err) },
-		Limits:      cycleLimits(cfg),
+		Feedback:    newFeedback(cfg, logger),
+		// The Recording indicator exists only for the interactive client;
+		// record and transcribe-file stay quiet. Runtime owns its lifetime.
+		Indicator: func(send func(cycle.Trigger)) cycle.Feedback {
+			if ind := newIndicator(cfg, logger, recorder, send); ind != nil {
+				return ind
+			}
+			return nil
+		},
+		ControlPath: paths.ControlSocket(),
+		Logger:      logger,
 	})
-
-	runDone := make(chan struct{})
-	go func() {
-		defer close(runDone)
-		_ = core.Run(ctx, triggers)
-	}()
-
-	controlDone := startControl(ctx, logger, triggers)
+	if err := rt.Start(ctx); err != nil {
+		_ = recorder.Close()
+		logger.Error("runtime: %v", err)
+		return 1
+	}
 
 	fmt.Fprintf(stderr, "kitsune-client: %s trigger on %s, cancel on %s\n", cfg.Trigger, cfg.Hotkey, cfg.CancelHotkey)
-	err = source.Run(ctx, triggers)
-	stop()
-	if controlDone != nil {
-		<-controlDone
-	}
-	close(triggers)
-	<-runDone
-	if err != nil {
+	if err := rt.Wait(); err != nil {
 		logger.Error("hotkey: %v", err)
 		return 1
 	}
 	return 0
-}
-
-// startControl runs the External trigger's local control socket, feeding
-// commands into triggers until ctx ends. It is best-effort: a failure to bind
-// only disables the external trigger. The returned channel closes once the
-// server has stopped, so callers can close triggers without a send race.
-func startControl(ctx context.Context, logger *logging.Logger, triggers chan<- cycle.Trigger) <-chan struct{} {
-	path := paths.ControlSocket()
-	listener, err := control.Listen(path)
-	if err != nil {
-		logger.Warning("external trigger disabled: %v", err)
-		return nil
-	}
-	logger.Info("external trigger: listening on %s", path)
-
-	deliver := func(trigger cycle.Trigger) {
-		select {
-		case triggers <- trigger:
-		case <-ctx.Done():
-		}
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := control.NewServer(listener).Serve(ctx, deliver); err != nil {
-			logger.Warning("external trigger: %v", err)
-		}
-	}()
-	return done
 }
 
 // runToggle sends one toggle command to a running Client over the control
@@ -455,8 +416,9 @@ func (f *cycleFeedback) Cue(cue cycle.Cue) {
 
 // newIndicator builds the Recording indicator for the interactive run command.
 // It returns nil when the indicator is off, unavailable, or failed to start;
-// the Client then keeps dictating silently.
-func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic.Recorder, triggers chan<- cycle.Trigger) *indicator.Indicator {
+// the Client then keeps dictating silently. send feeds the indicator's stop
+// button into the Dictation cycle.
+func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic.Recorder, send func(cycle.Trigger)) *indicator.Indicator {
 	if cfg.Feedback.Indicator == "off" {
 		return nil
 	}
@@ -478,12 +440,7 @@ func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic
 		Presenter: presenter,
 		Level:     recorder,
 		Clock:     nil,
-		OnClick: func() {
-			select {
-			case triggers <- cycle.Stop:
-			default:
-			}
-		},
+		OnClick:   func() { send(cycle.Stop) },
 		OnLog:     func(message string) { logger.Debug("%s", message) },
 		OnWarning: func(message string) { logger.Warning("%s", message) },
 	})
