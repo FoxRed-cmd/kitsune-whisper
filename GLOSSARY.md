@@ -14,6 +14,60 @@ _Avoid_: agent, app, frontend
 The process that runs Whisper and returns transcriptions for received audio.
 _Avoid_: backend, service, daemon
 
+## Deployment and control
+
+**Local Server**:
+The Server that runs on the same machine as the Client.
+_Avoid_: local daemon, embedded server, fallback server
+
+**Remote Server**:
+A Server reached over the network from another machine.
+_Avoid_: external server, main server, cloud server
+
+**Server profile**:
+A named set of connection settings for one Server that the Client can route utterances to.
+_Avoid_: endpoint, connection, backend, host
+
+**Server switch**:
+The user's manual choice of which Server profile the Client routes utterances to.
+_Avoid_: fallback, failover, rotation
+
+**Soft-stop**:
+Stopping a Server's processing — unloading the model and refusing transcription — without terminating the process.
+_Avoid_: pause, suspend, shutdown
+
+**Model catalog**:
+The set of Whisper model sizes the Server can download and run.
+_Avoid_: model list, model store
+
+**Pairing code**:
+A short-lived one-time code that authorises one Device to use a Server profile.
+_Avoid_: token, invite, PIN
+
+**Device**:
+A Client installation trusted by a Server profile, identified by a name and a stored Device token.
+_Avoid_: client, machine, node
+
+**Device token**:
+The long-lived credential a Device presents to its Server.
+_Avoid_: API key, password, session
+
+**Revoke**:
+Removing a Device's trust so its Device token stops working.
+_Avoid_: unpair, logout, delete
+
+**Admin API**:
+The Server's authenticated interface through which the Client reads status, changes settings, manages models and Devices, and restarts or stops the Server.
+_Avoid_: REST API, control API
+
+**Tray**:
+The desktop notification-area icon and its menu through which the user controls and monitors the Client.
+_Avoid_: systray, tray icon, applet
+
+**Settings window**:
+The Client's embedded window in which the user views and changes Client and Server settings.
+_Avoid_: preferences, config UI, admin panel
+
 ## Flow
 
 **Utterance**:
