@@ -7,13 +7,14 @@ supervised restart (or a crash) does not silently reload a model the user
 deliberately unloaded.
 
 The HTTP app takes a :class:`Lifecycle` so tests inject a loader and an unload
-recorder and never load a real model. Production wraps
-``WhisperTranscriber.load``; dropping the reference releases the model.
+recorder and never load a real model. Without a ModelManager, ``Lifecycle``
+wraps ``WhisperTranscriber.load``; dropping the reference releases the model.
 
-#76 (Model catalog) extends this seam rather than adding a second one: an
-online model activation is a ``Lifecycle`` swap (``stop`` then ``start`` with a
-new model config), and idle unload is ``stop`` without the persisted stopped
-flag. ``create_app(lifecycle=...)`` stays the single lifecycle injection point.
+#76's :class:`~kitsune_server.models.ModelManager` is authoritative whenever it
+is present: it owns the loaded Transcriber, online activation, and idle unload.
+The :class:`Lifecycle` then only persists the soft-stop flag and never keeps a
+second model reference, so a soft-stop genuinely releases the manager's model.
+``create_app(lifecycle=...)`` is the shared injection point for both tickets.
 """
 
 from __future__ import annotations
@@ -149,6 +150,16 @@ class Lifecycle:
         self._stopped = False
         self._persist(False)
         return transcriber
+
+    def mark_stopped(self) -> None:
+        """Persist a soft-stop without touching a model the manager owns."""
+        self._stopped = True
+        self._persist(True)
+
+    def clear(self) -> None:
+        """Clear a soft-stop without loading a model the manager owns."""
+        self._stopped = False
+        self._persist(False)
 
     def stop(self) -> None:
         """Release the model and remember the soft-stop. Idempotent."""

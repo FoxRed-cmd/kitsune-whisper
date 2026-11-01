@@ -347,6 +347,10 @@ def _start(args: argparse.Namespace) -> int:
         message = f"engine error: {exc}"
         server_module.record_failure(log_file, message)
         return _fail(message)
+    except ConfigError as exc:
+        message = f"config error: {exc}"
+        server_module.record_failure(log_file, message)
+        return _fail(message)
     return 0
 
 

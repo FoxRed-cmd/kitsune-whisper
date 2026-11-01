@@ -180,6 +180,22 @@ def test_transcribe_uses_decode_options() -> None:
     assert model.transcribe_kwargs["vad_filter"] is True
 
 
+def test_load_prefers_a_model_downloaded_into_the_model_directory(tmp_path: Any) -> None:
+    downloaded = tmp_path / "base"
+    downloaded.mkdir()
+    (downloaded / "model.bin").write_bytes(b"weights")
+    (downloaded / "config.json").write_text("{}", encoding="utf-8")
+    config = ServerConfig(model="base", device="cpu", download_root=str(tmp_path))
+    created: dict[str, Any] = {}
+
+    transcriber = WhisperTranscriber.load(
+        config, model_factory=factory_recording(created), cuda_device_count=0
+    )
+
+    assert created["name"] == str(downloaded)
+    assert transcriber.info.model == "base"
+
+
 def test_load_offline_incomplete_cache_fails_clearly(tmp_path: Any) -> None:
     config = ServerConfig(offline=True, download_root=str(tmp_path))
 

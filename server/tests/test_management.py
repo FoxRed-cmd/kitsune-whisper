@@ -364,3 +364,107 @@ async def test_start_reports_a_load_failure_as_unavailable(tmp_path: Path) -> No
     assert response.json()["error"]["code"] == "engine_load_failed"
     assert "model is gone" in response.json()["error"]["message"]
     assert lifecycle.stopped is True
+
+
+class _ManagerLoader:
+    """Loads a fresh fake model for the model manager's activation path."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def load(self, config: ServerConfig) -> FakeTranscriber:
+        self.calls.append(config.model)
+        return FakeTranscriber(text="loaded again", info=EngineInfo("small", "cpu", "int8"))
+
+
+class _ManagerStorage:
+    """``small`` is installed, so activation and reload stay offline."""
+
+    def path(self, name: str) -> Path:
+        return Path("/models") / name
+
+    def installed(self, name: str) -> bool:
+        return name == "small"
+
+    def size(self, name: str) -> int:
+        return 10
+
+    def delete(self, name: str) -> int:
+        return 0
+
+
+async def test_soft_stop_defers_to_the_model_manager(tmp_path: Path) -> None:
+    from kitsune_server.models import ModelManager
+
+    clock = [1000.0]
+    loader = _ManagerLoader()
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small", idle_unload_seconds=600),
+        transcriber=FakeTranscriber(info=EngineInfo("small", "cpu", "int8")),
+        loader=loader,
+        storage=_ManagerStorage(),
+        clock=lambda: clock[0],
+    )
+    assert manager.current_transcriber() is not None
+    app = create_app(
+        manager.config,
+        manager.current_transcriber() or FakeTranscriber(),
+        FakeTextProcessor(),
+        cuda_device_count=0,
+        models=manager,
+    )
+
+    async with make_client(app) as client:
+        stopped = await client.post("/admin/stop")
+        status = await client.get("/status")
+        transcription = await client.post("/transcribe", files=audio_part())
+
+    assert stopped.json()["model_state"] == "stopped"
+    assert manager.current_transcriber() is None
+    assert manager.state == "cold"
+    assert status.json()["model_state"] == "stopped"
+    assert status.json()["lifecycle"] == {"stopped": True, "loaded": False}
+    assert status.json()["ready"] is False
+    assert transcription.status_code == 503
+    assert transcription.json()["error"]["code"] == "stopped"
+
+    async with make_client(app) as client:
+        started = await client.post("/admin/start")
+        transcribe = await client.post("/transcribe", files=audio_part())
+
+    assert started.json()["model_state"] == "loaded"
+    assert manager.current_transcriber() is not None
+    assert len(loader.calls) == 1 and loader.calls[0].endswith("small")
+    assert transcribe.status_code == 200
+    assert transcribe.json()["text"] == "loaded again"
+
+
+async def test_idle_unload_still_reports_cold_and_reloads_lazily(tmp_path: Path) -> None:
+    from kitsune_server.models import ModelManager
+
+    clock = [1000.0]
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small", idle_unload_seconds=1),
+        transcriber=FakeTranscriber(info=EngineInfo("small", "cpu", "int8")),
+        loader=_ManagerLoader(),
+        storage=_ManagerStorage(),
+        clock=lambda: clock[0],
+    )
+    app = create_app(
+        manager.config,
+        manager.current_transcriber() or FakeTranscriber(),
+        FakeTextProcessor(),
+        cuda_device_count=0,
+        models=manager,
+    )
+    clock[0] += 2
+
+    async with make_client(app) as client:
+        status = await client.get("/status")
+        transcribe = await client.post("/transcribe", files=audio_part())
+
+    assert status.json()["model_state"] == "cold"
+    assert status.json()["lifecycle"] == {"stopped": False, "loaded": False}
+    assert status.json()["ready"] is True
+    assert transcribe.status_code == 200
+    assert manager.state == "loaded"

@@ -11,6 +11,8 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 func sampleView() shell.SettingsView {
@@ -97,8 +99,14 @@ func sampleView() shell.SettingsView {
 		},
 		Servers: servers.View{
 			Profiles: []servers.Profile{
-				{ID: "local", Name: "Local Server", URL: "https://localhost:8765", Active: true},
-				{ID: "remote-desktop", Name: "Desktop", URL: "https://desktop.local:8765"},
+				{
+					ID: "local", Name: "Local Server", URL: "https://localhost:8765", Active: true,
+					Health: trust.Status{State: trust.StateOnline},
+				},
+				{
+					ID: "remote-desktop", Name: "Desktop", URL: "https://desktop.local:8765",
+					Health: trust.Status{State: trust.StateOffline, Error: "connection refused"},
+				},
 			},
 			ActiveID: "local",
 			Devices: []servers.Device{
@@ -108,9 +116,16 @@ func sampleView() shell.SettingsView {
 			PairingCode: &servers.PairingCode{Code: "ABCD2345", ExpiresAt: 1234},
 		},
 		Labels: shell.ServerLabels{
-			Title:            "Серверы и устройства",
-			Profiles:         "Профили серверов",
-			Active:           "Активный",
+			Title:         "Серверы и устройства",
+			Profiles:      "Профили серверов",
+			Active:        "Активный",
+			Health:        "Состояние",
+			RefreshHealth: "Обновить состояние",
+			Use:           "Выбрать",
+			StateLabels: map[string]string{
+				"unknown": "Проверка…", "online": "Доступен", "offline": "Недоступен",
+				"unauthenticated": "Не сопряжён", "unpinned": "Не закреплён", "mismatch": "Изменён",
+			},
 			PairTitle:        "Добавить удалённый сервер",
 			PairHelp:         "Введите адрес и код.",
 			Address:          "Адрес сервера",
@@ -360,18 +375,210 @@ func TestPageRendersServersDevicesAndPairing(t *testing.T) {
 	}
 }
 
-func TestServerFieldsEscapeHostileValues(t *testing.T) {
+func TestPageRendersProfileHealthAndTheSwitchAction(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	for _, want := range []string{
+		"Состояние",
+		"Доступен",
+		"Недоступен",
+		"Обновить состояние",
+		"Выбрать",
+		`data-action="refresh-servers"`,
+		`data-action="use-profile"`,
+		`data-profile-id="remote-desktop"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+	// The active profile is marked and is not offered a redundant switch.
+	if strings.Contains(page, `data-profile-id="local"`) {
+		t.Error("the active profile still renders a switch button")
+	}
+}
+
+func TestPageRendersTheSpoolScreen(t *testing.T) {
+	view := sampleView()
+	const entryID = "utterance-20261004T120000.000000-001.wav"
+	view.Spool = shell.SpoolView{
+		Entries:  []spool.Entry{{ID: entryID, SavedAt: 1_700_000_000, Duration: 2.5}},
+		Selected: entryID,
+		Text:     "hello <world>",
+		Labels: shell.SpoolLabels{
+			Title:         "Сохранённые записи",
+			Help:          "Повторите запись на активном сервере.",
+			Empty:         "Неудавшихся записей нет.",
+			SavedAt:       "Сохранено",
+			Duration:      "Длительность",
+			Text:          "Транскрипция",
+			EmptyText:     "Сервер не вернул текст.",
+			Retry:         "Повторить",
+			Copy:          "Скопировать текст",
+			Insert:        "Вставить текст",
+			Delete:        "Удалить",
+			DeleteConfirm: "Удалить запись?",
+		},
+	}
+	page := shell.Page(shell.Snapshot{State: shell.StateError, Error: "server unreachable", ErrorAction: shell.ActionSettings}, view)
+	for _, want := range []string{
+		"Сохранённые записи",
+		"Повторите запись на активном сервере.",
+		"Сохранено",
+		"Длительность",
+		"Транскрипция",
+		"hello &lt;world&gt;",
+		`data-action="spool-retry"`,
+		`data-entry-id="` + entryID + `"`,
+		`data-action="spool-copy"`,
+		`data-action="spool-insert"`,
+		`data-action="spool-delete"`,
+		`data-confirm="Удалить запись?"`,
+		`data-action="settings"`,
+		"renderSpool(",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestPageShowsAnEmptySpool(t *testing.T) {
+	view := sampleView()
+	view.Spool = shell.SpoolView{Labels: shell.SpoolLabels{
+		Title: "Сохранённые записи", Empty: "Неудавшихся записей нет.", Retry: "Повторить", Delete: "Удалить",
+	}}
+	page := shell.Page(shell.Snapshot{}, view)
+	if !strings.Contains(page, "Неудавшихся записей нет.") {
+		t.Fatal("the empty Spool is not explained")
+	}
+	if strings.Contains(page, `data-action="spool-retry"`) {
+		t.Fatal("the empty Spool renders action buttons")
+	}
+}
+
+func TestServerAndSpoolFieldsEscapeHostileValues(t *testing.T) {
 	const hostile = `</section><img src=x onerror="alert(1)">&`
 	view := sampleView()
 	view.Servers.Profiles = []servers.Profile{{ID: hostile, Name: hostile, URL: hostile}}
 	view.Servers.Devices = []servers.Device{{ID: hostile, Name: hostile}}
 	view.Servers.PairingCode = &servers.PairingCode{Code: hostile}
+	view.Spool = shell.SpoolView{
+		Entries:  []spool.Entry{{ID: hostile, Duration: 1}},
+		Selected: hostile,
+		Text:     hostile,
+		Labels: shell.SpoolLabels{
+			Title: hostile, Help: hostile, Empty: hostile, Text: hostile,
+			EmptyText: hostile, Retry: hostile, Copy: hostile, Insert: hostile,
+			Delete: hostile, DeleteConfirm: hostile,
+		},
+	}
 	html := shell.SettingsHTML(view)
 	if strings.Contains(html, "<img") {
-		t.Fatal("Servers screen allowed an image injection")
+		t.Fatal("the Settings screens allowed an image injection")
 	}
 	if !strings.Contains(html, "&lt;/section&gt;") {
-		t.Fatal("Servers screen did not escape a hostile value")
+		t.Fatal("the Settings screens did not escape a hostile value")
+	}
+}
+
+func TestPageRendersTheModelCatalogProgressAndIdleTimeout(t *testing.T) {
+	view := sampleView()
+	view.ModelLabels = shell.ModelLabels{
+		Title:             "Модели",
+		Help:              "Скачайте модель.",
+		Refresh:           "Обновить модели",
+		NoCatalog:         "Загрузите каталог.",
+		Name:              "Модель",
+		Size:              "Загрузка",
+		Memory:            "Память",
+		Speed:             "Скорость",
+		Quality:           "Качество",
+		Recommended:       "Рекомендуется",
+		Installed:         "Скачана",
+		Active:            "Активная",
+		State:             "Состояние модели",
+		StateLoaded:       "загружена",
+		Download:          "Скачать",
+		Cancel:            "Отменить загрузку",
+		Activate:          "Сделать активной",
+		Delete:            "Удалить",
+		DeleteConfirm:     "Удалить модель?",
+		Queued:            "В очереди",
+		Downloading:       "Загрузка",
+		Done:              "Скачана",
+		Failed:            "Ошибка загрузки",
+		IdleTitle:         "Выгрузка при простое",
+		IdleHelp:          "Выгружать после простоя.",
+		IdleLabel:         "Секунд простоя",
+		IdleSave:          "Сохранить тайм-аут",
+		AdvancedTitle:     "Дополнительно",
+		AdvancedHelp:      "Локальная папка.",
+		LocalPath:         "Папка CTranslate2",
+		LocalPathHint:     "Абсолютный путь.",
+		UseLocal:          "Использовать эту папку",
+		SpeedFast:         "быстро",
+		QualityGood:       "хорошее",
+		RecommendedDevice: "Рекомендация",
+	}
+	view.Servers.Models = &servers.ModelsView{
+		Device: "cpu", Recommended: "base", State: "loaded",
+		ActiveModel: "small", IdleUnloadSeconds: 600,
+		Models: []servers.Model{
+			{Name: "base", DiskBytes: 145_000_000, MemoryBytes: 600_000_000, Speed: "fast", Quality: "good", Recommended: true},
+			{Name: "small", DiskBytes: 484_000_000, MemoryBytes: 1_300_000_000, Speed: "fast", Quality: "good", Installed: true},
+			{Name: "tiny", DiskBytes: 75_000_000, MemoryBytes: 450_000_000, Speed: "fast", Quality: "basic", Installed: true},
+			{Name: "medium", DiskBytes: 1_530_000_000, MemoryBytes: 3_000_000_000,
+				Installed: true,
+				Download:  &servers.ModelDownload{Model: "medium", State: "downloading", ReceivedBytes: 5_000_000, TotalBytes: 10_000_000}},
+		},
+	}
+
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		"Модели",
+		"Рекомендация",
+		"145.0 MB",
+		"600.0 MB",
+		"быстро",
+		"хорошее",
+		`data-model="base"`,
+		`data-action="download-model"`,
+		`data-action="activate-model"`,
+		`data-action="delete-model"`,
+		`data-confirm="Удалить модель?"`,
+		`data-action="load-models"`,
+		`data-action="idle-timeout"`,
+		`id="model-idle-seconds"`,
+		`value="600"`,
+		`id="model-local-path"`,
+		`data-action="activate-local"`,
+		"Загрузка 5.0 MB",
+		"Скачана",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("Models screen missing %q", want)
+		}
+	}
+}
+
+func TestModelsScreenEscapesHostileValues(t *testing.T) {
+	const hostile = `</section><img src=x onerror="alert(1)">&`
+	view := sampleView()
+	view.Servers.Models = &servers.ModelsView{
+		ActiveModel: hostile,
+		ActivePath:  hostile,
+		Error:       hostile,
+		Models: []servers.Model{{
+			Name: hostile, Installed: true,
+			Download: &servers.ModelDownload{State: "failed", Error: hostile},
+		}},
+	}
+	html := shell.SettingsHTML(view)
+	if strings.Contains(html, "<img") {
+		t.Fatal("Models screen allowed an image injection")
+	}
+	if !strings.Contains(html, "&lt;/section&gt;") {
+		t.Fatal("Models screen did not escape a hostile value")
 	}
 }
 

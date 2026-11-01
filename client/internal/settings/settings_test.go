@@ -602,8 +602,8 @@ func TestSaveWritesServerProfilesAndActiveSelection(t *testing.T) {
 	if f := field(t, snapshot, "client.servers"); f.Mode != settings.ApplyRestart {
 		t.Fatalf("client.servers mode = %q, want restart", f.Mode)
 	}
-	if f := field(t, snapshot, "client.active_server"); f.Mode != settings.ApplyRestart {
-		t.Fatalf("client.active_server mode = %q, want restart until live apply", f.Mode)
+	if f := field(t, snapshot, "client.active_server"); f.Mode != settings.ApplyHot {
+		t.Fatalf("client.active_server mode = %q, want hot", f.Mode)
 	}
 }
 
@@ -716,6 +716,7 @@ func TestClassify(t *testing.T) {
 		"client.min_recording_seconds",
 		"client.timeout_seconds",
 		"client.spool_dir",
+		"client.active_server",
 	}
 	for _, path := range hot {
 		if got := settings.Classify(path); got != settings.ApplyHot {
@@ -727,7 +728,6 @@ func TestClassify(t *testing.T) {
 		"client.wayland_tool",
 		"client.server_url",
 		"client.servers",
-		"client.active_server",
 		"client.log_file",
 		// refine and summarize are accepted for one release and ignored, so
 		// there is nothing for the runtime to apply live.

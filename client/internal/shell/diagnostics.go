@@ -42,7 +42,7 @@ func (s *Shell) diagnosticsView(serverView servers.View) DiagnosticsView {
 		Profile:       activeProfileName(serverView, s.opts.Profile),
 	}
 	if serverView.Lifecycle != nil {
-		view.ModelState = modelStateLabel(s.catalog(), serverView.Lifecycle.ModelState)
+		view.ModelState = modelLifecycleLabel(s.catalog(), serverView.Lifecycle.ModelState)
 	}
 	if serverView.Config != nil {
 		view.ConfigPath = serverView.Config.Path

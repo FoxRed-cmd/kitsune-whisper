@@ -224,7 +224,10 @@ Server:
 
 A soft-stop survives a process restart, so a supervised restart does not
 silently reload a model the user deliberately unloaded. A hard process stop is
-still available only on the Server host (`kitsune-server stop`).
+still available only on the Server host (`kitsune-server stop`). When the Model
+catalog is in use, its model manager is authoritative for loading, online
+activation, and idle unload; a soft-stop asks that manager to release the model
+and only persists the stopped flag itself.
 
 `GET /admin/config` masks every secret before sending it. Today that is
 `server.processing.api_key`, shown as `***` and listed under `redacted`; Device

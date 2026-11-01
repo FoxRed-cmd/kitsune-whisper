@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"html"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
 // Page renders the Settings window's initial HTML for a status snapshot and a
@@ -40,6 +42,7 @@ func Page(initial Snapshot, settings SettingsView) string {
 		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
+		"__OPEN_SETTINGS__", html.EscapeString(settings.Labels.OpenSettings),
 		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
@@ -58,7 +61,8 @@ func SettingsHTML(view SettingsView) string {
 		}
 		out.WriteString(`</section>`)
 	}
-	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelState))
+	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelLabels, view.ModelState))
+	out.WriteString(spoolHTML(view.Spool))
 	out.WriteString(serverSettingsHTML(view.Servers, view.Labels))
 	out.WriteString(diagnosticsHTML(view.Diagnostics, view.Labels))
 	if view.DeviceError != "" {
@@ -73,7 +77,7 @@ func SettingsHTML(view SettingsView) string {
 // serversHTML renders the Server profiles and the active profile's Devices.
 // Inputs have stable ids so the page can collect one pairing request without
 // rebuilding any other screen.
-func serversHTML(view servers.View, labels ServerLabels, modelState string) string {
+func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels, modelState string) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group" data-section="servers">`)
 	out.WriteString(`<h2>` + escape(labels.Title) + `</h2>`)
@@ -81,13 +85,26 @@ func serversHTML(view servers.View, labels ServerLabels, modelState string) stri
 		out.WriteString(`<p class="help">` + escape(labels.NoServers) + `</p>`)
 	} else {
 		out.WriteString(`<h3>` + escape(labels.Profiles) + `</h3>`)
+		out.WriteString(`<div class="actions-inline">`)
+		out.WriteString(`<button type="button" data-action="refresh-servers">` + escape(labels.RefreshHealth) + `</button>`)
+		out.WriteString(`</div>`)
 		for _, profile := range view.Profiles {
 			out.WriteString(`<div class="row" data-profile="` + escape(profile.ID) + `">`)
 			out.WriteString(`<strong>` + escape(profile.Name) + `</strong>`)
 			if profile.Active {
 				out.WriteString(`<span class="badge">` + escape(labels.Active) + `</span>`)
 			}
+			health := labels.StateLabels[string(profile.Health.State)]
+			if health == "" {
+				health = labels.StateLabels[string(trust.StateUnknown)]
+			}
+			out.WriteString(`<span class="health-label">` + escape(labels.Health) + `:</span>`)
+			out.WriteString(`<span class="health" data-health="` + escape(string(profile.Health.State)) + `">` + escape(health) + `</span>`)
 			out.WriteString(`<code>` + escape(profile.URL) + `</code>`)
+			if !profile.Active {
+				out.WriteString(`<button type="button" data-action="use-profile" data-profile-id="` +
+					escape(profile.ID) + `">` + escape(labels.Use) + `</button>`)
+			}
 			out.WriteString(`</div>`)
 		}
 	}
@@ -164,9 +181,256 @@ func serversHTML(view servers.View, labels ServerLabels, modelState string) stri
 		out.WriteString(`</tbody></table>`)
 	}
 	out.WriteString(`</section>`)
+	out.WriteString(modelsHTML(view.Models, view.ModelsError, modelLabels))
 	return out.String()
 }
 
+// SpoolHTML renders only the Spool screen, for a live refresh that leaves the
+// edited Dictation forms alone.
+func SpoolHTML(view SpoolView) string { return spoolHTML(view) }
+
+// spoolHTML renders the saved failed Utterances and the retry result. Every
+// action carries the entry id; the page never decides what to do with it.
+func spoolHTML(view SpoolView) string {
+	if view.Labels.Title == "" {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="spool">`)
+	out.WriteString(`<h2>` + escape(view.Labels.Title) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(view.Labels.Help) + `</p>`)
+	if view.Error != "" {
+		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
+	}
+	if len(view.Entries) == 0 {
+		out.WriteString(`<p class="help">` + escape(view.Labels.Empty) + `</p>`)
+		out.WriteString(`</section>`)
+		return out.String()
+	}
+	out.WriteString(`<table class="devices"><thead><tr><th>` + escape(view.Labels.SavedAt) +
+		`</th><th>` + escape(view.Labels.Duration) + `</th><th></th></tr></thead><tbody>`)
+	for _, entry := range view.Entries {
+		out.WriteString(`<tr data-entry="` + escape(entry.ID) + `"><td>`)
+		out.WriteString(escape(savedAt(entry.SavedAt)))
+		out.WriteString(`</td><td>` + escape(formatSpoolDuration(entry.Duration)) + `</td><td>`)
+		out.WriteString(`<button type="button" data-action="spool-retry" data-entry-id="` +
+			escape(entry.ID) + `">` + escape(view.Labels.Retry) + `</button> `)
+		out.WriteString(`<button type="button" data-action="spool-delete" data-entry-id="` +
+			escape(entry.ID) + `" data-confirm="` + escape(view.Labels.DeleteConfirm) + `">` +
+			escape(view.Labels.Delete) + `</button>`)
+		out.WriteString(`</td></tr>`)
+	}
+	out.WriteString(`</tbody></table>`)
+	if view.Selected != "" {
+		out.WriteString(`<h3>` + escape(view.Labels.Text) + `</h3>`)
+		if view.Text == "" {
+			out.WriteString(`<p class="help">` + escape(view.Labels.EmptyText) + `</p>`)
+		} else {
+			out.WriteString(`<pre class="spool-text" data-entry-id="` + escape(view.Selected) + `">` +
+				escape(view.Text) + `</pre>`)
+			out.WriteString(`<div class="actions-inline">`)
+			out.WriteString(`<button type="button" data-action="spool-copy" data-entry-id="` +
+				escape(view.Selected) + `">` + escape(view.Labels.Copy) + `</button>`)
+			out.WriteString(`<button type="button" data-action="spool-insert" data-entry-id="` +
+				escape(view.Selected) + `">` + escape(view.Labels.Insert) + `</button>`)
+			out.WriteString(`</div>`)
+		}
+	}
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+// modelsHTML renders the Model catalog, download progress, activation and
+// deletion actions, the idle timeout, and the local CTranslate2 directory.
+func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels) string {
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="models">`)
+	out.WriteString(`<h2>` + escape(labels.Title) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(labels.Help) + `</p>`)
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="load-models">` + escape(labels.Refresh) + `</button>`)
+	out.WriteString(`</div>`)
+	if view == nil {
+		if modelsError != "" {
+			out.WriteString(`<p class="failure">` + escape(modelsError) + `</p>`)
+		}
+		out.WriteString(`<p class="help">` + escape(labels.NoCatalog) + `</p>`)
+		out.WriteString(`</section>`)
+		return out.String()
+	}
+	if modelsError != "" {
+		out.WriteString(`<p class="failure">` + escape(modelsError) + `</p>`)
+	}
+	out.WriteString(`<p class="model-state">` + escape(labels.State) + `: <strong>` + escape(modelStateLabel(labels, view.State)) + `</strong>`)
+	if view.ActiveModel != "" {
+		out.WriteString(` · ` + escape(labels.Active) + `: <code>` + escape(view.ActiveModel) + `</code>`)
+	}
+	if view.ActivePath != "" {
+		out.WriteString(` (<code>` + escape(view.ActivePath) + `</code>)`)
+	}
+	if view.Error != "" {
+		out.WriteString(` · <span class="failure">` + escape(view.Error) + `</span>`)
+	}
+	out.WriteString(`</p>`)
+	if view.Recommended != "" {
+		out.WriteString(`<p class="help">` + escape(labels.RecommendedDevice) + `: <strong>` + escape(view.Recommended) + `</strong></p>`)
+	}
+	if len(view.Models) == 0 {
+		out.WriteString(`<p class="help">` + escape(labels.NoCatalog) + `</p>`)
+	} else {
+		out.WriteString(`<table class="models"><thead><tr><th>` + escape(labels.Name) + `</th><th>` + escape(labels.Size) + `</th><th>` + escape(labels.Memory) + `</th><th>` + escape(labels.Speed) + `</th><th>` + escape(labels.Quality) + `</th><th></th></tr></thead><tbody>`)
+		for _, model := range view.Models {
+			out.WriteString(`<tr data-model="` + escape(model.Name) + `"><td><strong>` + escape(model.Name) + `</strong>`)
+			if model.Recommended {
+				out.WriteString(` <span class="badge">` + escape(labels.Recommended) + `</span>`)
+			}
+			if model.Installed {
+				out.WriteString(` <span class="badge">` + escape(labels.Installed) + `</span>`)
+			}
+			if model.Name == view.ActiveModel {
+				out.WriteString(` <span class="badge active">` + escape(labels.Active) + `</span>`)
+			}
+			out.WriteString(`</td><td>` + escape(humanBytes(model.DiskBytes)) + `</td>`)
+			out.WriteString(`<td>` + escape(humanBytes(model.MemoryBytes)) + `</td>`)
+			out.WriteString(`<td>` + escape(speedLabel(labels, model.Speed)) + `</td>`)
+			out.WriteString(`<td>` + escape(qualityLabel(labels, model.Quality)) + `</td><td class="model-actions">`)
+			out.WriteString(modelActions(model, view, labels))
+			out.WriteString(`</td></tr>`)
+			if model.Download != nil {
+				out.WriteString(`<tr class="model-progress" data-model-progress="` + escape(model.Name) + `"><td colspan="6">` + escape(downloadLabel(labels, model.Download)) + `</td></tr>`)
+			}
+		}
+		out.WriteString(`</tbody></table>`)
+	}
+	out.WriteString(`<h3>` + escape(labels.IdleTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.IdleHelp) + `</p>`)
+	out.WriteString(`<div class="field"><label for="model-idle-seconds">` + escape(labels.IdleLabel) + `</label>`)
+	out.WriteString(`<input type="number" min="0" id="model-idle-seconds" value="` + escape(strconv.Itoa(view.IdleUnloadSeconds)) + `"></div>`)
+	out.WriteString(`<button type="button" data-action="idle-timeout">` + escape(labels.IdleSave) + `</button>`)
+	out.WriteString(`<h3>` + escape(labels.AdvancedTitle) + `</h3>`)
+	out.WriteString(`<p class="help">` + escape(labels.AdvancedHelp) + `</p>`)
+	out.WriteString(`<div class="field"><label for="model-local-path">` + escape(labels.LocalPath) + `</label>`)
+	out.WriteString(`<input type="text" id="model-local-path" autocomplete="off" spellcheck="false">`)
+	out.WriteString(`<p class="help">` + escape(labels.LocalPathHint) + `</p></div>`)
+	out.WriteString(`<button type="button" data-action="activate-local">` + escape(labels.UseLocal) + `</button>`)
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+// savedAt renders a spool entry's capture time in local time.
+func savedAt(seconds float64) string {
+	if seconds <= 0 {
+		return "—"
+	}
+	return time.Unix(int64(seconds), 0).Local().Format("2006-01-02 15:04")
+}
+
+// modelActions renders the one control a catalog row offers.
+func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLabels) string {
+	if downloadInProgress(model.Download) {
+		return `<button type="button" data-action="cancel-download" data-model="` + escape(model.Name) + `">` + escape(labels.Cancel) + `</button>`
+	}
+	if !model.Installed {
+		return `<button type="button" data-action="download-model" data-model="` + escape(model.Name) + `">` + escape(labels.Download) + `</button>`
+	}
+	if model.Name == view.ActiveModel {
+		return `<span class="badge active">` + escape(labels.Active) + `</span>`
+	}
+	var out strings.Builder
+	out.WriteString(`<button type="button" data-action="activate-model" data-model="` + escape(model.Name) + `">` + escape(labels.Activate) + `</button>`)
+	out.WriteString(` <button type="button" data-action="delete-model" data-model="` + escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `">` + escape(labels.Delete) + `</button>`)
+	return out.String()
+}
+
+// downloadInProgress reports a download the user can still cancel.
+func downloadInProgress(download *servers.ModelDownload) bool {
+	return download.InProgress()
+}
+
+// humanBytes matches the Server's catalog sizes without shipping translations
+// for every unit the way a full unit library would.
+func humanBytes(value int64) string {
+	if value <= 0 {
+		return "—"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	size := float64(value)
+	unit := 0
+	for size >= 1000 && unit < len(units)-1 {
+		size /= 1000
+		unit++
+	}
+	if unit == 0 {
+		return strconv.FormatInt(value, 10) + " B"
+	}
+	return strconv.FormatFloat(size, 'f', 1, 64) + " " + units[unit]
+}
+
+func modelStateLabel(labels ModelLabels, state string) string {
+	switch state {
+	case "loaded":
+		return labels.StateLoaded
+	case "cold":
+		return labels.StateCold
+	case "loading":
+		return labels.StateLoading
+	case "failed":
+		return labels.StateFailed
+	}
+	return state
+}
+
+func speedLabel(labels ModelLabels, speed string) string {
+	switch speed {
+	case "fast":
+		return labels.SpeedFast
+	case "balanced":
+		return labels.SpeedBalanced
+	case "slow":
+		return labels.SpeedSlow
+	}
+	return speed
+}
+
+func qualityLabel(labels ModelLabels, quality string) string {
+	switch quality {
+	case "basic":
+		return labels.QualityBasic
+	case "good":
+		return labels.QualityGood
+	case "excellent":
+		return labels.QualityExcellent
+	}
+	return quality
+}
+
+func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
+	state := download.State
+	switch state {
+	case "queued":
+		return labels.Queued
+	case "downloading":
+		if download.TotalBytes > 0 {
+			return labels.Downloading + " " + humanBytes(download.ReceivedBytes) +
+				" / " + humanBytes(download.TotalBytes)
+		}
+		return labels.Downloading + " " + humanBytes(download.ReceivedBytes)
+	case "verifying":
+		return labels.Verifying
+	case "done":
+		return labels.Done
+	case "cancelled":
+		return labels.Cancelled
+	case "failed":
+		if download.Error != "" {
+			return labels.Failed + ": " + download.Error
+		}
+		return labels.Failed
+	}
+	return state
+}
+
+// lastSeen renders a Device's last use in local time.
 // serverSettingsHTML renders the active Server's effective configuration as an
 // editable form. Every field carries its absolute “server.*“ path; Go sends
 // the collected patch to the Admin API, which validates it and leaves the file
@@ -450,11 +714,22 @@ const pageHTML = `<!doctype html>
   .devices th, .devices td { text-align:left; padding:8px 6px; border-top:1px solid var(--line); }
   .devices th { color:var(--muted); font-weight:600; border-top:none; }
   .devices td:last-child { text-align:right; }
+  .models { width:100%; border-collapse:collapse; margin-top:10px; }
+  .models th, .models td { text-align:left; padding:8px 6px; border-top:1px solid var(--line); }
+  .models th { color:var(--muted); font-weight:600; border-top:none; }
+  .models .model-actions { text-align:right; white-space:nowrap; }
+  .models .model-progress td { color:var(--muted); font-size:13px; border-top:none; }
+  .badge.active { background:#4c6ef533; color:var(--accent); }
+  .model-state { margin:10px 0 0; }
   .messages { margin-bottom:18px; }
   .notice { color:#2f9e44; margin:0 0 6px; }
   .failure { color:#d6409f; margin:0 0 6px; }
   .error { margin-top:20px; padding:12px 14px; border:1px solid #d6409f55; border-radius:8px; color:#d6409f; display:none; }
-  .error.visible { display:block; }
+  .error.visible { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .health { font-size: 12px; color: var(--muted); }
+  .health[data-health="online"] { color:#2f9e44; }
+  .health[data-health="offline"], .health[data-health="unauthenticated"], .health[data-health="mismatch"] { color:#d6409f; }
+  .spool-text { white-space: pre-wrap; overflow-wrap:anywhere; background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
   footer { display:flex; gap:10px; align-items:center; margin-top: 20px; }
   button { font: inherit; padding: 8px 14px; border-radius: 8px; border:1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; }
   button.primary { background: var(--accent); border-color: var(--accent); color: white; }
@@ -474,7 +749,7 @@ const pageHTML = `<!doctype html>
       <dt id="label-server-status">—</dt><dd id="server-status">—</dd>
       <dt id="label-version">—</dt><dd id="version">—</dd>
     </dl>
-    <p class="error" id="error"></p>
+    <p class="error" id="error"><span id="error-text"></span> <button type="button" data-action="settings" id="error-settings">__OPEN_SETTINGS__</button></p>
   </section>
   <div class="messages" id="messages"></div>
   <div id="settings">__SETTINGS__</div>
@@ -504,11 +779,11 @@ const pageHTML = `<!doctype html>
     text("label-server", labels.profile);
     text("label-server-status", labels.server);
     text("label-version", labels.version);
+    text("error-text", s.error);
     var error = document.getElementById("error");
-    if (error) {
-      error.textContent = s.error || "";
-      error.classList.toggle("visible", Boolean(s.error));
-    }
+    if (error) error.classList.toggle("visible", Boolean(s.error));
+    var errorSettings = document.getElementById("error-settings");
+    if (errorSettings) errorSettings.hidden = !s.errorAction;
   }
   function renderSettings(v) {
     var host = document.getElementById("settings");
@@ -519,6 +794,7 @@ const pageHTML = `<!doctype html>
       text("page-title", v.title);
     }
     if (v) text("page-subtitle", v.subtitle);
+    if (v && v.serverLabels) text("error-settings", v.serverLabels.openSettings);
     if (v && v.actions) {
       var save = document.getElementById("save-button");
       if (save && v.actions.save) save.textContent = v.actions.save;
@@ -527,6 +803,16 @@ const pageHTML = `<!doctype html>
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
     }
+  }
+  function renderSpool(v) {
+    var host = document.getElementById("settings");
+    var current = host ? host.querySelector("[data-section='spool']") : null;
+    var holder = document.createElement("div");
+    holder.innerHTML = (v && v.html) || "";
+    var next = holder.firstElementChild;
+    if (current && next) current.replaceWith(next);
+    else if (current) current.remove();
+    else if (next && host) host.appendChild(next);
   }
   function renderMessages(m) {
     var host = document.getElementById("messages");
@@ -672,11 +958,46 @@ const pageHTML = `<!doctype html>
       revokeDevice(button);
     } else if (action === "pairing-code") {
       sendIntent({ action: "pairing-code" });
+    } else if (action === "use-profile") {
+      sendIntent({ action: "use-profile", profile_id: button.dataset.profileId || "" });
+    } else if (action === "refresh-servers") {
+      sendIntent({ action: "refresh-servers" });
+    } else if (action === "spool-retry") {
+      sendIntent({ action: "spool-retry", entry_id: button.dataset.entryId || "" });
+    } else if (action === "spool-copy") {
+      sendIntent({ action: "spool-copy", entry_id: button.dataset.entryId || "" });
+    } else if (action === "spool-insert") {
+      sendIntent({ action: "spool-insert", entry_id: button.dataset.entryId || "" });
+    } else if (action === "spool-delete") {
+      var deleteMessage = button.dataset.confirm || "Delete this saved recording?";
+      if (window.confirm && !window.confirm(deleteMessage)) return;
+      sendIntent({ action: "spool-delete", entry_id: button.dataset.entryId || "" });
+    } else if (action === "settings") {
+      var host = document.getElementById("settings");
+      if (host && host.scrollIntoView) host.scrollIntoView({ block: "start" });
     } else if (action === "exposure") {
       var expose = button.dataset.expose || "off";
       var exposureMessage = button.dataset.confirm || "";
       if (expose === "on" && exposureMessage && window.confirm && !window.confirm(exposureMessage)) return;
       sendIntent({ action: "exposure", value: expose });
+    } else if (action === "load-models") {
+      sendIntent({ action: "load-models" });
+    } else if (action === "download-model") {
+      sendIntent({ action: "download-model", model: button.dataset.model || "" });
+    } else if (action === "cancel-download") {
+      sendIntent({ action: "cancel-download", model: button.dataset.model || "" });
+    } else if (action === "activate-model") {
+      sendIntent({ action: "activate-model", model: button.dataset.model || "" });
+    } else if (action === "activate-local") {
+      var localPath = document.getElementById("model-local-path");
+      sendIntent({ action: "activate-model", path: localPath ? localPath.value : "" });
+    } else if (action === "delete-model") {
+      var deleteMessage = button.dataset.confirm || "Delete this model?";
+      if (window.confirm && !window.confirm(deleteMessage)) return;
+      sendIntent({ action: "delete-model", model: button.dataset.model || "" });
+    } else if (action === "idle-timeout") {
+      var idle = document.getElementById("model-idle-seconds");
+      sendIntent({ action: "idle-timeout", seconds: idle ? Number(idle.value) : 0 });
     } else if (action === "save-server") {
       sendIntent({ action: "save-server", patch: collectServerPatch() });
     } else if (action === "refresh-diagnostics") {

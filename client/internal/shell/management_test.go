@@ -43,6 +43,11 @@ func newManagementShell(
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
 	settings := newFakeSettings(i18n.English)
+	if fake, ok := service.(*fakeServers); ok && check != nil {
+		fake.mu.Lock()
+		fake.health["local"] = trust.Status{State: trust.StateOnline, Version: "0.9.0"}
+		fake.mu.Unlock()
+	}
 	sh := shell.New(shell.Options{
 		Runtime:             rt,
 		Desktop:             desktop,
@@ -186,14 +191,8 @@ func TestRejectedServerPatchShowsTheServersMessage(t *testing.T) {
 
 func TestTrayRestartServerCallsTheActiveProfileAndReportsReady(t *testing.T) {
 	service := managementService()
-	probed := make(chan trust.Status, 4)
 	sh, desktop := newManagementShell(t, service, func(context.Context) trust.Status {
-		status := trust.Status{State: trust.StateOffline}
-		if len(probed) >= 1 {
-			status = trust.Status{State: trust.StateOnline, Version: "0.9.0"}
-		}
-		probed <- status
-		return status
+		return trust.Status{State: trust.StateOnline, Version: "0.9.0"}
 	})
 
 	done := startWithWindow(t, sh, desktop)
