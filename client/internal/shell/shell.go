@@ -380,6 +380,11 @@ func (s *Shell) consume(updates <-chan runtime.Status) {
 }
 
 func (s *Shell) update(status runtime.Status) {
+	// A level test holds the capture device; release it before a Dictation
+	// cycle needs the microphone.
+	if status.Phase == runtime.PhaseRecording {
+		s.stopLevelTest()
+	}
 	snapshot := NewSnapshot(status, s.opts.Version, s.opts.Profile)
 	snapshot.Labels = labelsFor(s.catalog(), snapshot)
 	s.mu.Lock()

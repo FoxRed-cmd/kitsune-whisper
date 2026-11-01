@@ -8,6 +8,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 )
 
@@ -351,6 +352,25 @@ func TestMicrophoneTestStreamsLevelsAndStops(t *testing.T) {
 		levels := window.levelsSeen()
 		return len(levels) > 0 && levels[len(levels)-1] == 0
 	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestStartingDictationReleasesTheMicrophoneTest(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	sh := newSettingsShell(t, rt, desktop, settings)
+
+	done := startWithWindow(t, sh, desktop)
+	if err := desktop.getWindow().sendIntent(t, shell.Intent{Action: shell.IntentTestMic}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseRecording})
+	waitFor(t, "the level test to stop", func() bool { return settings.stream.stopCount() > 0 })
 
 	desktop.getTray().do(shell.ActionQuit)
 	if res := <-done; res.err != nil {
