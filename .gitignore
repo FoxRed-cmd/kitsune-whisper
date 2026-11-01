@@ -3,6 +3,7 @@
 
 ### Local config (copy kitsune.example.yaml) ###
 /kitsune.yaml
+/config/kitsune.yaml
 /.env
 
 ### Go ###
