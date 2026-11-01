@@ -24,6 +24,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .audio import AudioDecodeError, decode_audio
 from .config import ServerConfig, format_errors
+from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
 from .processor import ProcessingError, TextProcessor
 from .transcriber import Transcriber, resolve_workers
@@ -92,12 +93,21 @@ def create_app(
     config: ServerConfig,
     transcriber: Transcriber,
     processor: TextProcessor,
+    *,
+    cuda_device_count: int | None = None,
 ) -> FastAPI:
-    """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``."""
+    """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
+
+    ``cuda_device_count`` is the GPU detector's result. Production passes the
+    detected count; tests pass a fake so the API seam never probes CUDA.
+    """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     app.state.config = config
     app.state.transcriber = transcriber
     app.state.processor = processor
+    if cuda_device_count is None:
+        cuda_device_count = detect_cuda_devices()
+    app.state.cuda_device_count = cuda_device_count
     app.state.ready = True
     app.state.semaphore = threading.Semaphore(
         resolve_workers(config.workers, transcriber.info.device)
@@ -164,6 +174,7 @@ def create_app(
     async def health() -> dict[str, Any]:
         info = transcriber.info
         capability = processor.info
+        gpu = gpu_status(config, cuda_device_count=app.state.cuda_device_count)
         return {
             "status": "ok",
             "model": info.model,
@@ -175,6 +186,7 @@ def create_app(
                 "refine": capability.refine,
                 "summarize": capability.summarize,
             },
+            "gpu": gpu.as_dict(),
         }
 
     @app.post("/transcribe")

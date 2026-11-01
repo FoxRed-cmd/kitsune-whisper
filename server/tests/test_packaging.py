@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import shlex
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import yaml
+from kitsune_server import __version__
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
 DOCKERFILE_PATH = REPO_ROOT / "server" / "Dockerfile"
+PYPROJECT_PATH = REPO_ROOT / "server" / "pyproject.toml"
+INSTALL_DOC_PATH = REPO_ROOT / "docs" / "install.md"
+BUNDLE_DOC_PATH = REPO_ROOT / "docs" / "server-bundle.md"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-server-image.yml"
 
 LLAMA_ALIAS = "llama"
@@ -184,6 +189,28 @@ def test_publish_workflow_pushes_both_profiles_to_ghcr() -> None:
         if str(step.get("uses", "")).startswith("docker/build-push-action")
     ]
     assert pushes and pushes[0]["with"]["push"] is True
+
+
+def test_server_package_version_and_cli_entry_point_stay_in_sync() -> None:
+    project = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))["project"]
+    assert project["version"] == __version__
+    assert project["scripts"]["kitsune-server"] == "kitsune_server.cli:main"
+
+
+def test_native_bundle_documentation_covers_build_and_uninstall() -> None:
+    text = BUNDLE_DOC_PATH.read_text(encoding="utf-8")
+    assert "kitsune-server bundle build" in text
+    assert "kitsune-server uninstall" in text
+    assert "without a system Python" in text
+    assert "server-bundle.md" in INSTALL_DOC_PATH.read_text(encoding="utf-8")
+
+
+def test_docker_remains_a_supported_server_deployment() -> None:
+    # ADR 0007 keeps the image for a dedicated host; the bundle does not
+    # replace it.
+    assert COMPOSE_PATH.is_file()
+    assert "FROM ${BASE_IMAGE}" in DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "127.0.0.1:8765/health" in DOCKERFILE_PATH.read_text(encoding="utf-8")
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:

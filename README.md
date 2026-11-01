@@ -8,7 +8,9 @@ audio never leaves your network.
   resamples to 16 kHz mono, and injects the transcription via clipboard +
   synthetic paste.
 - A Python **Server** transcribes with faster-whisper, auto-detects CUDA vs CPU,
-  and exposes `POST /transcribe` and `GET /health`. It ships as a Docker image.
+  and exposes `POST /transcribe` and `GET /health`. It ships as a native
+  per-user bundle (pinned runtime, no system Python or Docker) and as a Docker
+  image for a dedicated host.
 - An optional **LLM sidecar** (the official llama.cpp server, behind the opt-in
   `llm` compose profile) runs on your GPU for local Refine/Summarize. The Server
   talks to it — or to any OpenAI-compatible endpoint (Ollama, LM Studio, a cloud
@@ -70,12 +72,12 @@ flowchart LR
     mic["Microphone"]
     app["Focused application"]
 
-    subgraph server["Server — Docker container (Python)"]
+    subgraph server["Server — native bundle or Docker (Python)"]
         api["FastAPI<br/>POST /transcribe · GET /health"]
         vad["VAD silence gate"]
         engine["faster-whisper (CTranslate2)<br/>device: auto → CUDA or CPU"]
         proc["LLM endpoint (optional)<br/>OpenAI-compatible · Refine → Summarize"]
-        models[("Model cache<br/>/models volume")]
+        models[("Model cache<br/>download_root")]
     end
 
     subgraph sidecar["LLM sidecar — Docker (opt-in llm profile)"]
@@ -258,9 +260,13 @@ The defaults are `client.hotkey: Ctrl+Shift+Space` and
 `client.cancel_hotkey: Esc`. On Wayland, hotkeys are best-effort; see
 [Wayland support and known limitations](docs/wayland.md).
 
-## Server (Docker)
+## Server (Docker for a dedicated host)
 
-The Server ships as a Docker image with two profiles:
+For a laptop or desktop that already runs the Client, install the native
+per-user bundle instead: it needs no Docker and no system Python, and its unit
+or task starts and restarts it. See [the native Server bundle](docs/server-bundle.md).
+
+The same Server also ships as a Docker image with two profiles:
 
 | Profile | Base image | When to use |
 | --- | --- | --- |
