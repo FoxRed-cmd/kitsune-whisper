@@ -141,6 +141,10 @@ type Options struct {
 	// PairLocal auto-pairs a loopback Local Server profile. Nil uses
 	// trust.PairLocal.
 	PairLocal PairLocalFunc
+	// LocalServer drives the Local Server's process supervisor, so Stop,
+	// Start, and Restart are hard actions on this machine. Nil keeps the Admin
+	// API's soft-stop for every profile.
+	LocalServer LocalServer
 }
 
 // Service is the Server-profile and Device-management service.

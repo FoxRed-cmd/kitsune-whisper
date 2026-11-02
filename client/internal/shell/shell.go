@@ -123,9 +123,11 @@ const (
 	ActionRestart Action = "restart"
 	// ActionServerRestart asks the active Server profile to restart.
 	ActionServerRestart Action = "server-restart"
-	// ActionServerStop soft-stops the active Server profile.
+	// ActionServerStop stops the active Server profile: a Local Server process
+	// is terminated, a Remote Server is soft-stopped.
 	ActionServerStop Action = "server-stop"
-	// ActionServerStart clears a soft-stop on the active Server profile.
+	// ActionServerStart starts a Local Server process or clears a Remote
+	// Server's soft-stop.
 	ActionServerStart Action = "server-start"
 	// ActionQuit stops the Client.
 	ActionQuit Action = "quit"

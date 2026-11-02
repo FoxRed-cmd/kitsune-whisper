@@ -193,6 +193,13 @@ def exit_for_restart() -> None:
     os._exit(RESTART_EXIT_CODE)
 
 
+def exit_for_stop() -> None:
+    """Exit cleanly so a hard-stopped Local Server is not restarted."""
+    logger.warning("stopping: exiting so the supervisor leaves the Server stopped")
+    logging.shutdown()
+    os._exit(0)
+
+
 def build_model_manager(
     config: ServerConfig,
     *,
@@ -289,8 +296,10 @@ def run_server(
         pairing_codes=pairing_codes,
         config_store=config_store if config_store is not None else ConfigStore(),
         models=models,
+        lifecycle=soft_stop,
         log_file=log_file if log_file is not None else default_log_file(),
         restart=exit_for_restart,
+        shutdown=exit_for_stop,
     )
     # The manager is the only owner: dropping this local reference lets an
     # unload actually release the model while uvicorn keeps serving.

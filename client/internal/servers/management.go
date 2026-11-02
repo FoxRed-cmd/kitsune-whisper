@@ -2,9 +2,31 @@ package servers
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net/http"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
+
+// ErrLocalUnavailable reports that the Local Server is not supervised on this
+// machine, so the Client cannot start it again after a hard stop.
+var ErrLocalUnavailable = errors.New(
+	"servers: the Local Server is not supervised on this machine; " +
+		"install the Server bundle or start it manually",
+)
+
+// LocalServer starts and stops the native Local Server's process through the OS
+// supervisor. *localserver.Controller implements it.
+type LocalServer interface {
+	// Available reports whether the Local Server is registered with the OS
+	// supervisor on this machine.
+	Available() bool
+	Stop() error
+	Start() error
+	Restart() error
+}
 
 // ConfigField is one Server setting as the Admin API reports it: the effective
 // value, where it came from, whether an environment variable or command-line
@@ -55,6 +77,9 @@ type ServerLifecycle struct {
 	ModelState        string `json:"model_state"`
 	IdleUnloadSeconds int    `json:"idle_unload_seconds,omitempty"`
 	Restarting        bool   `json:"restarting,omitempty"`
+	// Hard marks an action that ran against the Local Server's process: it
+	// terminated, replaced, or started the daemon instead of soft-stopping it.
+	Hard bool `json:"hard,omitempty"`
 }
 
 // LoadConfig reads the active profile's effective Server configuration. The
@@ -110,19 +135,23 @@ func (s *Service) LoadLogs(ctx context.Context, profileID string, tail int) (Ser
 	return logs, nil
 }
 
-// Restart asks the Server for a supervised self-exit. The Server answers 202
-// before it exits; the shell polls its health until it is ready again.
+// Restart replaces the active Server. A Local Server process is restarted
+// through the OS supervisor; a Remote Server answers 202 and exits for its own
+// supervisor to bring it back. The shell polls health until it is ready.
 func (s *Service) Restart(ctx context.Context, profileID string) (ServerLifecycle, error) {
 	return s.runLifecycle(ctx, profileID, "restart")
 }
 
-// Stop soft-stops the Server: the model is unloaded, transcription answers
-// 503, and the Admin API stays reachable.
+// Stop stops the active Server. A Local Server is hard-stopped: the process
+// exits and the OS supervisor leaves it stopped. A Remote Server is soft-stopped:
+// the model is unloaded, transcription answers 503, and the Admin API stays
+// reachable.
 func (s *Service) Stop(ctx context.Context, profileID string) (ServerLifecycle, error) {
 	return s.runLifecycle(ctx, profileID, "stop")
 }
 
-// Start clears a soft-stop and loads the model again.
+// Start starts the active Server. A Local Server process is started through the
+// OS supervisor; a Remote Server clears its soft-stop and loads the model.
 func (s *Service) Start(ctx context.Context, profileID string) (ServerLifecycle, error) {
 	return s.runLifecycle(ctx, profileID, "start")
 }
@@ -134,6 +163,16 @@ func (s *Service) runLifecycle(
 	if err != nil {
 		s.cacheLifecycle(profileID, nil, err)
 		return ServerLifecycle{}, err
+	}
+	if isLocalServer(profile) && s.opts.LocalServer != nil {
+		result, err := s.runLocalLifecycle(ctx, profile, token, action)
+		if err != nil {
+			s.cacheLifecycle(profileID, nil, err)
+			return ServerLifecycle{}, err
+		}
+		s.cacheLifecycle(profileID, &result, nil)
+		s.recordLifecycle(profileID, result)
+		return result, nil
 	}
 	result, err := serverLifecycle(ctx, profile, token, action, s.opts.Timeout)
 	if err != nil {
@@ -156,14 +195,119 @@ func (s *Service) runLifecycle(
 	return result, nil
 }
 
+// runLocalLifecycle performs a hard stop, start, or restart of the Local
+// Server. A reachable process answers the hard Admin endpoints so it can clear
+// a persisted soft-stop before exiting; a process that is already down is
+// driven through its OS supervisor. A Remote Server never reaches this path.
+func (s *Service) runLocalLifecycle(
+	ctx context.Context,
+	profile config.ServerProfile,
+	token, action string,
+) (ServerLifecycle, error) {
+	local := s.opts.LocalServer
+	online := s.opts.Check(ctx, profile, token, s.opts.Timeout).State == trust.StateOnline
+	switch action {
+	case "stop":
+		if online {
+			if _, err := serverLifecycle(ctx, profile, token, "hard-stop", s.opts.Timeout); err == nil {
+				return ServerLifecycle{Hard: true, Stopped: true, ModelState: "stopped"}, nil
+			} else if !canUseSupervisorFallback(err) || !local.Available() {
+				return ServerLifecycle{}, err
+			}
+		}
+		if !local.Available() {
+			return ServerLifecycle{}, ErrLocalUnavailable
+		}
+		if err := local.Stop(); err != nil {
+			return ServerLifecycle{}, err
+		}
+		return ServerLifecycle{Hard: true, Stopped: true, ModelState: "stopped"}, nil
+	case "start":
+		if online {
+			result, err := serverLifecycle(ctx, profile, token, "start", s.opts.Timeout)
+			if err != nil {
+				return ServerLifecycle{}, err
+			}
+			return result, nil
+		}
+		if !local.Available() {
+			return ServerLifecycle{}, ErrLocalUnavailable
+		}
+		if err := local.Start(); err != nil {
+			return ServerLifecycle{}, err
+		}
+		return ServerLifecycle{Hard: true, ModelState: "loading"}, nil
+	case "restart":
+		// Unlike stop, a restart must be able to bring the process back. Ask
+		// for the supervisor before killing a running Server.
+		if !local.Available() {
+			return ServerLifecycle{}, ErrLocalUnavailable
+		}
+		if online {
+			if result, err := serverLifecycle(ctx, profile, token, "hard-restart", s.opts.Timeout); err == nil {
+				result.Hard = true
+				return result, nil
+			} else if !canUseSupervisorFallback(err) {
+				return ServerLifecycle{}, err
+			}
+		}
+		if err := local.Restart(); err != nil {
+			return ServerLifecycle{}, err
+		}
+		return ServerLifecycle{Hard: true, Restarting: true, ModelState: "loading"}, nil
+	default:
+		return ServerLifecycle{}, fmt.Errorf("servers: unknown lifecycle action %q", action)
+	}
+}
+
+// canUseSupervisorFallback reports whether a failed hard Admin action may be
+// replaced by the local supervisor. A Server that predates the endpoint (404)
+// or a connection that dropped is safe to replace; an authentication or Server
+// error must be shown instead of killing or restarting the daemon anyway.
+func canUseSupervisorFallback(err error) bool {
+	var adminErr *AdminError
+	if !errors.As(err, &adminErr) {
+		return true
+	}
+	return adminErr.StatusCode == http.StatusNotFound
+}
+
+// isLocalServer reports whether a profile points at the Local Server on this
+// machine. AutoPair identifies the profile the Client created for this host;
+// the loopback check keeps a repointed profile from driving the local unit.
+func isLocalServer(profile config.ServerProfile) bool {
+	if !trust.IsLoopbackURL(profile.URL) {
+		return false
+	}
+	return profile.AutoPair || profile.ID == config.LocalServerID
+}
+
 // recordLifecycle folds a just-completed stop/start/restart into the cached
-// health of one profile. The request reached the Server, so a profile without
-// a health result is online; its model state is now what the reply reported.
-// Without this, the profile list would keep calling a soft-stopped Server
-// "Online" until the next background probe.
+// health of one profile. A Remote Server request reached the Server, so a
+// profile without a health result is online; its model state is now what the
+// reply reported. A hard Local Server action that left the process down is
+// reported offline instead. Without this, the profile list would keep calling a
+// soft-stopped Server "Online" until the next background probe.
 func (s *Service) recordLifecycle(profileID string, result ServerLifecycle) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if result.Hard && result.Stopped {
+		// A hard-stopped process answers no Admin API; "online but stopped"
+		// would misreport the daemon as reachable.
+		s.health[profileID] = trust.Status{
+			State:      trust.StateOffline,
+			Stopped:    true,
+			ModelState: "stopped",
+		}
+		return
+	}
+	if result.Hard && result.ModelState == "loading" {
+		s.health[profileID] = trust.Status{
+			State:      trust.StateOffline,
+			ModelState: "loading",
+		}
+		return
+	}
 	status, known := s.health[profileID]
 	if known && status.State != trust.StateOnline {
 		return

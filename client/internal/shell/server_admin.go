@@ -211,9 +211,22 @@ func (s *Shell) runServerAction(action string) {
 		s.pushMessages([]string{s.catalog().T("notice.server.restarting", name)}, nil)
 		go s.awaitServer()
 	case actionServerStop:
-		s.pushMessages([]string{s.catalog().T("notice.server.stopped", name)}, nil)
+		key := "notice.server.stopped"
+		if lifecycle.Hard {
+			key = "notice.server.localStopped"
+		}
+		s.pushMessages([]string{s.catalog().T(key, name)}, nil)
 	case actionServerStart:
-		s.pushMessages([]string{s.catalog().T("notice.server.started", name)}, nil)
+		key := "notice.server.started"
+		wait := false
+		if lifecycle.Hard && lifecycle.ModelState == "loading" {
+			key = "notice.server.localStarting"
+			wait = true
+		}
+		s.pushMessages([]string{s.catalog().T(key, name)}, nil)
+		if wait {
+			go s.awaitServer()
+		}
 	}
 }
 
@@ -251,6 +264,24 @@ func (s *Shell) applyLifecycle(lifecycle servers.ServerLifecycle) {
 	s.mu.Lock()
 	status := s.server
 	s.mu.Unlock()
+	if lifecycle.Hard && lifecycle.Stopped {
+		// The Local Server process is gone, not soft-stopped: the Tray must
+		// show it offline so Start is the action that helps.
+		s.updateServer(trust.Status{
+			State:      trust.StateOffline,
+			Stopped:    true,
+			ModelState: "stopped",
+		})
+		return
+	}
+	if lifecycle.Hard && lifecycle.ModelState == "loading" {
+		status.State = trust.StateOffline
+		status.Stopped = false
+		status.Loaded = false
+		status.ModelState = "loading"
+		s.updateServer(status)
+		return
+	}
 	status.State = trust.StateOnline
 	status.Stopped = lifecycle.Stopped
 	status.Loaded = lifecycle.Loaded

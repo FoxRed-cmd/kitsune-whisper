@@ -294,6 +294,7 @@ def create_app(
     lifecycle: Lifecycle | None = None,
     log_file: Path | None = None,
     restart: Callable[[], None] | None = None,
+    shutdown: Callable[[], None] | None = None,
     version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
@@ -314,7 +315,8 @@ def create_app(
     working; ``lifecycle`` optionally supplies that adapter's persisted flag.
     ``log_file`` backs ``GET /admin/logs`` and ``restart`` is the supervised
     self-exit action (tests inject a recorder, production exits with the restart
-    code).
+    code). ``shutdown`` is the Local Server's hard stop: it exits without a
+    supervisor restart after clearing a persisted soft-stop.
     """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
     runtime: ModelRuntime = build_runtime(config, transcriber, models=models, soft_stop=lifecycle)
@@ -329,6 +331,8 @@ def create_app(
     app.state.version = version
     app.state.log_file = Path(log_file).expanduser() if log_file is not None else None
     app.state.restart = restart
+    app.state.shutdown = shutdown
+    app.state.lifecycle = lifecycle
     if cuda_device_count is None:
         cuda_device_count = detect_cuda_devices()
     app.state.cuda_device_count = cuda_device_count
@@ -784,6 +788,71 @@ def create_app(
         snapshot = runtime.snapshot()
         logger.info("Server started: model %s is loaded", snapshot.model)
         return snapshot.as_dict()
+
+    def _require_loopback(request: Request) -> None:
+        """Keep the hard lifecycle for Clients on this Server host."""
+        peer = request.client.host if request.client is not None else None
+        if not is_loopback_address(peer):
+            raise ApiError(
+                403,
+                "local_only",
+                "this action is available only to a Client on the Server host",
+            )
+
+    def _clear_soft_stop() -> None:
+        """Forget a soft-stop so the next process starts with its model loaded."""
+        lifecycle = app.state.lifecycle
+        if lifecycle is not None:
+            lifecycle.clear()
+
+    @app.post("/admin/hard-stop", status_code=202)
+    async def hard_stop_server(
+        request: Request,
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Hard-stop the Local Server: clear any soft-stop, then exit cleanly.
+
+        The Client on the Server host calls this instead of ``/admin/stop``; a
+        Remote Server keeps the soft-stop. Exiting with code zero leaves the
+        supervisor idle instead of restarting the process; clearing the flag
+        makes the next start load the model.
+        """
+        del device
+        _require_loopback(request)
+        action = app.state.shutdown
+        if action is None:
+            raise ApiError(
+                503,
+                "stop_unavailable",
+                "this Server cannot stop itself; stop it on the Server host",
+            )
+        _clear_soft_stop()
+        body = app.state.runtime.snapshot().as_dict()
+        background.add_task(action)
+        return body
+
+    @app.post("/admin/hard-restart", status_code=202)
+    async def hard_restart_server(
+        request: Request,
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Restart the Local Server's process, clearing a persisted soft-stop."""
+        del device
+        _require_loopback(request)
+        action = app.state.restart
+        if action is None:
+            raise ApiError(
+                503,
+                "restart_unavailable",
+                "this Server cannot restart itself; stop and start it on the Server host",
+            )
+        _clear_soft_stop()
+        body = app.state.runtime.snapshot().as_dict()
+        body["restarting"] = True
+        background.add_task(action)
+        return body
 
     def _require_models() -> ModelManager:
         manager = app.state.models

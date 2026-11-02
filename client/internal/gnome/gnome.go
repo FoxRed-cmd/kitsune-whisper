@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
@@ -85,9 +86,23 @@ func New(opts Options) *Manager {
 }
 
 // Supported reports whether this session should offer GNOME custom
-// keybindings: GNOME on Wayland with gsettings available. On X11 the X server
-// grab is first-class, and on other compositors there is nothing to write.
+// keybindings: GNOME on Linux Wayland with gsettings available. On X11 the X
+// server grab is first-class, other compositors have nothing to write, and
+// other operating systems never run GNOME's settings daemon.
 func Supported(env map[string]string, lookPath func(string) (string, error)) bool {
+	return supportedFor(runtime.GOOS, env, lookPath)
+}
+
+// supportedFor is Supported with an explicit operating system, so tests can
+// prove a GNOME-looking environment on Windows or KDE never exposes the offer.
+func supportedFor(
+	goos string,
+	env map[string]string,
+	lookPath func(string) (string, error),
+) bool {
+	if goos != "linux" {
+		return false
+	}
 	wayland := strings.EqualFold(env["XDG_SESSION_TYPE"], "wayland") || env["WAYLAND_DISPLAY"] != ""
 	desktop := strings.ToLower(env["XDG_CURRENT_DESKTOP"] + ":" + env["DESKTOP_SESSION"])
 	if !wayland || !strings.Contains(desktop, "gnome") {

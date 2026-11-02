@@ -340,6 +340,31 @@ func TestStopServerIntentCallsLifecycleAndStartClearsIt(t *testing.T) {
 	}
 }
 
+func TestHardStoppingTheLocalServerShowsItAsUnreachable(t *testing.T) {
+	service := managementService()
+	hard := servers.ServerLifecycle{Hard: true, Stopped: true, ModelState: "stopped"}
+	service.stopResult = &hard
+	sh, desktop := newManagementShell(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	desktop.getTray().do(shell.ActionServerStop)
+
+	waitFor(t, "the hard-stopped status", func() bool {
+		snapshot := sh.Snapshot()
+		return snapshot.Server.State == trust.StateOffline &&
+			snapshot.Labels.ServerState == "Unreachable"
+	})
+	messages := windowMessages(desktop)
+	if len(messages.notices) != 1 || !strings.Contains(messages.notices[0], "shut down") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
 func TestSoftStopUpdatesTheStatusBeforeTheNextHealthProbe(t *testing.T) {
 	service := managementService()
 	sh, desktop := newManagementShell(t, service, nil)

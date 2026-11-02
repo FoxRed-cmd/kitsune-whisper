@@ -286,7 +286,7 @@ var english = map[string]string{
 
 	"page.restartHint":       "Restart the Client to apply changes marked “Restart required”.",
 	"server.managementTitle": "Server management",
-	"server.managementHelp":  "Restart, stop, or start the active Server profile. A restart is a supervised self-exit; a soft-stop unloads the model and refuses transcription until you start the Server again. A hard process stop remains available only on the Server host.",
+	"server.managementHelp":  "Restart, stop, or start the active Server profile. A Local Server is stopped and started as a process: Stop shuts the daemon down and Start brings it back. A Remote Server keeps the soft-stop: its model is unloaded and transcription answers 503 until you start it again.",
 	"server.restart":         "Restart Server",
 	"server.stopSoft":        "Stop Server",
 	"server.start":           "Start Server",
@@ -414,7 +414,9 @@ var english = map[string]string{
 	"notice.client.logsCopied":        "Client log copied to the clipboard.",
 	"notice.server.restarting":        "Restarting %s; the Client reports ready when it answers again.",
 	"notice.server.stopped":           "%s is soft-stopped: the model is unloaded and transcription answers 503 until you start it.",
+	"notice.server.localStopped":      "%s was shut down: the Local Server process is stopped.",
 	"notice.server.started":           "%s is started and the model is loaded.",
+	"notice.server.localStarting":     "%s is starting; the Client reports ready when it answers again.",
 	"notice.server.ready":             "%s is ready again.",
 	"error.server.config":             "Could not save the Server settings: %s",
 	"error.server.configRead":         "Could not read the Server configuration: %s",

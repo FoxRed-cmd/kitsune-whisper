@@ -49,6 +49,7 @@ type fakeServers struct {
 	config          servers.ServerConfig
 	logs            servers.ServerLog
 	lifecycleResult servers.ServerLifecycle
+	stopResult      *servers.ServerLifecycle
 	configCalls     []string
 	logCalls        []string
 	patchCalls      []string
@@ -956,6 +957,9 @@ func (f *fakeServers) Stop(_ context.Context, profileID string) (servers.ServerL
 		return servers.ServerLifecycle{}, f.stopErr
 	}
 	result := servers.ServerLifecycle{Stopped: true, ModelState: "stopped"}
+	if f.stopResult != nil {
+		result = *f.stopResult
+	}
 	f.view.Lifecycle = &result
 	return result, nil
 }

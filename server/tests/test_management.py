@@ -46,6 +46,7 @@ def build(
     lifecycle: Lifecycle | None = None,
     log_file: Path | None = None,
     restart=None,
+    shutdown=None,
     config_store: ConfigStore | None = None,
 ) -> FastAPI:
     transcriber = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
@@ -58,6 +59,7 @@ def build(
         lifecycle=lifecycle,
         log_file=log_file,
         restart=restart,
+        shutdown=shutdown,
     )
     return app
 
@@ -284,6 +286,67 @@ async def test_restart_is_unavailable_without_an_exit_action(tmp_path: Path) -> 
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "restart_unavailable"
+
+
+async def test_hard_stop_clears_the_soft_stop_and_signals_the_exit(tmp_path: Path) -> None:
+    calls: list[str] = []
+    soft_stop = Lifecycle()
+    soft_stop.mark_stopped()
+    app = build(tmp_path=tmp_path, lifecycle=soft_stop, shutdown=lambda: calls.append("stop"))
+
+    async with make_client(app) as client:
+        response = await client.post("/admin/hard-stop")
+
+    assert response.status_code == 202
+    assert soft_stop.stopped is False
+    assert calls == ["stop"]
+
+
+async def test_hard_restart_clears_the_soft_stop_and_signals_the_exit(tmp_path: Path) -> None:
+    calls: list[str] = []
+    soft_stop = Lifecycle()
+    soft_stop.mark_stopped()
+    app = build(tmp_path=tmp_path, lifecycle=soft_stop, restart=lambda: calls.append("restart"))
+
+    async with make_client(app) as client:
+        response = await client.post("/admin/hard-restart")
+
+    assert response.status_code == 202
+    assert response.json()["restarting"] is True
+    assert soft_stop.stopped is False
+    assert calls == ["restart"]
+
+
+async def test_hard_lifecycle_is_available_only_to_a_loopback_peer(tmp_path: Path) -> None:
+    calls: list[str] = []
+    soft_stop = Lifecycle()
+    soft_stop.mark_stopped()
+    app = build(
+        tmp_path=tmp_path,
+        lifecycle=soft_stop,
+        restart=lambda: calls.append("restart"),
+        shutdown=lambda: calls.append("stop"),
+    )
+
+    async with make_client(app, peer=("192.168.1.20", 1234)) as client:
+        stopped = await client.post("/admin/hard-stop")
+        restarted = await client.post("/admin/hard-restart")
+
+    assert stopped.status_code == 403
+    assert stopped.json()["error"]["code"] == "local_only"
+    assert restarted.status_code == 403
+    assert calls == []
+    assert soft_stop.stopped is True
+
+
+async def test_hard_stop_is_unavailable_without_an_exit_action(tmp_path: Path) -> None:
+    app = build(tmp_path=tmp_path)
+
+    async with make_client(app) as client:
+        response = await client.post("/admin/hard-stop")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "stop_unavailable"
 
 
 async def test_soft_stop_with_a_fixed_runtime_refuses_transcription(tmp_path: Path) -> None:

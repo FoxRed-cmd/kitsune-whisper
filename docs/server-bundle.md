@@ -145,8 +145,17 @@ container restart policy (`restart: unless-stopped` in compose, or
 `--restart unless-stopped` for a bare `docker run`) does. The soft-stop flag
 lives on the state volume, so a recreated container starts stopped until
 `POST /admin/start`, exactly like a restart of the native process.
-`kitsune-server stop` remains the hard process stop and is available only on the
-Server host.
+
+The Client uses hard lifecycle actions for the **Local Server** and soft ones
+for a Remote Server. From the same machine, Stop calls `/admin/hard-stop`, which
+clears the soft-stop and exits with code `0`; Start runs the local supervisor
+when the process is down or clears a soft-stop through `/admin/start` when it is
+already running; Restart calls `/admin/hard-restart`, which clears the soft-stop
+and exits with code `75` so the supervisor replaces the process. The hard
+endpoints reject any peer that is not on loopback. Stopping this way leaves the
+login autostart registration alone; the Server autostart switch is separate.
+`kitsune-server stop` remains the command-line hard process stop on the Server
+host.
 
 ## Port preflight
 

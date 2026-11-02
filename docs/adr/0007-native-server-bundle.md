@@ -45,6 +45,8 @@ config as the native Server.
   per-user Task Scheduler task, with restart-on-failure. Restart is implemented
   as a supervised self-exit, and "stop" is a Soft-stop (unload the model,
   refuse transcription) so it also works inside a container.
+  **Amended by [ADR 0012](0012-local-server-hard-lifecycle.md):** the Client
+  hard-stops a Local Server profile and keeps the Soft-stop for a Remote Server.
 - Packaging tests move from compose-only assertions to bundle layout plus the
   existing compose checks.
 - Linux gets CUDA through the `nvidia` wheels and the existing

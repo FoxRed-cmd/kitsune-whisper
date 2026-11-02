@@ -32,6 +32,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/instance"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/localserver"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/notify"
@@ -602,8 +603,9 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 		var healthCheck func(context.Context) trust.Status
 		if bootstrap.store != nil {
 			serverService = servers.New(servers.Options{
-				Store:  bootstrap.store,
-				Tokens: bootstrap.tokens,
+				Store:       bootstrap.store,
+				Tokens:      bootstrap.tokens,
+				LocalServer: localserver.Default(),
 			})
 		} else {
 			// Without a profile service the shell still probes the active

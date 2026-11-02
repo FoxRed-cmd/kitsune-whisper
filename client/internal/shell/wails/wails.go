@@ -16,6 +16,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
@@ -388,7 +389,8 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	if labels.ServerStop != "" {
 		menu.Add(labels.ServerStop).OnClick(func(*application.Context) { t.do(shell.ActionServerStop) })
 	}
-	if labels.ServerStart != "" && snapshot.ModelState == "stopped" {
+	if labels.ServerStart != "" &&
+		(snapshot.ModelState == "stopped" || snapshot.Server.State == trust.StateOffline) {
 		menu.Add(labels.ServerStart).OnClick(func(*application.Context) { t.do(shell.ActionServerStart) })
 	}
 	menu.Add(labels.Restart).OnClick(func(*application.Context) { t.do(shell.ActionRestart) })

@@ -421,17 +421,20 @@ docker exec <container> kitsune-server devices revoke <ID_OR_NAME>
 
 #### Soft-stop, restart, and stopping the container
 
-- **Soft-stop** (`POST /admin/stop`, the Client's Stop action) unloads the
-  model, so `/transcribe` answers `503` with code `stopped`, and frees GPU
-  memory. The process, the Admin API, and `/health` stay up, so the container
-  is *not* restarted and Docker health stays green. `/admin/start` reloads the
-  model. The flag is saved on `/state`, so a recreated container starts
-  stopped until you start it; this matches the native install's semantics.
-- **Restart** (`POST /admin/restart`, or the Client's Restart) returns `202`
-  and exits with code `75`. Compose runs with `restart: unless-stopped`, so the
-  same container starts again with the same volumes and the Device tokens keep
-  working. A bare `docker run` needs `--restart unless-stopped` for this to
-  work; `docker compose restart` also works but bypasses the self-exit.
+- **Soft-stop** (`POST /admin/stop`, the Client's Stop for a Remote Server)
+  unloads the model, so `/transcribe` answers `503` with code `stopped`, and
+  frees GPU memory. The process, the Admin API, and `/health` stay up, so the
+  container is *not* restarted and Docker health stays green. `/admin/start`
+  reloads the model. The flag is saved on `/state`, so a recreated container
+  starts stopped until you start it; this matches the native install's
+  semantics.
+- **Restart** (`POST /admin/restart`, or the Client's Restart for a Remote
+  Server) returns `202` and exits with code `75`. Compose runs with
+  `restart: unless-stopped`, so the same container starts again with the same
+  volumes and the Device tokens keep working. A bare `docker run` needs
+  `--restart unless-stopped` for this to work; `docker compose restart` also
+  works but bypasses the self-exit. A Local Server profile is restarted as a
+  process instead.
 - **Stopping on the host** (`docker compose stop`, `docker stop`) is a hard
   stop. `restart: unless-stopped` does not bring back a manually stopped
   container; use `docker compose start` (or `up -d`) afterwards. Do not use

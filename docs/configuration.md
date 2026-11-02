@@ -260,6 +260,8 @@ Server:
 | `POST /admin/restart` | Answer `202` with the lifecycle payload plus `restarting: true`, then exit with code `75`; systemd `Restart=on-failure`, Task Scheduler `RestartOnFailure`, and Docker bring the Server back. The Client polls health until it is ready. |
 | `POST /admin/stop` | Soft-stop: unload the model, persist `stopped`, keep the Admin API alive. `/transcribe` returns `503` with code `stopped`. |
 | `POST /admin/start` | Clear the soft-stop, load the model again, and accept transcription. |
+| `POST /admin/hard-stop` | Local Server only, loopback peer: clear the soft-stop and answer `202`, then exit with code `0` so the supervisor leaves the process stopped. |
+| `POST /admin/hard-restart` | Local Server only, loopback peer: clear the soft-stop and answer `202`, then exit with code `75` so the supervisor replaces the process with a model-loaded one. |
 
 `/status`, stop, start, and restart return the same model payload
 (`stopped`, `loaded`, `model`, `model_state`, `model_path`,
@@ -273,13 +275,25 @@ read-only in the Settings window.
 Model download progress is polled, not streamed: the Client refreshes it on the
 background health tick (30 seconds) and immediately after each download action.
 
+The Client chooses the lifecycle by profile. For the **Local Server** its Stop,
+Start, and Restart are hard operations: Stop calls `/admin/hard-stop` (or the
+OS supervisor when the process is already down), Start runs the supervisor when
+the process is down or clears a soft-stop through `/admin/start` when it is
+already running, and Restart calls `/admin/hard-restart` (or the supervisor when
+the process is down). Tray and Settings therefore terminate or replace the
+daemon instead of merely unloading its model. For a **Remote Server** the same
+buttons keep the soft-stop surface above, because the Client cannot drive
+another machine's supervisor. Stopping a Local Server does not change its login
+autostart registration: turn the Server autostart switch off on the Startup
+screen if it must not come back after the next login.
+
 A soft-stop survives a process restart, so a supervised restart does not
-silently reload a model the user deliberately unloaded. A hard process stop is
-still available only on the Server host (`kitsune-server stop`). One model
-runtime owns the active model: the Model manager when the catalog is enabled
-(it loads, activates, and idle-unloads), or a fixed runtime for a Server built
-without model management. A soft-stop asks that runtime to release the model
-and persists only the stopped flag.
+silently reload a model the user deliberately unloaded. The hard Local Server
+endpoints clear that flag first, so the next process starts with its model
+loaded. One model runtime owns the active model: the Model manager when the
+catalog is enabled (it loads, activates, and idle-unloads), or a fixed runtime
+for a Server built without model management. A soft-stop asks that runtime to
+release the model and persists only the stopped flag.
 
 `GET /admin/config` masks every secret before sending it. Today that is
 `server.processing.api_key`, shown as `***` and listed under `redacted`; Device

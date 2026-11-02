@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
@@ -154,6 +157,225 @@ func profileHealth(view servers.View, profileID string) trust.Status {
 		}
 	}
 	return trust.Status{}
+}
+
+// fakeLocalServer records the supervisor commands a Local Server lifecycle
+// would run, without touching systemd or Task Scheduler.
+type fakeLocalServer struct {
+	available bool
+	calls     []string
+	err       error
+}
+
+func (f *fakeLocalServer) Available() bool { return f.available }
+
+func (f *fakeLocalServer) Stop() error {
+	f.calls = append(f.calls, "stop")
+	return f.err
+}
+
+func (f *fakeLocalServer) Start() error {
+	f.calls = append(f.calls, "start")
+	return f.err
+}
+
+func (f *fakeLocalServer) Restart() error {
+	f.calls = append(f.calls, "restart")
+	return f.err
+}
+
+// localService pairs the Local Server profile with a fake HTTP Server and a
+// fixed health result, so the tests observe the Local-versus-Remote decision
+// without a real daemon or supervisor.
+func localService(
+	t *testing.T,
+	fake *fakeServer,
+	local *fakeLocalServer,
+	health trust.Status,
+) (*servers.Service, string) {
+	t.Helper()
+	store, err := settings.Open(settings.Options{
+		Path: t.TempDir() + "/kitsune.yaml",
+		Env:  map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("open settings: %v", err)
+	}
+	service := servers.New(servers.Options{
+		Store:       store,
+		Tokens:      trust.NewTokenStoreWithKeyring(newFakeKeyring(), t.TempDir()),
+		LocalServer: local,
+		Check: func(context.Context, config.ServerProfile, string, time.Duration) trust.Status {
+			return health
+		},
+		PairLocal: func(context.Context, string, string, string) (trust.Pairing, error) {
+			return trust.Pairing{
+				Device:      trust.Device{ID: "dev-local", Name: "Local client"},
+				Token:       fake.token,
+				Fingerprint: fake.fingerprint,
+			}, nil
+		},
+	})
+	profile, err := service.EnsureLocal(context.Background(), fake.URL)
+	if err != nil {
+		t.Fatalf("ensure local: %v", err)
+	}
+	return service, profile.ID
+}
+
+func TestLocalServerStopHardStopsInsteadOfSoftStopping(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOnline})
+
+	result, err := service.Stop(context.Background(), profileID)
+	if err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if strings.Join(fake.lifecycleCalls, ",") != "hard-stop" {
+		t.Fatalf("Admin API calls = %v", fake.lifecycleCalls)
+	}
+	if len(local.calls) != 0 {
+		t.Fatalf("the supervisor ran after the Server stopped itself: %v", local.calls)
+	}
+	if !result.Hard || !result.Stopped || result.Loaded || result.ModelState != "stopped" {
+		t.Fatalf("result = %+v", result)
+	}
+	if health := profileHealth(service.View(), profileID); health.State != trust.StateOffline || !health.Stopped {
+		t.Fatalf("the hard-stopped profile still looks online: %+v", health)
+	}
+}
+
+func TestLocalServerStopUsesTheSupervisorWhenTheProcessIsUnreachable(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOffline})
+
+	if _, err := service.Stop(context.Background(), profileID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if strings.Join(local.calls, ",") != "stop" {
+		t.Fatalf("supervisor calls = %v", local.calls)
+	}
+	if len(fake.lifecycleCalls) != 0 {
+		t.Fatalf("the unreachable Server received %v", fake.lifecycleCalls)
+	}
+}
+
+func TestLocalServerStopWithoutASupervisorAndAnUnreachableProcessFails(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: false}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOffline})
+
+	_, err := service.Stop(context.Background(), profileID)
+	if !errors.Is(err, servers.ErrLocalUnavailable) {
+		t.Fatalf("err = %v, want ErrLocalUnavailable", err)
+	}
+	if len(local.calls) != 0 || len(fake.lifecycleCalls) != 0 {
+		t.Fatalf("supervisor calls = %v, Admin API calls = %v", local.calls, fake.lifecycleCalls)
+	}
+}
+
+func TestLocalServerStartUsesTheSupervisorWhenTheProcessIsDown(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOffline})
+
+	result, err := service.Start(context.Background(), profileID)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if strings.Join(local.calls, ",") != "start" {
+		t.Fatalf("supervisor calls = %v", local.calls)
+	}
+	if len(fake.lifecycleCalls) != 0 {
+		t.Fatalf("the down Server received %v", fake.lifecycleCalls)
+	}
+	if !result.Hard || result.ModelState != "loading" || result.Stopped {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestLocalServerStartClearsASoftStopWhenItIsReachable(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOnline})
+
+	result, err := service.Start(context.Background(), profileID)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if strings.Join(fake.lifecycleCalls, ",") != "start" {
+		t.Fatalf("Admin API calls = %v", fake.lifecycleCalls)
+	}
+	if len(local.calls) != 0 {
+		t.Fatalf("the supervisor restarted a running Server: %v", local.calls)
+	}
+	if result.Hard || !result.Loaded || result.ModelState != "loaded" {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestLocalServerRestartUsesTheHardAdminEndpoint(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOnline})
+
+	result, err := service.Restart(context.Background(), profileID)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if strings.Join(fake.lifecycleCalls, ",") != "hard-restart" {
+		t.Fatalf("Admin API calls = %v", fake.lifecycleCalls)
+	}
+	if !result.Hard || !result.Restarting {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+func TestLocalServerRestartRequiresASupervisorToBringItBack(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: false}
+	service, profileID := localService(t, fake, local, trust.Status{State: trust.StateOnline})
+
+	_, err := service.Restart(context.Background(), profileID)
+	if !errors.Is(err, servers.ErrLocalUnavailable) {
+		t.Fatalf("err = %v, want ErrLocalUnavailable", err)
+	}
+	if len(fake.lifecycleCalls) != 0 {
+		t.Fatalf("the unprotected Server was restarted: %v", fake.lifecycleCalls)
+	}
+}
+
+func TestRemoteServerKeepsTheSoftStopWithALocalSupervisorConfigured(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	store, err := settings.Open(settings.Options{
+		Path: t.TempDir() + "/kitsune.yaml",
+		Env:  map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("open settings: %v", err)
+	}
+	service := servers.New(servers.Options{
+		Store:       store,
+		Tokens:      trust.NewTokenStoreWithKeyring(newFakeKeyring(), t.TempDir()),
+		LocalServer: local,
+	})
+	profile, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+
+	if _, err := service.Stop(context.Background(), profile.ID); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if strings.Join(fake.lifecycleCalls, ",") != "stop" {
+		t.Fatalf("Admin API calls = %v", fake.lifecycleCalls)
+	}
+	if len(local.calls) != 0 {
+		t.Fatalf("a Remote Server used the local supervisor: %v", local.calls)
+	}
 }
 
 func TestALegacyRestartReplyKeepsTheCachedLifecycleState(t *testing.T) {

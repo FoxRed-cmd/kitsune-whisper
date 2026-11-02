@@ -186,7 +186,7 @@ func serverLifecycle(
 	if err := json.Unmarshal(data, &result); err != nil {
 		return ServerLifecycle{}, fmt.Errorf("servers: decode the %s result: %w", action, err)
 	}
-	if action == "restart" {
+	if action == "restart" || action == "hard-restart" {
 		result.Restarting = true
 	}
 	return result, nil

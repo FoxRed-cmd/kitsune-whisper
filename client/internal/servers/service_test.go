@@ -212,6 +212,20 @@ func newFakeServer(t *testing.T) *fakeServer {
 				"model": "small", "model_state": "loaded", "model_path": "",
 				"idle_unload_seconds": 600,
 			})
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/hard-restart":
+			fake.lifecycleCalls = append(fake.lifecycleCalls, "hard-restart")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"restarting": true, "stopped": false, "loaded": true,
+				"model": "small", "model_state": "loaded", "model_path": "",
+				"idle_unload_seconds": 600,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/admin/hard-stop":
+			fake.lifecycleCalls = append(fake.lifecycleCalls, "hard-stop")
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"stopped": false, "loaded": true, "model": "small", "model_state": "loaded",
+			})
 		case r.Method == http.MethodPost && r.URL.Path == "/admin/stop":
 			fake.lifecycleCalls = append(fake.lifecycleCalls, "stop")
 			_ = json.NewEncoder(w).Encode(map[string]any{

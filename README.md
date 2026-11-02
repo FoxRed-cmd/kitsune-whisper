@@ -336,11 +336,13 @@ Client's restart (`202`, then exit `75`) bring the container back; a bare
 `docker run` needs `--restart unless-stopped` and `-v` mounts for `/models` and
 `/state`.
 
-**Soft-stop vs stopping the container.** `POST /admin/stop` (the Client's Stop)
-unloads the model and returns `503` for transcription while the process, the
-Admin API, and `/health` stay up; `/admin/start` reloads. `docker compose stop`
-or `docker stop` is a hard stop: `restart: unless-stopped` will not bring a
-manually stopped container back until you `docker compose start` it again.
+**Soft-stop vs stopping the container.** For a Remote Server, `POST /admin/stop`
+(the Client's Stop in a remote profile) unloads the model and returns `503` for
+transcription while the process, the Admin API, and `/health` stay up;
+`/admin/start` reloads. The Client hard-stops only a Local Server profile.
+`docker compose stop` or `docker stop` is a hard stop: `restart: unless-stopped`
+will not bring a manually stopped container back until you `docker compose start`
+it again.
 
 **`down` vs `down -v`.** `docker compose down` removes the container and keeps
 all three stores; the next `up` reuses the same certificate, Devices, models,

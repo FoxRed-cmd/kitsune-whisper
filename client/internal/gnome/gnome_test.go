@@ -165,17 +165,20 @@ func TestRemoveIsIdempotent(t *testing.T) {
 func TestSupportedNeedsGnomeWaylandAndGSettings(t *testing.T) {
 	lookPath := func(string) (string, error) { return "/usr/bin/gsettings", nil }
 	gnome := map[string]string{"XDG_SESSION_TYPE": "wayland", "XDG_CURRENT_DESKTOP": "GNOME"}
-	if !Supported(gnome, lookPath) {
+	if !supportedFor("linux", gnome, lookPath) {
 		t.Fatal("GNOME Wayland with gsettings should be supported")
 	}
-	if Supported(map[string]string{"XDG_SESSION_TYPE": "x11", "XDG_CURRENT_DESKTOP": "GNOME"}, lookPath) {
+	if supportedFor("linux", map[string]string{"XDG_SESSION_TYPE": "x11", "XDG_CURRENT_DESKTOP": "GNOME"}, lookPath) {
 		t.Fatal("X11 must not offer GNOME custom keybindings")
 	}
-	if Supported(map[string]string{"XDG_SESSION_TYPE": "wayland", "XDG_CURRENT_DESKTOP": "KDE"}, lookPath) {
+	if supportedFor("linux", map[string]string{"XDG_SESSION_TYPE": "wayland", "XDG_CURRENT_DESKTOP": "KDE"}, lookPath) {
 		t.Fatal("KDE must not offer GNOME custom keybindings")
 	}
+	if supportedFor("windows", gnome, lookPath) {
+		t.Fatal("Windows must not offer GNOME custom keybindings")
+	}
 	missing := func(string) (string, error) { return "", fmt.Errorf("not found") }
-	if Supported(gnome, missing) {
+	if supportedFor("linux", gnome, missing) {
 		t.Fatal("a session without gsettings must not be offered")
 	}
 }
