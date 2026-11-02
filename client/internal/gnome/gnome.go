@@ -18,6 +18,7 @@ import (
 	"strings"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 )
 
 // The GSettings keys behind GNOME Settings -> Keyboard -> Custom Shortcuts.
@@ -419,7 +420,7 @@ func readQuoted(raw string, start int) (string, int, bool) {
 }
 
 func execRunner(name string, args ...string) (string, error) {
-	cmd := exec.Command(name, args...)
+	cmd := process.Command(name, args...)
 	out, err := cmd.Output()
 	if err != nil {
 		var exit *exec.ExitError

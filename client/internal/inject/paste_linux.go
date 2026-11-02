@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 )
 
@@ -28,7 +29,7 @@ func runWaylandTool(tool waylandTool, shortcut Shortcut) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	if err := exec.CommandContext(ctx, name, args...).Run(); err != nil {
+	if err := process.CommandContext(ctx, name, args...).Run(); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil

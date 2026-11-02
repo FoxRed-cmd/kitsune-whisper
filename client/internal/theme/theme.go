@@ -8,10 +8,11 @@ import (
 	"context"
 	"image/color"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 )
 
 // Theme selects the light or dark palette the desktop surfaces draw with.
@@ -147,6 +148,6 @@ func fromGSettings(run func(string, ...string) (string, error)) Theme {
 func runDesktopCommand(name string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := process.CommandContext(ctx, name, args...).Output()
 	return string(out), err
 }

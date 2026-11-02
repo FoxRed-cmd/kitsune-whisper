@@ -11,13 +11,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"unicode/utf16"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 )
 
 const (
@@ -308,7 +308,7 @@ func unsupported(goos string) error {
 }
 
 func runCommand(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := process.Command(name, args...).CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(out))
 		if message == "" {

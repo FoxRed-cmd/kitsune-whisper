@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
@@ -360,7 +361,7 @@ func openURL(url string) error {
 		if err != nil {
 			continue
 		}
-		return exec.Command(path, candidate[1:]...).Start()
+		return process.Command(path, candidate[1:]...).Start()
 	}
 	return fmt.Errorf("no browser opener found")
 }

@@ -9,10 +9,10 @@ package localserver
 
 import (
 	"fmt"
-	"os/exec"
 	"runtime"
 	"strings"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/startup"
 )
 
@@ -117,7 +117,7 @@ func unsupported(goos string) error {
 }
 
 func runCommand(name string, args ...string) (string, error) {
-	out, err := exec.Command(name, args...).CombinedOutput()
+	out, err := process.Command(name, args...).CombinedOutput()
 	if err != nil {
 		message := strings.TrimSpace(string(out))
 		if message == "" {

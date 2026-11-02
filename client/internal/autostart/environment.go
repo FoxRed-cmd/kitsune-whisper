@@ -3,10 +3,11 @@ package autostart
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"runtime"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 )
 
 // Default builds the production Environment for the current process.
@@ -36,7 +37,7 @@ func currentUser() string {
 // runExec runs a command and folds its combined output into the error, so a
 // failing systemctl/schtasks call explains itself.
 func runExec(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := process.Command(name, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, trimOutput(output))

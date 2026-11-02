@@ -6,9 +6,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 )
 
@@ -36,7 +36,7 @@ func wrapClipboard(primary Clipboard) Clipboard {
 func execCommand(name string, args []string, stdin []byte) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := process.CommandContext(ctx, name, args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
