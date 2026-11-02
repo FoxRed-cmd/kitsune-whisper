@@ -74,11 +74,11 @@ client:
 	service := dictation.New(dictation.Options{Store: store, Env: map[string]string{"LANG": "en_US.UTF-8"}})
 	view := service.View()
 
-	if len(view.Sections) != 2 || view.Sections[0].ID != "general" || view.Sections[1].ID != "dictation" {
+	if len(view.Sections) != 3 || view.Sections[0].ID != "general" || view.Sections[1].ID != "appearance" || view.Sections[2].ID != "dictation" {
 		t.Fatalf("sections = %+v, want general then dictation", view.Sections)
 	}
-	if view.Sections[0].Title != "General" || view.Sections[1].Title != "Dictation" {
-		t.Fatalf("section titles = %q, %q", view.Sections[0].Title, view.Sections[1].Title)
+	if view.Sections[0].Title != "General" || view.Sections[2].Title != "Dictation" {
+		t.Fatalf("section titles = %q, %q", view.Sections[0].Title, view.Sections[2].Title)
 	}
 
 	hotkey := fieldByPath(t, view, "client.hotkey")
@@ -128,6 +128,33 @@ client:
 	}
 }
 
+func TestViewRendersTheIndicatorPlacementControls(t *testing.T) {
+	path := configFile(t, "client:\n  feedback:\n    indicator_anchor: bottom-right\n    indicator_offset_x: 12\n    indicator_offset_y: -4\n")
+	store := openStore(t, path, nil, nil)
+	service := dictation.New(dictation.Options{Store: store, Env: map[string]string{"LANG": "en"}})
+	view := service.View()
+
+	anchor := fieldByPath(t, view, "client.feedback.indicator_anchor")
+	if anchor.Kind != dictation.KindPosition || anchor.Value != "bottom-right" || !anchor.Preview {
+		t.Fatalf("anchor field = %+v", anchor)
+	}
+	if len(anchor.Options) != 6 || !hasOption(anchor.Options, "top-center", "Top centre") {
+		t.Fatalf("anchor options = %+v", anchor.Options)
+	}
+	for _, path := range []string{"client.feedback.indicator_offset_x", "client.feedback.indicator_offset_y"} {
+		field := fieldByPath(t, view, path)
+		if field.Kind != dictation.KindNumber || !field.Preview {
+			t.Fatalf("%s = %+v, want a previewed number", path, field)
+		}
+	}
+	if got := fieldByPath(t, view, "client.feedback.indicator_offset_x").Value; got != "12" {
+		t.Fatalf("offset_x = %q, want 12", got)
+	}
+	if got := fieldByPath(t, view, "client.feedback.indicator_offset_y").Value; got != "-4" {
+		t.Fatalf("offset_y = %q, want -4", got)
+	}
+}
+
 func TestViewAppliesTheHotkeyBackendWithoutARestart(t *testing.T) {
 	path := configFile(t, "client:\n  hotkey_backend: x11\n")
 	store := openStore(t, path, nil, nil)
@@ -153,8 +180,8 @@ func TestViewRendersInRussian(t *testing.T) {
 	if view.Language != "ru" {
 		t.Fatalf("language = %q, want ru", view.Language)
 	}
-	if view.Sections[1].Title != "Распознавание речи" {
-		t.Fatalf("dictation title = %q", view.Sections[1].Title)
+	if view.Sections[2].Title != "Распознавание речи" {
+		t.Fatalf("dictation title = %q", view.Sections[2].Title)
 	}
 	if got := fieldByPath(t, view, "client.hotkey").Label; got != "Горячая клавиша распознавания" {
 		t.Fatalf("hotkey label = %q", got)
@@ -171,7 +198,7 @@ func TestViewSwitchesLanguageAfterSaving(t *testing.T) {
 	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
 	store := openStore(t, path, nil, nil)
 	service := dictation.New(dictation.Options{Store: store, Env: map[string]string{"LANG": "en_US.UTF-8"}})
-	if got := service.View().Sections[1].Title; got != "Dictation" {
+	if got := service.View().Sections[2].Title; got != "Dictation" {
 		t.Fatalf("initial title = %q, want English", got)
 	}
 
@@ -183,7 +210,7 @@ func TestViewSwitchesLanguageAfterSaving(t *testing.T) {
 		t.Fatalf("save errors = %v", outcome.Errors)
 	}
 	view := service.View()
-	if view.Language != "ru" || view.Sections[1].Title != "Распознавание речи" {
+	if view.Language != "ru" || view.Sections[2].Title != "Распознавание речи" {
 		t.Fatalf("view after switching language = %+v", view.Sections)
 	}
 	if service.Catalog().Lang() != "ru" {

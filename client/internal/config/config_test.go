@@ -509,6 +509,44 @@ func TestInvalidIndicatorValueNamesTheKey(t *testing.T) {
 	assertErrorContains(t, err, "auto, layer_shell, x11, off")
 }
 
+func TestIndicatorPlacementFromFile(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"feedback": map[string]any{
+			"indicator_anchor":   "bottom-left",
+			"indicator_offset_x": 24,
+			"indicator_offset_y": -8,
+		},
+	})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Feedback.IndicatorAnchor != "bottom-left" {
+		t.Fatalf("indicator_anchor = %q, want bottom-left", cfg.Feedback.IndicatorAnchor)
+	}
+	if cfg.Feedback.IndicatorOffsetX != 24 || cfg.Feedback.IndicatorOffsetY != -8 {
+		t.Fatalf("offsets = %d/%d, want 24/-8", cfg.Feedback.IndicatorOffsetX, cfg.Feedback.IndicatorOffsetY)
+	}
+}
+
+func TestInvalidIndicatorPlacementNamesTheKey(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"feedback": map[string]any{"indicator_anchor": "middle"},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.feedback.indicator_anchor")
+	assertErrorContains(t, err, "top-left, top-center, top-right, bottom-left, bottom-center, bottom-right")
+}
+
+func TestIndicatorOffsetRange(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"feedback": map[string]any{"indicator_offset_x": 5000},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.feedback.indicator_offset_x")
+	assertErrorContains(t, err, "between -4096 and 4096")
+}
+
 func TestIndicatorFromFile(t *testing.T) {
 	path := writeConfig(t, map[string]any{
 		"feedback": map[string]any{"indicator": "off"},

@@ -31,10 +31,11 @@ var russian = map[string]string{
 	"phase.processing": "обработка",
 	"phase.delivering": "вставка",
 
-	"section.general":   "Общие",
-	"section.dictation": "Распознавание речи",
-	"section.servers":   "Серверы и устройства",
-	"section.spool":     "Сохранённые записи",
+	"section.general":    "Общие",
+	"section.appearance": "Индикатор на экране",
+	"section.dictation":  "Распознавание речи",
+	"section.servers":    "Серверы и устройства",
+	"section.spool":      "Сохранённые записи",
 
 	"server.profiles":         "Профили серверов",
 	"server.active":           "Активный",
@@ -85,6 +86,12 @@ var russian = map[string]string{
 	"field.feedback.earcons":   "Звуковые сигналы",
 	"help.feedback.earcons":    "Короткие сигналы в начале и в конце записи, а также при ошибке.",
 	"field.feedback.indicator": "Индикатор записи",
+	"field.indicator_anchor":   "Положение на экране",
+	"help.indicator_anchor":    "Выберите, где появляется индикатор записи. Отступы ниже сдвигают его от выбранного положения; во время настройки настоящий индикатор показывается на экране.",
+	"field.indicator_offset_x": "Смещение по горизонтали (пикс.)",
+	"help.indicator_offset_x":  "Положительное значение сдвигает вправо, отрицательное — влево. Индикатор остаётся в пределах монитора.",
+	"field.indicator_offset_y": "Смещение по вертикали (пикс.)",
+	"help.indicator_offset_y":  "Положительное значение сдвигает вниз, отрицательное — вверх. Индикатор остаётся в пределах монитора.",
 	"field.spool_dir":          "Папка сохранённых записей",
 	"help.spool_dir":           "Сюда сохраняются неудавшиеся записи. Оставьте пустым, чтобы использовать папку по умолчанию.",
 
@@ -111,6 +118,13 @@ var russian = map[string]string{
 	"indicator.layer_shell": "Layer shell (Wayland)",
 	"indicator.x11":         "Окно X11",
 	"indicator.off":         "Выключен",
+
+	"indicator.anchor.topLeft":      "Сверху слева",
+	"indicator.anchor.topCenter":    "Сверху по центру",
+	"indicator.anchor.topRight":     "Сверху справа",
+	"indicator.anchor.bottomLeft":   "Снизу слева",
+	"indicator.anchor.bottomCenter": "Снизу по центру",
+	"indicator.anchor.bottomRight":  "Снизу справа",
 
 	"source.default":      "По умолчанию",
 	"source.file":         "Сохранено",

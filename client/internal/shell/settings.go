@@ -712,11 +712,17 @@ type Intent struct {
 	Choice string `json:"choice,omitempty"`
 	// Step is the wizard step a navigation action targets.
 	Step string `json:"step,omitempty"`
+	// Anchor, OffsetX, and OffsetY carry the live indicator preview position.
+	Anchor  string `json:"anchor,omitempty"`
+	OffsetX int    `json:"offset_x,omitempty"`
+	OffsetY int    `json:"offset_y,omitempty"`
 }
 
 // Intent actions.
 const (
 	IntentSave               = "save"
+	IntentPreviewIndicator   = "preview-indicator"
+	IntentHideIndicator      = "hide-indicator-preview"
 	IntentValidate           = "validate"
 	IntentGnomeShortcutsAdd  = "gnome-shortcuts-add"
 	IntentGnomeShortcutsDrop = "gnome-shortcuts-remove"
@@ -802,6 +808,12 @@ func (s *Shell) HandleIntent(payload []byte) error {
 			}
 		}
 		s.save(patch)
+		return nil
+	case IntentPreviewIndicator:
+		s.previewIndicator(intent.Anchor, intent.OffsetX, intent.OffsetY)
+		return nil
+	case IntentHideIndicator:
+		s.hideIndicatorPreview()
 		return nil
 	case IntentGnomeShortcutsAdd:
 		s.installGnomeShortcuts()
@@ -1299,6 +1311,24 @@ func (s *Shell) save(patch map[string]any) {
 	s.pushMessages(notices, failures)
 	// The Tray follows the interface language.
 	s.update(s.opts.Runtime.Status())
+}
+
+// previewIndicator shows the real Recording indicator at an unsaved position.
+// A missing indicator (off, or no backend) is expected and only logged at
+// debug level: the appearance form stays usable.
+func (s *Shell) previewIndicator(anchor string, offsetX, offsetY int) {
+	if s.opts.PreviewIndicator == nil {
+		return
+	}
+	if err := s.opts.PreviewIndicator(anchor, offsetX, offsetY); err != nil {
+		s.log.Debug("indicator preview: %v", err)
+	}
+}
+
+func (s *Shell) hideIndicatorPreview() {
+	if s.opts.HideIndicatorPreview != nil {
+		s.opts.HideIndicatorPreview()
+	}
 }
 
 // pushSettings renders the current settings view into the window.

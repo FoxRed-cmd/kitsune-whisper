@@ -36,6 +36,14 @@ editor with the cursor in a document for the focus checks.
       dictating.
 - [ ] With `--verbose`, the log shows `indicator: recording`, `processing`,
       `delivering`, `finished`, and the matching cue lines.
+- [ ] The pill uses the Settings window's palette: light card on a light
+      desktop, dark card on a dark desktop, with the same accent and danger
+      colours as the form.
+- [ ] On **On-screen indicator**, picking each of the six presets moves the
+      real pill immediately; changing either offset moves it by the entered
+      number of logical pixels and the pill stays on the monitor.
+- [ ] Leaving the screen, closing the window, or disabling the indicator hides
+      the preview.
 
 ## X11 (plain Xorg session)
 

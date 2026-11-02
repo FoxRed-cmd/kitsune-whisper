@@ -66,7 +66,7 @@ func navEntries(view SettingsView) []navEntry {
 	var entries []navEntry
 	for _, section := range view.Sections {
 		switch section.ID {
-		case "general", "dictation":
+		case "general", "appearance", "dictation":
 			if section.Title != "" {
 				entries = append(entries, navEntry{Key: section.ID, Label: section.Title, Targets: []string{section.ID}})
 			}
@@ -923,6 +923,10 @@ func writeField(out *strings.Builder, field dictation.Field, view dictation.View
 		return
 	}
 
+	preview := ""
+	if field.Preview {
+		preview = ` data-indicator-preview="true"`
+	}
 	out.WriteString(`<div class="field" data-field="` + escape(field.Path) + `">`)
 	out.WriteString(`<div class="field-head"><label for="` + escape(id) + `">` + escape(field.Label) + `</label>`)
 	if field.Badge != "" {
@@ -936,6 +940,11 @@ func writeField(out *strings.Builder, field dictation.Field, view dictation.View
 	switch field.Kind {
 	case dictation.KindSelect:
 		writeSelect(out, id, field, disabled)
+	case dictation.KindPosition:
+		writePosition(out, id, field, disabled, preview)
+	case dictation.KindNumber:
+		out.WriteString(`<input type="number" step="1" min="-4096" max="4096" id="` + escape(id) + `" data-path="` + escape(field.Path) +
+			`"` + preview + ` autocomplete="off" value="` + escape(field.Value) + `"` + disabled + `>`)
 	case dictation.KindMicrophone:
 		writeSelect(out, id, field, disabled)
 		out.WriteString(`<div class="mic-actions">`)
@@ -953,6 +962,27 @@ func writeField(out *strings.Builder, field dictation.Field, view dictation.View
 	}
 	writeFieldNotes(out, field)
 	out.WriteString(`</div>`)
+}
+
+// writePosition renders the six screen presets as a small screen map. The
+// buttons drive a hidden input so the generic form collector still saves the
+// value; clicking one previews the real pill immediately.
+func writePosition(out *strings.Builder, id string, field dictation.Field, disabled, preview string) {
+	out.WriteString(`<div class="position-grid" role="group" aria-label="` + escape(field.Label) + `">`)
+	for _, option := range field.Options {
+		active := ""
+		pressed := "false"
+		if option.Value == field.Value {
+			active = " is-active"
+			pressed = "true"
+		}
+		out.WriteString(`<button type="button" class="position-preset` + active +
+			`" data-indicator-anchor="` + escape(option.Value) + `" aria-pressed="` + pressed +
+			`" aria-label="` + escape(option.Label) + `" title="` + escape(option.Label) + `"` + disabled + `></button>`)
+	}
+	out.WriteString(`</div>`)
+	out.WriteString(`<input type="hidden" id="` + escape(id) + `" data-path="` + escape(field.Path) +
+		`"` + preview + ` value="` + escape(field.Value) + `"` + disabled + `>`)
 }
 
 // writeFieldNotes renders the help and lock text shared by every field shape.
@@ -1082,6 +1112,21 @@ const pageHTML = `<!doctype html>
   .field .switch:checked { background-color:var(--accent); border-color:transparent; background-position:18px center; }
   .field .switch:disabled { opacity:.55; cursor:not-allowed; }
   .field-toggle { padding:10px 0; }
+  /* A miniature screen: the filled bar sits where the pill will appear. */
+  .position-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; max-width:260px; margin-top:2px; }
+  .position-preset { position:relative; height:44px; padding:0; border:1px solid var(--line); border-radius:7px; background:var(--card-2); color:var(--muted); }
+  .position-preset::before { content:""; position:absolute; inset:6px; border:1px solid var(--line); border-radius:4px; opacity:.55; }
+  .position-preset::after { content:""; position:absolute; width:18px; height:5px; border-radius:3px; background:currentColor; opacity:.5; }
+  .position-preset[data-indicator-anchor="top-left"]::after { left:10px; top:10px; }
+  .position-preset[data-indicator-anchor="top-center"]::after { left:50%; top:10px; transform:translateX(-50%); }
+  .position-preset[data-indicator-anchor="top-right"]::after { right:10px; top:10px; }
+  .position-preset[data-indicator-anchor="bottom-left"]::after { left:10px; bottom:10px; }
+  .position-preset[data-indicator-anchor="bottom-center"]::after { left:50%; bottom:10px; transform:translateX(-50%); }
+  .position-preset[data-indicator-anchor="bottom-right"]::after { right:10px; bottom:10px; }
+  .position-preset:hover { border-color:var(--accent); color:var(--accent); }
+  .position-preset.is-active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
+  .position-preset.is-active::after { opacity:1; }
+  .position-preset:disabled { opacity:.55; cursor:not-allowed; }
   .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:pointer; }
   .toggle-label { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-weight:600; font-size:12.5px; }
   .inline-field { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
@@ -1263,6 +1308,48 @@ const pageHTML = `<!doctype html>
       var pane = document.getElementById("settings-pane");
       if (pane) pane.scrollTop = 0;
     }
+    syncIndicatorPreview();
+  }
+  var previewTimer = null;
+  function indicatorPreviewPosition() {
+    var anchor = document.querySelector("#settings [data-path='client.feedback.indicator_anchor']");
+    if (!anchor) return null;
+    var x = document.querySelector("#settings [data-path='client.feedback.indicator_offset_x']");
+    var y = document.querySelector("#settings [data-path='client.feedback.indicator_offset_y']");
+    return {
+      action: "preview-indicator",
+      anchor: anchor.value || "top-center",
+      offset_x: Number(x ? x.value : 0) || 0,
+      offset_y: Number(y ? y.value : 0) || 0
+    };
+  }
+  function sendIndicatorPreview() {
+    var position = indicatorPreviewPosition();
+    if (!position || activeSection !== "appearance") return;
+    fetch("/kitsune/intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(position)
+    }).catch(function () {});
+  }
+  function hideIndicatorPreview() {
+    fetch("/kitsune/intent", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "hide-indicator-preview" })
+    }).catch(function () {});
+  }
+  function syncIndicatorPreview(immediate) {
+    if (previewTimer) {
+      clearTimeout(previewTimer);
+      previewTimer = null;
+    }
+    if (activeSection !== "appearance") {
+      hideIndicatorPreview();
+      return;
+    }
+    if (immediate) sendIndicatorPreview();
+    else previewTimer = setTimeout(sendIndicatorPreview, 120);
   }
   function renderSettings(v) {
     var host = document.getElementById("settings");
@@ -1497,6 +1584,20 @@ const pageHTML = `<!doctype html>
     sendIntent({ action: "revoke-device", device_id: button.dataset.deviceId || "" }, button);
   }
   document.addEventListener("click", function (event) {
+    var preset = event.target.closest ? event.target.closest("[data-indicator-anchor]") : null;
+    if (preset) {
+      var field = preset.closest("[data-field]");
+      var input = field ? field.querySelector("[data-path]") : null;
+      if (input) input.value = preset.dataset.indicatorAnchor || "top-center";
+      var presets = field ? field.querySelectorAll("[data-indicator-anchor]") : [];
+      for (var p = 0; p < presets.length; p++) {
+        var active = presets[p] === preset;
+        presets[p].classList.toggle("is-active", active);
+        presets[p].setAttribute("aria-pressed", active ? "true" : "false");
+      }
+      syncIndicatorPreview(true);
+      return;
+    }
     var button = event.target.closest ? event.target.closest("[data-action], [data-nav]") : null;
     if (!button) return;
     if (button.dataset.nav) {
@@ -1652,6 +1753,11 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "wizard-try-fail" }, button);
     }
   });
+  document.addEventListener("input", function (event) {
+    var target = event.target;
+    if (!target || !target.closest) return;
+    if (target.closest("[data-indicator-preview]")) syncIndicatorPreview(false);
+  });
   document.addEventListener("change", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
@@ -1693,6 +1799,11 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "validate", path: el.dataset.path, value: spec });
     }
   });
+  document.addEventListener("visibilitychange", function () {
+    if (document.hidden) hideIndicatorPreview();
+    else syncIndicatorPreview(true);
+  });
+  window.addEventListener("beforeunload", hideIndicatorPreview);
   renderStatus(__INITIAL__);
   selectSection("");
   // Fill the Diagnostics cache when the window opens; the first visit to the

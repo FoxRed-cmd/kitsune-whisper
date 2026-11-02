@@ -40,9 +40,12 @@ type x11Presenter struct {
 	// lastScaleCheck throttles re-reading the desktop scale while the window
 	// stays visible; it is owned by the update loop.
 	lastScaleCheck time.Time
+	// placement is written by the indicator goroutine and read by the update
+	// loop.
+	placement placementHolder
 	// positionDirty asks the next Show to place the window on the monitor with
 	// the focused window. It is set on Hide and on creation.
-	positionDirty bool
+	positionDirty atomic.Bool
 
 	clicks  chan struct{}
 	updates chan x11Update
@@ -126,18 +129,19 @@ func NewX11() (Presenter, error) {
 	setWindowProperties(conn, windowID)
 
 	p := &x11Presenter{
-		conn:          conn,
-		root:          screen.Root,
-		window:        windowID,
-		gc:            gcID,
-		colormap:      colormapID,
-		positionDirty: true,
-		clicks:        make(chan struct{}, 1),
-		updates:       make(chan x11Update, 1),
-		done:          make(chan struct{}),
-		updateDone:    make(chan struct{}),
-		eventDone:     make(chan struct{}),
+		conn:       conn,
+		root:       screen.Root,
+		window:     windowID,
+		gc:         gcID,
+		colormap:   colormapID,
+		clicks:     make(chan struct{}, 1),
+		updates:    make(chan x11Update, 1),
+		done:       make(chan struct{}),
+		updateDone: make(chan struct{}),
+		eventDone:  make(chan struct{}),
 	}
+	p.placement.Set(DefaultPlacement)
+	p.positionDirty.Store(true)
 	p.scale.Store(math.Float64bits(scale))
 	go p.updateLoop()
 	go p.eventLoop()
@@ -150,6 +154,12 @@ func (p *x11Presenter) Scale() float64 {
 }
 func (p *x11Presenter) Clicks() <-chan struct{} {
 	return p.clicks
+}
+
+// SetPlacement moves the window on the next frame.
+func (p *x11Presenter) SetPlacement(placement Placement) {
+	p.placement.Set(placement)
+	p.positionDirty.Store(true)
 }
 
 // Show coalesces frames: at most one update is queued, so a slow compositor can
@@ -219,7 +229,7 @@ func (p *x11Presenter) updateLoop() {
 					_ = xproto.UnmapWindowChecked(p.conn, p.window).Check()
 					p.mapped = false
 				}
-				p.positionDirty = true
+				p.positionDirty.Store(true)
 				continue
 			}
 			if update.frame == nil {
@@ -238,15 +248,15 @@ func (p *x11Presenter) apply(update x11Update) {
 		return
 	}
 	p.refreshScale(time.Now())
-	if !p.mapped || p.positionDirty || p.windowWidth != int(width) || p.windowHeight != int(height) {
-		x, y := p.position(int(width))
+	dirty := p.positionDirty.Swap(false)
+	if !p.mapped || dirty || p.windowWidth != int(width) || p.windowHeight != int(height) {
+		x, y := p.position(image.Pt(int(width), int(height)))
 		values := []uint32{uint32(int16(x)), uint32(int16(y)), uint32(width), uint32(height)}
 		_ = xproto.ConfigureWindowChecked(
 			p.conn, p.window,
 			xproto.ConfigWindowX|xproto.ConfigWindowY|xproto.ConfigWindowWidth|xproto.ConfigWindowHeight,
 			values,
 		).Check()
-		p.positionDirty = false
 		p.windowWidth = int(width)
 		p.windowHeight = int(height)
 	}
@@ -289,20 +299,25 @@ func (p *x11Presenter) eventLoop() {
 }
 
 // position picks the monitor containing the focused window, falling back to the
-// pointer and then the primary or first monitor, centres the frame horizontally,
-// and pins the frame's top edge to the monitor top. The frame itself carries the
-// pill's top margin, so the pill lands TopMargin below the monitor edge.
-func (p *x11Presenter) position(width int) (int, int) {
-	monitors, err := randr.GetMonitors(p.conn, p.root, true).Reply()
-	if err == nil && monitors != nil && len(monitors.Monitors) > 0 {
+// pointer and then the primary or first monitor, and places the frame there
+// according to the configured preset and offsets.
+func (p *x11Presenter) position(frame image.Point) (int, int) {
+	placement := p.placement.Get()
+	scale := p.Scale()
+	if monitors, err := randr.GetMonitors(p.conn, p.root, true).Reply(); err == nil && monitors != nil && len(monitors.Monitors) > 0 {
 		x, y := p.focusPoint()
 		if monitor := monitorAt(monitors.Monitors, x, y); monitor != nil {
-			return centered(monitor, width), int(monitor.Y)
+			rect := image.Rect(int(monitor.X), int(monitor.Y),
+				int(monitor.X)+int(monitor.Width), int(monitor.Y)+int(monitor.Height))
+			point := framePosition(placement, rect, frame, scale)
+			return point.X, point.Y
 		}
 	}
 	_, _ = p.focusPoint()
 	screen := xproto.Setup(p.conn).DefaultScreen(p.conn)
-	return (int(screen.WidthInPixels) - width) / 2, 0
+	rect := image.Rect(0, 0, int(screen.WidthInPixels), int(screen.HeightInPixels))
+	point := framePosition(placement, rect, frame, scale)
+	return point.X, point.Y
 }
 
 func (p *x11Presenter) focusPoint() (int, int) {
@@ -315,17 +330,6 @@ func (p *x11Presenter) focusPoint() (int, int) {
 		return int(pointer.RootX), int(pointer.RootY)
 	}
 	return 0, 0
-}
-
-func centered(monitor *randr.MonitorInfo, width int) int {
-	// Prefer the monitor with the focused window. The caller uses the same
-	// point for the vertical placement, so centring horizontally here and
-	// pinning the top edge keeps the Recording indicator predictable.
-	x := int(monitor.X) + (int(monitor.Width)-width)/2
-	if x < int(monitor.X) {
-		x = int(monitor.X)
-	}
-	return x
 }
 
 func monitorAt(monitors []randr.MonitorInfo, x, y int) *randr.MonitorInfo {

@@ -28,6 +28,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 )
 
@@ -450,6 +451,39 @@ func (r *Runtime) Status() Status {
 // Trigger feeds one Dictation trigger into the cycle. The desktop Tray uses it;
 // the control socket and global hotkey feed the same channel.
 func (r *Runtime) Trigger(trigger cycle.Trigger) { r.send(trigger) }
+
+// PreviewIndicator shows the real Recording indicator at placement without
+// starting a Dictation cycle. The Settings window calls it while the user edits
+// the appearance controls, so every change is visible on screen.
+func (r *Runtime) PreviewIndicator(placement indicator.Placement) error {
+	previewer, err := r.indicatorPreviewer()
+	if err != nil {
+		return err
+	}
+	previewer.Preview(placement)
+	return nil
+}
+
+// HideIndicatorPreview hides a preview started by PreviewIndicator.
+func (r *Runtime) HideIndicatorPreview() {
+	previewer, err := r.indicatorPreviewer()
+	if err != nil {
+		return
+	}
+	previewer.PreviewOff()
+}
+
+func (r *Runtime) indicatorPreviewer() (indicator.Previewer, error) {
+	gen := r.generation()
+	if gen == nil {
+		return nil, ErrNotRunning
+	}
+	previewer, ok := gen.indicator.(indicator.Previewer)
+	if !ok {
+		return nil, errors.New("runtime: the Recording indicator does not support previews")
+	}
+	return previewer, nil
+}
 
 // generation returns the adapters currently serving Dictation, or nil when the
 // runtime is not running. The returned generation may be replaced by a

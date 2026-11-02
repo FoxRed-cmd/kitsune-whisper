@@ -224,6 +224,51 @@ func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
 	}
 }
 
+func TestSettingsPageRendersIndicatorPlacementAndLivePreview(t *testing.T) {
+	view := managementView()
+	view.Sections = append(view.Sections, dictation.Section{
+		ID:    "appearance",
+		Title: "On-screen indicator",
+		Fields: []dictation.Field{
+			{
+				Path:    "client.feedback.indicator_anchor",
+				Label:   "Position on screen",
+				Kind:    dictation.KindPosition,
+				Value:   "bottom-left",
+				Preview: true,
+				Options: []dictation.Option{
+					{Value: "top-left", Label: "Top left"},
+					{Value: "top-center", Label: "Top centre"},
+					{Value: "bottom-left", Label: "Bottom left"},
+				},
+			},
+			{
+				Path:    "client.feedback.indicator_offset_x",
+				Label:   "Horizontal offset (px)",
+				Kind:    dictation.KindNumber,
+				Value:   "12",
+				Preview: true,
+			},
+		},
+	})
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		`data-nav="appearance" data-targets="appearance"`,
+		`data-section="appearance"`,
+		`class="position-grid"`,
+		`data-indicator-anchor="bottom-left" aria-pressed="true"`,
+		`data-path="client.feedback.indicator_anchor" data-indicator-preview="true" value="bottom-left"`,
+		`type="number" step="1" min="-4096" max="4096" id="field-client-feedback-indicator-offset-x" data-path="client.feedback.indicator_offset_x" data-indicator-preview="true"`,
+		`function syncIndicatorPreview(`,
+		`action: "preview-indicator"`,
+		`action: "hide-indicator-preview"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
 func TestSettingsPageUsesOneScrollingPane(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, managementView())
 	if !strings.Contains(page, ".settings-nav { display:flex; flex-direction:column; gap:2px; overflow-y:auto;") {

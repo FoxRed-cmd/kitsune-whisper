@@ -639,11 +639,20 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			LogPath:        clientLogPath,
 			ApplyConfig:    rt.Apply,
 			Send:           rt.Trigger,
-			Version:        Version,
-			Profile:        server.Name,
-			CheckServer:    healthCheck,
-			Notifier:       shellNotifier{send: newNotifier(logger)},
-			Logger:         logger,
+			// The appearance screen previews the real pill on every edit.
+			PreviewIndicator: func(anchor string, offsetX, offsetY int) error {
+				return rt.PreviewIndicator(indicator.Placement{
+					Anchor:  indicator.ParseAnchor(anchor),
+					OffsetX: offsetX,
+					OffsetY: offsetY,
+				})
+			},
+			HideIndicatorPreview: rt.HideIndicatorPreview,
+			Version:              Version,
+			Profile:              server.Name,
+			CheckServer:          healthCheck,
+			Notifier:             shellNotifier{send: newNotifier(logger)},
+			Logger:               logger,
 		})
 	}
 
@@ -914,10 +923,22 @@ func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic
 		Presenter: presenter,
 		Level:     recorder,
 		Clock:     nil,
+		Placement: indicatorPlacement(cfg),
+		Theme:     indicator.DetectTheme(),
 		OnClick:   func() { send(cycle.Stop) },
 		OnLog:     func(message string) { logger.Debug("%s", message) },
 		OnWarning: func(message string) { logger.Warning("%s", message) },
 	})
+}
+
+// indicatorPlacement maps the configured anchor and pixel offsets onto the
+// renderer's placement.
+func indicatorPlacement(cfg config.ClientConfig) indicator.Placement {
+	return indicator.Placement{
+		Anchor:  indicator.ParseAnchor(cfg.Feedback.IndicatorAnchor),
+		OffsetX: cfg.Feedback.IndicatorOffsetX,
+		OffsetY: cfg.Feedback.IndicatorOffsetY,
+	}
 }
 
 // newLogger builds the Client logger from the configured log_level/log_file,

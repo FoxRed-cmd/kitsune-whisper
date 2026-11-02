@@ -375,6 +375,12 @@ type Options struct {
 	ApplyConfig func(config.ClientConfig) error
 	// Send feeds a Dictation trigger into the runtime.
 	Send func(cycle.Trigger)
+	// PreviewIndicator shows the real Recording indicator at the configured
+	// placement while the appearance controls are edited. Nil disables the
+	// preview.
+	PreviewIndicator func(anchor string, offsetX, offsetY int) error
+	// HideIndicatorPreview hides a live preview. It is optional.
+	HideIndicatorPreview func()
 	// Version is shown in the window and the Tray tooltip.
 	Version string
 	// Profile is the active Server profile's name.
@@ -528,7 +534,10 @@ func (s *Shell) open(desktop Desktop, hidden bool) {
 	if err != nil {
 		s.log.Warning("settings window unavailable: %v", err)
 	} else if window != nil {
-		window.OnClose(func() { window.Hide() })
+		window.OnClose(func() {
+			s.hideIndicatorPreview()
+			window.Hide()
+		})
 		window.OnIntent(s.HandleIntent)
 		window.Update(initial)
 	}

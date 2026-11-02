@@ -33,10 +33,11 @@ var english = map[string]string{
 	"phase.processing": "processing",
 	"phase.delivering": "delivering",
 
-	"section.general":   "General",
-	"section.dictation": "Dictation",
-	"section.servers":   "Servers and Devices",
-	"section.spool":     "Spool",
+	"section.general":    "General",
+	"section.appearance": "On-screen indicator",
+	"section.dictation":  "Dictation",
+	"section.servers":    "Servers and Devices",
+	"section.spool":      "Spool",
 
 	"server.profiles":         "Server profiles",
 	"server.active":           "Active",
@@ -87,6 +88,12 @@ var english = map[string]string{
 	"field.feedback.earcons":   "Earcons",
 	"help.feedback.earcons":    "Short tones when recording starts and stops and when a cycle fails.",
 	"field.feedback.indicator": "Recording indicator",
+	"field.indicator_anchor":   "Position on screen",
+	"help.indicator_anchor":    "Pick where the Recording indicator appears. The offsets below nudge it from that preset; the real indicator is shown while you adjust it.",
+	"field.indicator_offset_x": "Horizontal offset (px)",
+	"help.indicator_offset_x":  "Positive moves right, negative moves left. The indicator stays inside the monitor.",
+	"field.indicator_offset_y": "Vertical offset (px)",
+	"help.indicator_offset_y":  "Positive moves down, negative moves up. The indicator stays inside the monitor.",
 	"field.spool_dir":          "Spool folder",
 	"help.spool_dir":           "Failed recordings are kept here. Leave empty to use the default folder.",
 
@@ -113,6 +120,13 @@ var english = map[string]string{
 	"indicator.layer_shell": "Layer shell (Wayland)",
 	"indicator.x11":         "X11 window",
 	"indicator.off":         "Off",
+
+	"indicator.anchor.topLeft":      "Top left",
+	"indicator.anchor.topCenter":    "Top centre",
+	"indicator.anchor.topRight":     "Top right",
+	"indicator.anchor.bottomLeft":   "Bottom left",
+	"indicator.anchor.bottomCenter": "Bottom centre",
+	"indicator.anchor.bottomRight":  "Bottom right",
 
 	"source.default":      "Default",
 	"source.file":         "Saved",

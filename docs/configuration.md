@@ -351,6 +351,9 @@ fingerprint produces a distinct "certificate changed, pair again" error.
 | `wayland_tool` | `auto`\|`wtype`\|`ydotool`\|`none` | `auto` | Wayland injection chain. Ignored on X11/Windows. See [Wayland](wayland.md). |
 | `feedback.earcons` | bool | `false` | Optional start/stop/error tones. Progress cues stay silent. |
 | `feedback.indicator` | `auto`\|`layer_shell`\|`x11`\|`off` | `auto` | On-screen Recording indicator and Input level meter. `auto` tries wlr-layer-shell on Wayland, then the X11 window when `DISPLAY` is set, then disables it. A pinned backend never falls back; an unavailable one logs one warning and dictation continues. See [Wayland](wayland.md). |
+| `feedback.indicator_anchor` | `top-left`\|`top-center`\|`top-right`\|`bottom-left`\|`bottom-center`\|`bottom-right` | `top-center` | Screen preset for the Recording indicator. The Settings window previews the real pill on screen while this is edited. |
+| `feedback.indicator_offset_x` | integer | `0` | Horizontal nudge from the preset in logical pixels. Positive moves right, negative left; the pill is clamped to the monitor. |
+| `feedback.indicator_offset_y` | integer | `0` | Vertical nudge from the preset in logical pixels. Positive moves down, negative up; the pill is clamped to the monitor. |
 | `spool_dir` | string | `""` | Where failed utterances are saved; `""` = `~/.cache/kitsune-whisper/spool` (`%LOCALAPPDATA%` on Windows). |
 | `log_level` | enum | `info` | Same levels as the Server. |
 | `log_file` | string | `""` | `""` = `~/.cache/kitsune-whisper/client.log` (`%LOCALAPPDATA%` on Windows). |

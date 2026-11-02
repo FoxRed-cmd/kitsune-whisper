@@ -25,6 +25,10 @@ const (
 	KindHotkey Kind = "hotkey"
 	// KindMicrophone is a device selector with a level test.
 	KindMicrophone Kind = "microphone"
+	// KindNumber is a whole-number input.
+	KindNumber Kind = "number"
+	// KindPosition is the six-preset screen-position picker.
+	KindPosition Kind = "position"
 )
 
 // Option is one selectable value.
@@ -48,6 +52,9 @@ type Field struct {
 	LockReason  string             `json:"lockReason,omitempty"`
 	Mode        settings.ApplyMode `json:"mode"`
 	Badge       string             `json:"badge,omitempty"`
+	// Preview marks a control that re-renders the live on-screen preview as
+	// the user edits it.
+	Preview bool `json:"preview,omitempty"`
 }
 
 // Section groups the fields of one Settings screen.
@@ -90,6 +97,7 @@ type fieldSpec struct {
 	labelKey string
 	helpKey  string
 	options  []optionSpec
+	preview  bool
 }
 
 type optionSpec struct {
@@ -120,6 +128,41 @@ var specs = []sectionSpec{
 					{value: "en", key: "language.en"},
 					{value: "ru", key: "language.ru"},
 				},
+			},
+		},
+	},
+	{
+		id:       "appearance",
+		titleKey: "section.appearance",
+		fields: []fieldSpec{
+			{
+				path:     "client.feedback.indicator_anchor",
+				kind:     KindPosition,
+				labelKey: "field.indicator_anchor",
+				helpKey:  "help.indicator_anchor",
+				preview:  true,
+				options: []optionSpec{
+					{value: "top-left", key: "indicator.anchor.topLeft"},
+					{value: "top-center", key: "indicator.anchor.topCenter"},
+					{value: "top-right", key: "indicator.anchor.topRight"},
+					{value: "bottom-left", key: "indicator.anchor.bottomLeft"},
+					{value: "bottom-center", key: "indicator.anchor.bottomCenter"},
+					{value: "bottom-right", key: "indicator.anchor.bottomRight"},
+				},
+			},
+			{
+				path:     "client.feedback.indicator_offset_x",
+				kind:     KindNumber,
+				labelKey: "field.indicator_offset_x",
+				helpKey:  "help.indicator_offset_x",
+				preview:  true,
+			},
+			{
+				path:     "client.feedback.indicator_offset_y",
+				kind:     KindNumber,
+				labelKey: "field.indicator_offset_y",
+				helpKey:  "help.indicator_offset_y",
+				preview:  true,
 			},
 		},
 	},
@@ -224,6 +267,7 @@ func (s *Service) View() View {
 				Source:      string(field.Source),
 				SourceLabel: catalog.T("source." + string(field.Source)),
 				Mode:        field.Mode,
+				Preview:     spec.preview,
 			}
 			if spec.helpKey != "" {
 				viewField.Help = catalog.T(spec.helpKey)
@@ -235,7 +279,7 @@ func (s *Service) View() View {
 				viewField.Badge = catalog.T("badge.restart")
 			}
 			switch spec.kind {
-			case KindSelect:
+			case KindSelect, KindPosition:
 				if spec.path == "client.language" {
 					viewField.Options = LanguageOptions(catalog, viewField.Value)
 				} else {

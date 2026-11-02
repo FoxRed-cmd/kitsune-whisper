@@ -17,6 +17,8 @@ func navIcon(key string) string {
 	switch key {
 	case "general":
 		return "sliders"
+	case "appearance":
+		return "monitor"
 	case "startup":
 		return "power"
 	case "dictation":
@@ -42,6 +44,8 @@ func sectionIcon(id string) string {
 	switch id {
 	case "general":
 		return pageIcon("sliders")
+	case "appearance":
+		return pageIcon("monitor")
 	case "dictation":
 		return pageIcon("mic")
 	}
@@ -53,6 +57,9 @@ var pageIconPaths = map[string]string{
 	"sliders": `<path d="M4 6h9"/><circle cx="16" cy="6" r="2.2"/><path d="M18.2 6H20"/>` +
 		`<path d="M4 12h3"/><circle cx="10" cy="12" r="2.2"/><path d="M12.2 12H20"/>` +
 		`<path d="M4 18h9"/><circle cx="16" cy="18" r="2.2"/><path d="M18.2 18H20"/>`,
+	"monitor": `<rect x="3" y="4.5" width="18" height="13" rx="2"/>` +
+		`<path d="M9 21h6"/><path d="M12 17.5V21"/>` +
+		`<rect x="8" y="12" width="8" height="2.4" rx="1.2"/>`,
 	"mic": `<rect x="9" y="3" width="6" height="10.5" rx="3"/>` +
 		`<path d="M5.5 11.5a6.5 6.5 0 0 0 13 0"/><path d="M12 18v3"/><path d="M9 21h6"/>`,
 	"server": `<rect x="3.5" y="4" width="17" height="6.5" rx="2"/>` +

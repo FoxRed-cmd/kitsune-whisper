@@ -60,6 +60,8 @@ type Frame struct {
 	// Scale is the output scale factor: 1 for standard density, 2 for a 200%
 	// desktop, and fractional values such as 1.25 for a 125% desktop.
 	Scale float64
+	// Theme selects the Settings window palette. The zero value is dark.
+	Theme Theme
 }
 
 // FrameSize returns the physical pixel size of a frame at scale.
@@ -99,15 +101,24 @@ func Render(f Frame) *image.RGBA {
 	pillY := float64(TopMargin) * scale
 	pillW := float64(LogicalWidth) * scale
 	pillH := float64(PillHeight) * scale
+	pal := paletteFor(f.Theme)
 
-	fillRoundRect(img, pillX, pillY, pillW, pillH, pillH/2, rgba{0.075, 0.078, 0.09}, 0.94*alpha)
+	// A themed card: a hairline border around the Settings window's card
+	// colour. The border keeps the pill visible on a light or busy desktop.
+	radius := pillH / 2
+	stroke := math.Max(1, math.Round(scale))
+	fillRoundRect(img, pillX, pillY, pillW, pillH, radius, pal.border, pal.borderAlpha*alpha)
+	fillRoundRect(img, pillX+stroke, pillY+stroke, pillW-2*stroke, pillH-2*stroke,
+		math.Max(0, radius-stroke), pal.pill, pal.pillAlpha*alpha)
 
-	accent := rgba{0.45, 0.92, 0.72}
+	accent := pal.accent
 	switch f.Phase {
+	case PhaseProcessing:
+		accent = pal.warn
 	case PhaseError:
-		accent = rgba{1, 0.27, 0.23}
+		accent = pal.danger
 	case PhaseTooShort:
-		accent = rgba{0.62, 0.63, 0.67}
+		accent = pal.muted
 	}
 
 	// Seven level bars.
@@ -147,10 +158,10 @@ func Render(f Frame) *image.RGBA {
 		buttonX := float64(region.Min.X)
 		buttonY := float64(region.Min.Y)
 		size := float64(region.Dx())
-		fillRoundRect(img, buttonX, buttonY, size, size, size/2, rgba{1, 0.23, 0.19}, alpha)
+		fillRoundRect(img, buttonX, buttonY, size, size, size/2, pal.danger, alpha)
 		inner := 12.0 * scale
 		inset := (size - inner) / 2
-		fillRoundRect(img, buttonX+inset, buttonY+inset, inner, inner, 3*scale, rgba{1, 1, 1}, alpha)
+		fillRoundRect(img, buttonX+inset, buttonY+inset, inner, inner, 3*scale, pal.onAccent, alpha)
 	}
 
 	return img

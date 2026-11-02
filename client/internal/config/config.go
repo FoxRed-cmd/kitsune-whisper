@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -46,6 +47,13 @@ type AudioConfig struct {
 type FeedbackConfig struct {
 	Earcons   bool   `yaml:"earcons"`
 	Indicator string `yaml:"indicator"`
+	// IndicatorAnchor is where the Recording indicator appears: one of the
+	// six top/bottom and left/centre/right presets.
+	IndicatorAnchor string `yaml:"indicator_anchor"`
+	// IndicatorOffsetX and IndicatorOffsetY nudge the indicator from its
+	// preset in logical pixels. Positive X moves right, positive Y moves down.
+	IndicatorOffsetX int `yaml:"indicator_offset_x"`
+	IndicatorOffsetY int `yaml:"indicator_offset_y"`
 }
 
 // ServerProfile is one named Server the Client can route Utterances to. The
@@ -121,10 +129,16 @@ func Default() ClientConfig {
 		PasteShortcut:       "auto",
 		ClipboardRestore:    "auto",
 		WaylandTool:         "auto",
-		Feedback:            FeedbackConfig{Earcons: false, Indicator: "auto"},
-		SpoolDir:            "",
-		LogLevel:            "info",
-		LogFile:             "",
+		Feedback: FeedbackConfig{
+			Earcons:          false,
+			Indicator:        "auto",
+			IndicatorAnchor:  "top-center",
+			IndicatorOffsetX: 0,
+			IndicatorOffsetY: 0,
+		},
+		SpoolDir: "",
+		LogLevel: "info",
+		LogFile:  "",
 	}
 }
 
@@ -391,10 +405,16 @@ var schema = map[string]any{
 	"paste_shortcut":    nil,
 	"clipboard_restore": nil,
 	"wayland_tool":      nil,
-	"feedback":          map[string]any{"earcons": nil, "indicator": nil},
-	"spool_dir":         nil,
-	"log_level":         nil,
-	"log_file":          nil,
+	"feedback": map[string]any{
+		"earcons":            nil,
+		"indicator":          nil,
+		"indicator_anchor":   nil,
+		"indicator_offset_x": nil,
+		"indicator_offset_y": nil,
+	},
+	"spool_dir": nil,
+	"log_level": nil,
+	"log_file":  nil,
 }
 
 func rejectUnknown(prefix string, value map[string]any, known map[string]any) error {
@@ -452,6 +472,20 @@ func asFloat(value any, path string) (float64, error) {
 	default:
 		return 0, reasonError(path, ReasonNumber, "", "must be a number")
 	}
+}
+
+func asInt(value any, path string) (int, error) {
+	number, err := asFloat(value, path)
+	if err != nil {
+		return 0, err
+	}
+	if math.Trunc(number) != number {
+		return 0, reasonError(path, ReasonNumber, "", "must be a whole number")
+	}
+	if number < math.MinInt32 || number > math.MaxInt32 {
+		return 0, reasonError(path, ReasonNumber, "", "is out of range")
+	}
+	return int(number), nil
 }
 
 func asBool(value any, path string) (bool, error) {
@@ -632,6 +666,26 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	}
 	if err = oneOf(cfg.Feedback.Indicator, "client.feedback.indicator", "auto", "layer_shell", "x11", "off"); err != nil {
 		return cfg, err
+	}
+	if cfg.Feedback.IndicatorAnchor, err = stringField(feedback, "indicator_anchor", "client.feedback.indicator_anchor"); err != nil {
+		return cfg, err
+	}
+	if err = oneOf(cfg.Feedback.IndicatorAnchor, "client.feedback.indicator_anchor",
+		"top-left", "top-center", "top-right",
+		"bottom-left", "bottom-center", "bottom-right"); err != nil {
+		return cfg, err
+	}
+	if cfg.Feedback.IndicatorOffsetX, err = asInt(feedback["indicator_offset_x"], "client.feedback.indicator_offset_x"); err != nil {
+		return cfg, err
+	}
+	if cfg.Feedback.IndicatorOffsetX < -4096 || cfg.Feedback.IndicatorOffsetX > 4096 {
+		return cfg, fieldError("client.feedback.indicator_offset_x", "must be between -4096 and 4096")
+	}
+	if cfg.Feedback.IndicatorOffsetY, err = asInt(feedback["indicator_offset_y"], "client.feedback.indicator_offset_y"); err != nil {
+		return cfg, err
+	}
+	if cfg.Feedback.IndicatorOffsetY < -4096 || cfg.Feedback.IndicatorOffsetY > 4096 {
+		return cfg, fieldError("client.feedback.indicator_offset_y", "must be between -4096 and 4096")
 	}
 
 	if cfg.SpoolDir, err = asString(m["spool_dir"], "client.spool_dir"); err != nil {

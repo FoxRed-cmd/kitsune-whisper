@@ -151,6 +151,14 @@ client:
     # disables the indicator. An explicitly pinned backend never falls back;
     # if it is unavailable the Client logs one warning and keeps dictating.
     indicator: auto
+    # Where the pill appears: top-left | top-center | top-right |
+    # bottom-left | bottom-center | bottom-right. The Settings window previews
+    # the real pill while you adjust it.
+    indicator_anchor: top-center
+    # Nudge the pill from its preset, in logical pixels. Positive X moves
+    # right, positive Y moves down.
+    indicator_offset_x: 0
+    indicator_offset_y: 0
   # "" = default cache path (~/.cache/kitsune-whisper/spool).
   spool_dir: ""
   log_level: info

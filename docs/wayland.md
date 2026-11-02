@@ -110,7 +110,8 @@ otherwise errors with an actionable message.
 - **The Recording indicator follows the primary output on Wayland.** Wayland
   clients cannot see which monitor owns the focused window, so the layer
   surface is placed on the first/primary output. On X11 the indicator follows
-  the focused window's monitor.
+  the focused window's monitor. `feedback.indicator_anchor` and the pixel
+  offsets choose its place within that output.
 - **Stacking above fullscreen is compositor-dependent.** The layer-shell overlay
   sits above normal tiled windows; some compositors also place it above a
   fullscreen client. On X11, an override-redirect window usually sits above

@@ -2,6 +2,7 @@ package shell_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -475,6 +476,31 @@ func TestQuitReleasesARunningMicrophoneTest(t *testing.T) {
 	}
 	if settings.stream.stopCount() == 0 {
 		t.Fatal("quitting the Client left the microphone test open")
+	}
+}
+
+func TestIndicatorPreviewIntentMovesAndHidesThePill(t *testing.T) {
+	var calls []string
+	sh := shell.New(shell.Options{
+		Runtime:  newFakeRuntime(),
+		Desktop:  newFakeDesktop(),
+		Settings: newFakeSettings(i18n.English),
+		PreviewIndicator: func(anchor string, offsetX, offsetY int) error {
+			calls = append(calls, fmt.Sprintf("%s:%d:%d", anchor, offsetX, offsetY))
+			return nil
+		},
+		HideIndicatorPreview: func() { calls = append(calls, "hide") },
+		Logger:               &fakeLogger{},
+	})
+	if err := sh.HandleIntent([]byte(`{"action":"preview-indicator","anchor":"bottom-right","offset_x":12,"offset_y":-4}`)); err != nil {
+		t.Fatalf("preview intent: %v", err)
+	}
+	if err := sh.HandleIntent([]byte(`{"action":"hide-indicator-preview"}`)); err != nil {
+		t.Fatalf("hide intent: %v", err)
+	}
+	want := []string{"bottom-right:12:-4", "hide"}
+	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		t.Fatalf("preview calls = %v, want %v", calls, want)
 	}
 }
 

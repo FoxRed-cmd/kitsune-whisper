@@ -21,21 +21,23 @@ type shownFrame struct {
 }
 
 type fakePresenter struct {
-	scale  float64
-	frames chan shownFrame
-	hides  chan struct{}
-	closed chan struct{}
-	clicks chan struct{}
-	panic  atomic.Bool
+	scale      float64
+	frames     chan shownFrame
+	hides      chan struct{}
+	closed     chan struct{}
+	clicks     chan struct{}
+	placements chan indicator.Placement
+	panic      atomic.Bool
 }
 
 func newFakePresenter() *fakePresenter {
 	return &fakePresenter{
-		scale:  1,
-		frames: make(chan shownFrame, 256),
-		hides:  make(chan struct{}, 16),
-		closed: make(chan struct{}, 4),
-		clicks: make(chan struct{}, 16),
+		scale:      1,
+		frames:     make(chan shownFrame, 256),
+		hides:      make(chan struct{}, 16),
+		closed:     make(chan struct{}, 4),
+		clicks:     make(chan struct{}, 16),
+		placements: make(chan indicator.Placement, 16),
 	}
 }
 
@@ -50,6 +52,12 @@ func (p *fakePresenter) Show(frame *image.RGBA, input image.Rectangle) {
 func (p *fakePresenter) Hide()                   { p.hides <- struct{}{} }
 func (p *fakePresenter) Close()                  { p.closed <- struct{}{} }
 func (p *fakePresenter) Clicks() <-chan struct{} { return p.clicks }
+func (p *fakePresenter) SetPlacement(placement indicator.Placement) {
+	select {
+	case p.placements <- placement:
+	default:
+	}
+}
 
 type fakeTicker struct {
 	ch   chan time.Time
@@ -355,6 +363,69 @@ func TestFailedFrameDisablesOnceWithoutBreakingTheCycle(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if h.warnings.Load() != 1 {
 		t.Fatalf("warnings = %d after more cues, want 1", h.warnings.Load())
+	}
+}
+
+func TestPreviewShowsThePillWithoutACycleAndIgnoresClicks(t *testing.T) {
+	h := newHarness(t)
+	h.indicator.Preview(indicator.Placement{Anchor: indicator.AnchorBottomLeft})
+	frame := h.waitFrame(t)
+	if frame.input != indicator.StopRegion(1) {
+		t.Fatalf("preview input region = %v, want %v", frame.input, indicator.StopRegion(1))
+	}
+	h.presenter.clicks <- struct{}{}
+	select {
+	case <-h.clicks:
+		t.Fatal("a preview click must not start or stop dictation")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	h.indicator.PreviewOff()
+	h.waitHide(t)
+}
+
+func TestPreviewDoesNotChangeTheSavedPlacement(t *testing.T) {
+	h := newHarness(t)
+	h.indicator.Preview(indicator.Placement{Anchor: indicator.AnchorBottomRight, OffsetX: 40})
+	h.waitFrame(t)
+	h.indicator.PreviewOff()
+	h.waitHide(t)
+
+	deadline := time.After(2 * time.Second)
+	seenPreview := false
+	for {
+		select {
+		case placement := <-h.presenter.placements:
+			if placement.Anchor == indicator.AnchorBottomRight {
+				seenPreview = true
+				continue
+			}
+			if seenPreview && placement == indicator.DefaultPlacement {
+				return
+			}
+		case <-deadline:
+			t.Fatal("preview never restored the saved placement")
+		}
+	}
+}
+
+func TestPreviewYieldsToARealCue(t *testing.T) {
+	h := newHarness(t)
+	h.indicator.Preview(indicator.Placement{})
+	h.waitFrame(t)
+
+	h.indicator.Cue(cycle.CueStart)
+	h.waitLog(t, "indicator: recording")
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case frame := <-h.presenter.frames:
+			if frame.input == indicator.StopRegion(1) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("recording input region after preview never became %v", indicator.StopRegion(1))
+		}
 	}
 }
 
