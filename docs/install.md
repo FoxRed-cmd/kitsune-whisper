@@ -1,9 +1,10 @@
 # Install, upgrade, and uninstall
 
-The Client is a single binary. On Linux the one-line installer also places the
-native per-user Server bundle and the bundled Wayland helpers, so a fresh
-machine can dictate from the Tray without hand-assembling two projects. Both
-processes read the same `kitsune.yaml` (each reads only its own section).
+The Client is a single binary. The Linux one-line installer and the Windows
+setup executable also place the native per-user Server bundle (and, on Linux,
+the bundled Wayland helpers), so a fresh machine can dictate from the Tray
+without hand-assembling two projects. Both processes read the same
+`kitsune.yaml` (each reads only its own section).
 
 For the native bundle, `kitsune-server install` resolves the config file exactly
 as startup would (`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user
@@ -111,15 +112,35 @@ Wayland injection stays clipboard-only until you add the rule from
 [Wayland injection](#wayland-injection-is-set-up-for-you) or run the one-line
 installer once with elevation.
 
-Windows (PowerShell 7+) — the Client only:
+Windows 10/11 (x64) — the per-user installer:
+
+Download `kitsune-whisper_windows_amd64_setup.exe` from the
+[latest release](https://github.com/FoxRed-cmd/kitsune-whisper/releases/latest)
+and run it. It needs **no administrator rights** and installs the Client with
+its Tray and Settings window, the native Server bundle, the Start Menu entry, and
+both per-user logon tasks (`kitsune-client` and `kitsune-server`). The Tasks page
+offers an optional desktop shortcut; closing that page installs without one.
+
+The one-liner downloads the same setup, verifies its SHA-256 against
+`checksums.txt`, and runs it:
 
 ```powershell
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-Both scripts drop a config template **only if `kitsune.yaml` does not already
-exist**, and register autostart. Pin a release with `KITSUNE_VERSION=vX.Y.Z`, or
-pass `-Version vX.Y.Z` on Windows.
+Pin a release with `KITSUNE_VERSION=vX.Y.Z`, or pass `-Version vX.Y.Z` on
+Windows. Both installers drop a `kitsune.yaml` template **only if it does not
+already exist**, and register autostart. `install.ps1 -ForceConfig` overwrites an
+existing template; the setup itself never does.
+
+WebView2 is bootstrapped **per user**: if the Evergreen Runtime is missing, the
+installer runs Microsoft's silent per-user bootstrapper. A machine that is
+offline (or whose WebView2 install fails) gets one clear message naming the
+manual download link instead of a broken Tray. The installer then checks
+`server.port` before registering the Server; a taken port stops that step with a
+line telling you to stop the other process or change `server.port` in
+`%APPDATA%\kitsune-whisper\kitsune.yaml`. The Server never picks a random port.
+The Client remains installed for a Remote Server if the local Server step fails.
 
 From source (requires a C toolchain — `malgo` uses cgo):
 
@@ -276,6 +297,9 @@ application menu even after `uninstall-autostart`.
   running interactively with least privilege and restart-on-failure. If task
   registration is denied, it falls back to the
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `kitsune-whisper`.
+  The setup also registers `kitsune-server`, which runs the bundle's
+  `pythonw.exe` hidden (no console window) with restart-on-failure. Both tasks
+  are removed by autostart uninstall and by the setup's uninstaller.
 
 The Linux installer also registers `kitsune-server.service` and
 `kitsune-ydotoold.service`. The Server unit starts at login (no
@@ -356,13 +380,21 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -Uninstall
 ```
 
+The Windows setup also registers itself in **Apps & features**; its uninstaller
+is `%LOCALAPPDATA%\kitsune-whisper\unins000.exe`. An interactive uninstall asks
+whether to delete user data. A silent uninstall keeps it unless `/PURGE=1` is
+passed; `install.ps1 -Uninstall -Purge` does that for you. Uninstall removes the
+Client, Tray, Server bundle, both logon tasks, the Start Menu entry, and any
+desktop shortcut.
+
 Linux uninstall stops and removes the Client, Server, and ydotool user units,
 their binaries, the bundled helpers, the application-menu entry, the icon, and
 autostart's hidden portal `.desktop` file. It keeps
 `kitsune.yaml`, Setup progress, Spool, logs, the certificate, Devices, and
 models. `--purge` additionally removes all of those and, with `sudo`, the
 `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On Windows `-Purge`
-removes config, Setup progress, Spool, and log.
+removes config, Setup progress, Spool, logs, certificates, Devices, and the
+default model cache.
 
 ## Server
 

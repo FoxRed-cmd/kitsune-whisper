@@ -198,6 +198,13 @@ archives the four at the archive root. Publish the archive with a `sha256sum`
 entry; `install --artifact` verifies it before extracting. Publish natively per
 platform; CUDA wheels and models are never bundled.
 
+Release CI builds the matching Windows bundle with
+`--platform windows` from a standalone Python tree that contains both
+`python.exe` and `pythonw.exe`, then passes that archive to
+`packaging/windows/build-installer.ps1`. The setup verifies the archive's
+SHA-256 before calling the bundle's bootstrap, so a corrupted download never
+replaces a working Server.
+
 ## Uninstall
 
 `kitsune-server uninstall` stops and removes the unit/task, deletes the cached

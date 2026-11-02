@@ -2,14 +2,17 @@
 #requires -Version 7
 <#
 .SYNOPSIS
-Installs or removes the kitsune-whisper Client on Windows.
+Installs, upgrades, or removes kitsune-whisper on Windows without elevation.
 
 .DESCRIPTION
-Downloads the release archive, verifies its SHA-256 checksum, installs
-kitsune-client.exe under %LOCALAPPDATA%\kitsune-whisper\bin, writes a config
-template to %APPDATA%\kitsune-whisper\kitsune.yaml (only when absent), adds the
-binary directory to the user PATH, and registers a per-user Task Scheduler task
-at logon. Re-run it to upgrade; the config is left untouched.
+Downloads the per-user setup executable from the release, verifies its SHA-256
+against checksums.txt, and runs it. The setup installs the Client with its Tray
+and Settings window, the native Server bundle, WebView2 when missing, the Start
+Menu entry, and both per-user logon tasks.
+
+Re-run it to upgrade. Existing configuration, models, Devices, certificates, and
+logs are kept. Use -Uninstall to remove the binaries and tasks; add -Purge to
+remove user data too.
 
 One-liner:
 
@@ -33,34 +36,31 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $Repo = 'FoxRed-cmd/kitsune-whisper'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'kitsune-whisper\bin'
-$Binary = Join-Path $InstallDir 'kitsune-client.exe'
-$ConfigDir = Join-Path $env:APPDATA 'kitsune-whisper'
-$Config = Join-Path $ConfigDir 'kitsune.yaml'
-$AppDir = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
-$Asset = 'kitsune-client_windows_amd64.zip'
+$Asset = 'kitsune-whisper_windows_amd64_setup.exe'
+$InstallDir = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
+$Uninstaller = Join-Path $InstallDir 'unins000.exe'
 
 if (-not [Environment]::Is64BitOperatingSystem) {
-    throw 'kitsune-client releases are built for 64-bit Windows only'
+    throw 'kitsune-whisper releases are built for 64-bit Windows only'
 }
 
 if ($Uninstall) {
-    if (Test-Path -LiteralPath $Binary) {
-        try { & $Binary uninstall-autostart } catch { Write-Warning "could not remove autostart: $_" }
+    if (-not (Test-Path -LiteralPath $Uninstaller)) {
+        throw "kitsune-whisper is not installed (no uninstaller at $Uninstaller)"
     }
-    Remove-Item -LiteralPath $Binary -Force -ErrorAction SilentlyContinue
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if ($userPath) {
-        $kept = @($userPath -split ';' | Where-Object { $_ -ne '' -and $_ -ne $InstallDir })
-        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
+    $arguments = @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+    if ($Purge) {
+        $arguments += '/PURGE=1'
+    }
+    $process = Start-Process -FilePath $Uninstaller -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "the uninstaller failed with exit code $($process.ExitCode)"
     }
     if ($Purge) {
-        Remove-Item -LiteralPath $ConfigDir -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $AppDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host 'kitsune-client uninstalled (config, spool, and logs purged)'
+        Write-Host 'kitsune-whisper uninstalled (configuration, models, Devices, certificates, logs, and Spool purged)'
     }
     else {
-        Write-Host 'kitsune-client uninstalled (config, spool, and logs kept)'
+        Write-Host 'kitsune-whisper uninstalled (configuration, models, Devices, certificates, logs, and Spool kept)'
     }
     return
 }
@@ -75,11 +75,11 @@ else {
 $Temp = Join-Path ([System.IO.Path]::GetTempPath()) ("kitsune-install-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Force -Path $Temp | Out-Null
 try {
-    $Archive = Join-Path $Temp $Asset
+    $Setup = Join-Path $Temp $Asset
     $Checksums = Join-Path $Temp 'checksums.txt'
 
     Write-Host "Downloading $Asset ($Version)..."
-    Invoke-WebRequest -Uri "$Base/$Asset" -OutFile $Archive
+    Invoke-WebRequest -Uri "$Base/$Asset" -OutFile $Setup
     Invoke-WebRequest -Uri "$Base/checksums.txt" -OutFile $Checksums
 
     $expected = $null
@@ -88,42 +88,26 @@ try {
         if ($parts.Length -ge 2 -and $parts[-1] -eq $Asset) { $expected = $parts[0]; break }
     }
     if (-not $expected) { throw "no checksum for $Asset in checksums.txt" }
-    $actual = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    $actual = (Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash.ToLowerInvariant()
     if ($actual -ne $expected.ToLowerInvariant()) {
         throw "checksum mismatch for ${Asset}: expected $expected, got $actual"
     }
 
-    Expand-Archive -LiteralPath $Archive -DestinationPath $Temp -Force
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    Copy-Item -LiteralPath (Join-Path $Temp 'kitsune-client.exe') -Destination $Binary -Force
-
-    New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
-    if ((-not (Test-Path -LiteralPath $Config)) -or $ForceConfig) {
-        $template = Join-Path $Temp 'kitsune.example.yaml'
-        if (Test-Path -LiteralPath $template) {
-            Copy-Item -LiteralPath $template -Destination $Config -Force
-            Write-Host "Wrote config template to $Config"
-        }
+    Write-Host 'Running the per-user installer...'
+    $arguments = @('/SILENT', '/NORESTART')
+    if ($ForceConfig) {
+        $arguments += '/FORCECONFIG=1'
     }
-
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (($userPath -split ';') -notcontains $InstallDir) {
-        $newPath = if ([string]::IsNullOrEmpty($userPath)) { $InstallDir } else { "$userPath;$InstallDir" }
-        [Environment]::SetEnvironmentVariable('Path', $newPath, 'User')
-        Write-Host "Added $InstallDir to your user PATH"
+    $process = Start-Process -FilePath $Setup -ArgumentList $arguments -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw ("the installer exited with code $($process.ExitCode). " +
+            'If this machine is offline, install the WebView2 Evergreen Runtime from ' +
+            'https://developer.microsoft.com/microsoft-edge/webview2/ and run this command again. ' +
+            "Run $Setup interactively to see the exact error.")
     }
 }
 finally {
     Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-try {
-    & $Binary install-autostart
-    Write-Host 'Registered the kitsune-client Task Scheduler task'
-}
-catch {
-    Write-Warning "installed the client but could not register autostart: $_"
-    Write-Warning "re-run '$Binary install-autostart' inside your desktop session"
-}
-
-Write-Host "Installed $Binary"
+Write-Host 'Installed kitsune-whisper. Press Ctrl+Shift+Space to dictate.'

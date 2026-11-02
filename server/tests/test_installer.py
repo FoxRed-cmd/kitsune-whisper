@@ -502,7 +502,7 @@ def test_dry_run_prints_the_plan_and_changes_nothing(sandbox, tmp_path):
     assert not (Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client").exists()
 
 
-def test_release_workflow_publishes_every_linux_artifact() -> None:
+def test_release_workflow_publishes_every_artifact() -> None:
     import yaml
 
     workflow_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
@@ -511,6 +511,8 @@ def test_release_workflow_publishes_every_linux_artifact() -> None:
         "client-linux",
         "client-windows",
         "server-bundle",
+        "server-bundle-windows",
+        "windows-installer",
         "wayland-tools",
         "deb",
         "rpm",
@@ -523,6 +525,8 @@ def test_release_workflow_publishes_every_linux_artifact() -> None:
         "kitsune-client_linux_amd64-legacy.tar.gz",
         "kitsune-client_windows_amd64.zip",
         "kitsune-server_linux_amd64.tar.gz",
+        "kitsune-server_windows_amd64.tar.gz",
+        "kitsune-whisper_windows_amd64_setup.exe",
         "kitsune-wayland_linux_amd64.tar.gz",
         "kitsune-whisper*_amd64.deb",
         "kitsune-whisper*.rpm",

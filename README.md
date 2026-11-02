@@ -236,9 +236,15 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 ```
 
 ```powershell
-# Windows (PowerShell 7+): Client only
+# Windows (PowerShell 7+): per-user setup, Tray, local Server bundle
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
+
+The Windows one-liner downloads `kitsune-whisper_windows_amd64_setup.exe`,
+verifies its SHA-256, and runs it. The setup needs no administrator rights,
+bootstraps WebView2 per user, and registers per-user logon tasks for the Client
+and the hidden Server. You can also download that setup executable from the
+release and run it directly; the Tasks page offers an optional desktop shortcut.
 
 The Linux installer verifies every archive checksum, installs the Client, the
 native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**

@@ -10,6 +10,11 @@ name: Release
 #   kitsune-whisper_*_amd64.deb                Debian/Ubuntu package
 #   kitsune-whisper-*-1.x86_64.rpm             Fedora/RHEL package
 #   kitsune-whisper-*-x86_64.AppImage          portable AppImage
+#
+# The Windows set is the contract install.ps1 and the setup rely on:
+#   kitsune-client_windows_amd64.zip           Client, Tray, Settings window
+#   kitsune-server_windows_amd64.tar.gz        native Server bundle
+#   kitsune-whisper_windows_amd64_setup.exe    per-user Inno Setup installer
 on:
   push:
     tags: ["v*"]
@@ -74,7 +79,7 @@ jobs:
         run: |
           $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          go build -C client -trimpath -ldflags `
+          go build -C client -trimpath -tags "desktop" -ldflags `
             "-X github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli.Version=$version -H=windowsgui" `
             -o "../dist/kitsune-client.exe" ./cmd/kitsune-client
           Copy-Item kitsune.example.yaml dist/
@@ -119,6 +124,89 @@ jobs:
         with:
           name: server-bundle
           path: dist/kitsune-server_linux_amd64.tar.gz
+          if-no-files-found: error
+
+  server-bundle-windows:
+    name: server bundle windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Resolve a standalone 3.11 runtime and the Server environment
+        shell: pwsh
+        run: |
+          uv python install 3.11
+          $python = (uv python find 3.11).Trim()
+          $runtime = Split-Path -Parent $python
+          if (-not (Test-Path -LiteralPath (Join-Path $runtime "pythonw.exe"))) {
+            throw "the standalone runtime has no pythonw.exe, so the Server cannot start hidden"
+          }
+          uv venv --python 3.11 .bundle-venv
+          uv pip install --python .bundle-venv\Scripts\python.exe ./server
+          $sitePackages = (Resolve-Path -LiteralPath .bundle-venv\Lib\site-packages).Path
+          "KITSUNE_SERVER_RUNTIME=$runtime" >> $env:GITHUB_ENV
+          "KITSUNE_SERVER_SITE_PACKAGES=$sitePackages" >> $env:GITHUB_ENV
+
+      - name: Build the bundle
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & .bundle-venv\Scripts\python.exe -m kitsune_server bundle build `
+            --output dist/kitsune-server_windows_amd64.tar.gz `
+            --runtime $env:KITSUNE_SERVER_RUNTIME `
+            --site-packages $env:KITSUNE_SERVER_SITE_PACKAGES `
+            --platform windows --arch amd64 --version $version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-bundle-windows
+          path: dist/kitsune-server_windows_amd64.tar.gz
+          if-no-files-found: error
+
+  windows-installer:
+    name: windows installer
+    runs-on: windows-latest
+    needs: [client-windows, server-bundle-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle-windows
+          path: dist
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Unpack the Client
+        shell: pwsh
+        run: Expand-Archive -LiteralPath dist\kitsune-client_windows_amd64.zip -DestinationPath dist -Force
+
+      - name: Build the per-user setup
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          ./packaging/windows/build-installer.ps1 `
+            -Client dist/kitsune-client.exe `
+            -ServerArtifact dist/kitsune-server_windows_amd64.tar.gz `
+            -Version $version -Output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/kitsune-whisper_windows_amd64_setup.exe
           if-no-files-found: error
 
   wayland-tools:
@@ -292,7 +380,16 @@ jobs:
   release:
     name: publish
     runs-on: ubuntu-24.04
-    needs: [client-linux, client-windows, server-bundle, wayland-tools, deb, rpm, appimage]
+    needs:
+      - client-linux
+      - client-windows
+      - server-bundle
+      - server-bundle-windows
+      - windows-installer
+      - wayland-tools
+      - deb
+      - rpm
+      - appimage
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -315,7 +412,9 @@ jobs:
             dist/kitsune-client_linux_amd64-legacy.tar.gz
             dist/kitsune-client_windows_amd64.zip
             dist/kitsune-server_linux_amd64.tar.gz
+            dist/kitsune-server_windows_amd64.tar.gz
             dist/kitsune-wayland_linux_amd64.tar.gz
+            dist/kitsune-whisper_windows_amd64_setup.exe
             dist/kitsune-whisper*_amd64.deb
             dist/kitsune-whisper*.rpm
             dist/kitsune-whisper*.AppImage
