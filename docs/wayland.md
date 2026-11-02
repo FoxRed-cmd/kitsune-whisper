@@ -121,9 +121,13 @@ otherwise errors with an actionable message.
   requests focus, but with focus-follows-mouse a pointer that comes to rest on
   the Recording indicator may redirect focus. Only the stop button accepts
   clicks; the rest of the pill passes clicks through.
-- **Windows is silent for now.** The native Win32 layered-window presenter is
-  deferred (#42); the Client logs one warning when the indicator is requested
-  there and keeps dictating.
+- **Windows has its own layered window.** The Win32 presenter is a borderless
+  `WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` popup
+  drawn with `UpdateLayeredWindow`. It follows the monitor that owns the
+  foreground window, scales with that monitor's Per-Monitor V2 DPI, and stays
+  hidden while a true exclusive-fullscreen app owns the display. Alpha-0 pixels
+  pass clicks through, so only the stop button is clickable and never activates
+  the Client.
 
 If the hotkey or injection isn't working, check the Client log
 (`~/.cache/kitsune-whisper/client.log`) — the selected backend and any fallback

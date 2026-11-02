@@ -956,7 +956,7 @@ func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic
 	current := session.Current()
 	presenter, err := indicator.Open(
 		cfg.Feedback.Indicator,
-		indicator.Environment{LayerShell: current.Wayland, X11: current.X11},
+		indicator.PlatformEnvironment(current.Wayland, current.X11),
 		indicator.PlatformFactories(),
 	)
 	if err != nil {

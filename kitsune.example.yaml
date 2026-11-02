@@ -148,8 +148,9 @@ client:
     # pill that follows the live Input level while recording. auto uses a
     # wlr-layer-shell overlay on Wayland (Hyprland, Sway, KDE Plasma), then the
     # X11 window when DISPLAY is set (including GNOME through XWayland), then
-    # disables the indicator. An explicitly pinned backend never falls back;
-    # if it is unavailable the Client logs one warning and keeps dictating.
+    # the native layered window on Windows. An explicitly pinned backend never
+    # falls back; if it is unavailable the Client logs one warning and keeps
+    # dictating.
     indicator: auto
     # Where the pill appears: top-left | top-center | top-right |
     # bottom-left | bottom-center | bottom-right. The Settings window previews

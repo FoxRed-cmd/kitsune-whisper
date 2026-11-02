@@ -441,19 +441,23 @@ func TestPresenterSelection(t *testing.T) {
 		}, calls
 	}
 	cases := []struct {
-		name       string
-		configured string
-		env        indicator.Environment
-		layerErr   error
-		x11Err     error
-		want       string
-		wantErr    bool
-		layerCalls int32
-		x11Calls   int32
+		name        string
+		configured  string
+		env         indicator.Environment
+		layerErr    error
+		x11Err      error
+		windowsErr  error
+		want        string
+		wantErr     bool
+		layerCalls  int32
+		x11Calls    int32
+		windowsCall int32
 	}{
 		{name: "auto prefers layer shell", configured: "auto", env: indicator.Environment{LayerShell: true, X11: true}, want: "layer_shell", layerCalls: 1},
 		{name: "auto falls back to x11", configured: "auto", env: indicator.Environment{LayerShell: true, X11: true}, layerErr: fmt.Errorf("no layer shell"), want: "x11", layerCalls: 1, x11Calls: 1},
 		{name: "auto uses x11 without wayland", configured: "auto", env: indicator.Environment{X11: true}, want: "x11", x11Calls: 1},
+		{name: "auto uses win32 on windows", configured: "auto", env: indicator.Environment{Windows: true}, want: "win32", windowsCall: 1},
+		{name: "host OS wins over stray X11", configured: "auto", env: indicator.Environment{X11: true, Windows: true}, want: "win32", windowsCall: 1},
 		{name: "auto has no backend", configured: "auto", env: indicator.Environment{}, wantErr: true},
 		{name: "explicit layer shell does not fall back", configured: "layer_shell", env: indicator.Environment{LayerShell: true, X11: true}, layerErr: fmt.Errorf("broken"), wantErr: true, layerCalls: 1},
 		{name: "explicit layer shell unavailable", configured: "layer_shell", env: indicator.Environment{X11: true}, wantErr: true},
@@ -464,7 +468,8 @@ func TestPresenterSelection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			layer, layerCalls := newPresenter("layer_shell", tc.layerErr)
 			x11, x11Calls := newPresenter("x11", tc.x11Err)
-			presenter, err := indicator.Open(tc.configured, tc.env, indicator.Factories{LayerShell: layer, X11: x11})
+			win32, windowsCalls := newPresenter("win32", tc.windowsErr)
+			presenter, err := indicator.Open(tc.configured, tc.env, indicator.Factories{LayerShell: layer, X11: x11, Windows: win32})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Open = %v, want error", presenter)
@@ -482,6 +487,9 @@ func TestPresenterSelection(t *testing.T) {
 			}
 			if x11Calls.Load() != tc.x11Calls {
 				t.Fatalf("x11 factory calls = %d, want %d", x11Calls.Load(), tc.x11Calls)
+			}
+			if windowsCalls.Load() != tc.windowsCall {
+				t.Fatalf("win32 factory calls = %d, want %d", windowsCalls.Load(), tc.windowsCall)
 			}
 		})
 	}
