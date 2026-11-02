@@ -560,9 +560,17 @@ def create_app(
     async def list_devices(
         device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
     ) -> dict[str, Any]:
-        """List trusted Devices with names, timestamps, and last addresses."""
-        del device
-        return {"devices": [item.as_dict() for item in app.state.devices.list()]}
+        """List trusted Devices with names, timestamps, and last addresses.
+
+        ``current`` marks the Device that made this request, so the Client can
+        identify its own entry without guessing from the peer address.
+        """
+        devices = []
+        for item in app.state.devices.list():
+            record = item.as_dict()
+            record["current"] = device is not None and item.id == device.id
+            devices.append(record)
+        return {"devices": devices}
 
     @app.delete("/admin/devices/{device_id}", status_code=204)
     async def revoke_device(

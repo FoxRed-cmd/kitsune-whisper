@@ -474,6 +474,44 @@ func TestLoadDevicesAndRevokeUseTheAdminAPI(t *testing.T) {
 	}
 }
 
+func TestRevokeDeviceRefusesTheLocalClientsOwnDevice(t *testing.T) {
+	fake := newFakeServer(t)
+	fake.devices = []map[string]any{
+		{"id": "dev-self", "name": "Local client", "created_at": 100.0, "current": true},
+		{"id": "dev-2", "name": "Laptop", "created_at": 110.0, "current": false},
+	}
+	service, store, tokens := newService(t)
+	paired, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("pair: %v", err)
+	}
+	if _, err := store.Save(map[string]any{
+		"servers": []any{
+			map[string]any{
+				"id":          "local",
+				"name":        "Local Server",
+				"url":         paired.URL,
+				"fingerprint": paired.Fingerprint,
+				"auto_pair":   true,
+			},
+		},
+		"active_server": "local",
+	}); err != nil {
+		t.Fatalf("save local profile: %v", err)
+	}
+	if err := tokens.Save("local", fake.token); err != nil {
+		t.Fatalf("save token: %v", err)
+	}
+
+	err = service.RevokeDevice(context.Background(), "local", "dev-self")
+	if !errors.Is(err, servers.ErrRevokeLocalClient) {
+		t.Fatalf("revoke error = %v, want ErrRevokeLocalClient", err)
+	}
+	if len(fake.revoked) != 0 {
+		t.Fatalf("revoked = %+v, want none", fake.revoked)
+	}
+}
+
 func TestARevokedTokenSurfacesAsAnActionablePairAgainError(t *testing.T) {
 	fake := newFakeServer(t)
 	service, _, tokens := newService(t)

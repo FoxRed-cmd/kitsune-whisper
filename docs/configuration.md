@@ -218,9 +218,14 @@ certificate, stores the Device token in the keychain, and makes the new profile
 active.
 
 The same screen lists trusted Devices with their last-seen time and revokes
-one. The Admin API endpoints behind it are
+one. The Local Client's own Device is marked **This Device** and has no Revoke
+button while the Local Server profile is active: its auto-pairing has no code
+to repeat, so revoking it would leave the Client with no path back from the
+Settings window. Manage that Device from the Server host instead. The Admin API
+endpoints behind the list are
 `POST /admin/pairing-code`, `GET /admin/devices`, and
-`DELETE /admin/devices/{id}`; they require the same Device token as
+`DELETE /admin/devices/{id}`; the list marks the requesting Device with
+`"current": true`. These endpoints require the same Device token as
 `/status`. Pairing itself is `POST /pair` with `{"code": "...", "name": "..."}`
 and needs no token. Wrong, expired, reused, and rate-limited codes return
 distinct `4xx` codes (`pairing_code_wrong`, `pairing_code_expired`,

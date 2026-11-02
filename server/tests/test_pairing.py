@@ -199,7 +199,10 @@ async def test_devices_are_listed_with_last_seen_and_revocable() -> None:
         listed = await client.get("/admin/devices")
         assert listed.status_code == 200
         devices = listed.json()["devices"]
+        owner_device = next(item for item in devices if item["name"] == "Owner laptop")
         laptop = next(item for item in devices if item["name"] == "Laptop")
+        assert owner_device["current"] is True
+        assert laptop["current"] is False
         assert laptop["last_seen"] is not None
         revoked = await client.delete(f"/admin/devices/{laptop['id']}")
     assert revoked.status_code == 204

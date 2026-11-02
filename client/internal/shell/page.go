@@ -306,11 +306,18 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	if len(view.Devices) == 0 {
 		out.WriteString(`<p class="help">` + escape(labels.NoDevices) + `</p>`)
 	} else {
+		localServer := view.LocalServerActive()
 		out.WriteString(`<table class="devices"><thead><tr><th>` + escape(labels.Name) + `</th><th>` + escape(labels.LastSeen) + `</th><th></th></tr></thead><tbody>`)
 		for _, device := range view.Devices {
 			out.WriteString(`<tr data-device="` + escape(device.ID) + `"><td>` + escape(device.Name) + `</td><td>`)
 			out.WriteString(escape(lastSeen(device.LastSeen, labels.Never)))
-			out.WriteString(`</td><td><button type="button" data-action="revoke-device" data-device-id="` + escape(device.ID) + `" data-confirm="` + escape(labels.RevokeConfirm) + `">` + escape(labels.Revoke) + `</button></td></tr>`)
+			out.WriteString(`</td><td>`)
+			if localServer && device.Current {
+				out.WriteString(`<span class="badge active">` + escape(labels.ThisDevice) + `</span>`)
+			} else {
+				out.WriteString(`<button type="button" data-action="revoke-device" data-device-id="` + escape(device.ID) + `" data-confirm="` + escape(labels.RevokeConfirm) + `">` + escape(labels.Revoke) + `</button>`)
+			}
+			out.WriteString(`</td></tr>`)
 		}
 		out.WriteString(`</tbody></table>`)
 	}

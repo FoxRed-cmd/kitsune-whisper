@@ -126,6 +126,7 @@ type ServerLabels struct {
 	Never            string            `json:"never"`
 	Revoke           string            `json:"revoke"`
 	RevokeConfirm    string            `json:"revokeConfirm"`
+	ThisDevice       string            `json:"thisDevice"`
 	NoServers        string            `json:"noServers"`
 	ExposureTitle    string            `json:"exposureTitle"`
 	ExposureHelp     string            `json:"exposureHelp"`
@@ -439,6 +440,7 @@ func (s *Shell) serverLabels() ServerLabels {
 		Never:            catalog.T("server.never"),
 		Revoke:           catalog.T("action.revoke"),
 		RevokeConfirm:    catalog.T("server.revokeConfirm"),
+		ThisDevice:       catalog.T("server.thisDevice"),
 		NoServers:        catalog.T("server.noServers"),
 		ExposureTitle:    catalog.T("server.exposureTitle"),
 		ExposureHelp:     catalog.T("server.exposureHelp"),
@@ -1023,6 +1025,10 @@ func (s *Shell) revokeDevice(deviceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := s.opts.Servers.RevokeDevice(ctx, view.ActiveID, deviceID); err != nil {
+		if errors.Is(err, servers.ErrRevokeLocalClient) {
+			s.pushMessages(nil, []string{s.catalog().T("error.server.revokeOwnDevice")})
+			return
+		}
 		s.pushMessages(nil, []string{s.catalog().T("error.server.revoke", err.Error())})
 		s.pushSettings()
 		return

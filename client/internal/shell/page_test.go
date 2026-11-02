@@ -153,6 +153,7 @@ func sampleView() shell.SettingsView {
 			Never:            "Никогда",
 			Revoke:           "Отозвать",
 			RevokeConfirm:    "Отозвать устройство?",
+			ThisDevice:       "Это устройство",
 			NoServers:        "Нет профилей.",
 			ExposureTitle:    "Доступ из локальной сети",
 			ExposureHelp:     "Разрешить клиентам из сети.",
@@ -592,6 +593,25 @@ func TestPageRendersServersDevicesAndPairing(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing %q", want)
 		}
+	}
+}
+
+func TestPageDoesNotOfferRevokeForTheLocalClientOnTheLocalServer(t *testing.T) {
+	view := sampleView()
+	view.Servers.Devices = []servers.Device{
+		{ID: "self", Name: "Local client", Current: true},
+		{ID: "laptop", Name: "Laptop"},
+	}
+
+	page := shell.Page(shell.Snapshot{}, view)
+	if strings.Contains(page, `data-device-id="self"`) {
+		t.Fatal("the Local Client's own Device still has a Revoke button on the Local Server")
+	}
+	if !strings.Contains(page, `data-device-id="laptop"`) {
+		t.Fatal("another Device of the Local Server lost its Revoke button")
+	}
+	if !strings.Contains(page, "Это устройство") {
+		t.Fatal("the Local Client's own Device is not marked as this Device")
 	}
 }
 

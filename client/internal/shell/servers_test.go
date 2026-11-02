@@ -684,6 +684,30 @@ func TestRevokeDeviceIntentRevokesAndRefreshes(t *testing.T) {
 	}
 }
 
+func TestRevokeDeviceIntentExplainsWhyTheLocalClientIsProtected(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := newFakeServers()
+	service.revokeErr = servers.ErrRevokeLocalClient
+	sh := newServersShell(t, rt, desktop, settings, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRevokeDevice, DeviceID: "dev-self"}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	messages, _ := window.lastMessages()
+	if len(messages.failures) != 1 || !strings.Contains(messages.failures[0], "own Device") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
 func TestPairingCodeIntentShowsTheGeneratedCode(t *testing.T) {
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()

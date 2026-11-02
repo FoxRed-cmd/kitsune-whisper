@@ -273,8 +273,9 @@ On the same machine the Client auto-pairs with the Local Server over loopback:
 it receives a Device token, stores it in the OS keychain (or a `0600` file), and
 pins the certificate fingerprint into the profile. A Remote Server is added in
 **Settings → Servers and Devices** with its address and a one-time Pairing code;
-the same screen lists and revokes trusted Devices. Tokens never appear in this
-file or in the logs.
+the same screen lists and revokes trusted Devices (the Local Client's own
+Device is read-only while the Local Server profile is active). Tokens never
+appear in this file or in the logs.
 
 Restart the Client service after editing (`systemctl --user restart
 kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask

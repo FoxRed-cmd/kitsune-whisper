@@ -27,6 +27,13 @@ import (
 // used. It is distinct from a revoked token, which the Server reports as 401.
 var ErrNoToken = errors.New("servers: this Server profile has no Device token; pair it again")
 
+// ErrRevokeLocalClient reports an attempt to revoke the Device that the Local
+// Client is using. The Local Server's auto-pairing has no code to repeat, so
+// the Settings window must send the operator to the Server host instead.
+var ErrRevokeLocalClient = errors.New(
+	"servers: the Local Client cannot revoke its own Device; manage it on the Server host",
+)
+
 // Store is the settings store the service writes profiles through.
 // *settings.Store implements it.
 type Store interface {
@@ -49,6 +56,8 @@ type Device struct {
 	CreatedAt   float64  `json:"created_at"`
 	LastSeen    *float64 `json:"last_seen"`
 	LastAddress string   `json:"last_address"`
+	// Current marks the Device that made the Admin API request.
+	Current bool `json:"current"`
 }
 
 // Profile is one Server profile as the Settings window lists it.
@@ -118,6 +127,20 @@ type View struct {
 	Models *ModelsView `json:"models,omitempty"`
 	// ModelsError is why the last Model catalog request failed, or "".
 	ModelsError string `json:"models_error,omitempty"`
+}
+
+// LocalServerActive reports whether the active profile points at a Server on
+// this machine. Revoking the Local Client there from its own Settings would
+// leave no path back to a Device token, so the Settings window hides the
+// action. Any loopback profile counts, not just the auto-paired one: a
+// hand-added profile for the same Server is just as unrecoverable.
+func (v View) LocalServerActive() bool {
+	for _, profile := range v.Profiles {
+		if profile.ID == v.ActiveID {
+			return trust.IsLoopbackURL(profile.URL)
+		}
+	}
+	return false
 }
 
 // CheckFunc probes one Server profile's health. Production uses
@@ -394,6 +417,19 @@ func (s *Service) RevokeDevice(ctx context.Context, profileID, deviceID string) 
 	profile, token, err := s.credentials(profileID)
 	if err != nil {
 		return err
+	}
+	if trust.IsLoopbackURL(profile.URL) {
+		// Re-read the list instead of trusting the cached View: a stale page or
+		// a failed refresh must not let the request through.
+		devices, err := fetchDevices(ctx, profile, token, s.opts.Timeout)
+		if err != nil {
+			return err
+		}
+		for _, device := range devices {
+			if device.ID == deviceID && device.Current {
+				return ErrRevokeLocalClient
+			}
+		}
 	}
 	if err := revokeDevice(ctx, profile, token, deviceID, s.opts.Timeout); err != nil {
 		return err
