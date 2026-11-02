@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
 // TestTraySignatureChangesOnlyWithRenderedFields guards the menu rebuild: a
@@ -37,6 +38,97 @@ func TestTraySignatureChangesOnlyWithRenderedFields(t *testing.T) {
 	changed.Labels.Settings = "Настройки"
 	if traySignature(changed) == signature {
 		t.Fatal("a changed menu label did not change the signature")
+	}
+}
+
+// fakeTray records the calls the port makes without a display.
+type fakeTray struct {
+	icons [][]byte
+	dark  [][]byte
+	menus []*application.Menu
+	tips  []string
+}
+
+func (f *fakeTray) SetIcon(icon []byte) *application.SystemTray {
+	f.icons = append(f.icons, icon)
+	return nil
+}
+
+func (f *fakeTray) SetDarkModeIcon(icon []byte) *application.SystemTray {
+	f.dark = append(f.dark, icon)
+	return nil
+}
+
+func (f *fakeTray) SetTooltip(tooltip string) { f.tips = append(f.tips, tooltip) }
+func (f *fakeTray) SetMenu(menu *application.Menu) *application.SystemTray {
+	f.menus = append(f.menus, menu)
+	return nil
+}
+
+func (f *fakeTray) OnClick(func()) *application.SystemTray      { return nil }
+func (f *fakeTray) OnRightClick(func()) *application.SystemTray { return nil }
+func (f *fakeTray) OpenMenu()                                   {}
+
+// TestTrayCoalescesUpdatesUntilStartupFinishes guards the Windows startup
+// races: Wails picks the light or the dark image by the system theme, and a
+// menu built before the Tray's window exists is bound to a zero handle. The
+// port therefore renders nothing until the window exists, and then applies the
+// latest snapshot with both theme images.
+func TestTrayCoalescesUpdatesUntilStartupFinishes(t *testing.T) {
+	initial := shell.Snapshot{
+		State:  shell.StateIdle,
+		Labels: shell.Labels{Status: "Ready", Start: "Start", Stop: "Stop", Quit: "Quit"},
+	}
+	tray := &fakeTray{}
+	port := &trayPort{
+		tray:      tray,
+		signature: traySignature(initial),
+		latest:    initial,
+	}
+	port.apply(initial)
+	if got := len(tray.icons); got != 1 {
+		t.Fatalf("initial light icons = %d, want 1", got)
+	}
+	if got := len(tray.dark); got != 1 {
+		t.Fatalf("initial dark icons = %d, want 1", got)
+	}
+	if got := len(tray.menus); got != 1 {
+		t.Fatalf("initial menus = %d, want 1", got)
+	}
+
+	// Before the tray window exists, an update only records the snapshot.
+	recording := initial
+	recording.State = shell.StateRecording
+	port.Update(recording)
+	if got := len(tray.icons); got != 1 {
+		t.Fatalf("light icons before startup finishes = %d, want 1", got)
+	}
+	if got := len(tray.dark); got != 1 {
+		t.Fatalf("dark icons before startup finishes = %d, want 1", got)
+	}
+	if got := len(tray.menus); got != 1 {
+		t.Fatalf("menus before startup finishes = %d, want 1", got)
+	}
+
+	// Once the window exists, the latest snapshot is rendered: both images and
+	// the menu.
+	port.finishStartup()
+	if got := len(tray.icons); got != 2 {
+		t.Fatalf("light icons after startup = %d, want 2", got)
+	}
+	if got := len(tray.dark); got != 2 {
+		t.Fatalf("dark icons after startup = %d, want 2", got)
+	}
+	if got := len(tray.menus); got != 2 {
+		t.Fatalf("menus after startup = %d, want 2", got)
+	}
+
+	port.Update(initial)
+	if got := len(tray.icons); got != 3 {
+		t.Fatalf("light icons after a later update = %d, want 3", got)
+	}
+	if got := len(tray.menus); got != 3 {
+		t.Fatalf("menus after a later update = %d, want 3", got)
 	}
 }
 

@@ -79,9 +79,7 @@ jobs:
         run: |
           $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          go build -C client -trimpath -tags "desktop" -ldflags `
-            "-X github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli.Version=$version -H=windowsgui" `
-            -o "../dist/kitsune-client.exe" ./cmd/kitsune-client
+          ./packaging/windows/build-client.ps1 -Version $version -Output dist/kitsune-client.exe
           Copy-Item kitsune.example.yaml dist/
           Compress-Archive -Path dist/kitsune-client.exe, dist/kitsune.example.yaml `
             -DestinationPath "kitsune-client_windows_amd64.zip" -Force

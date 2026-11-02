@@ -159,6 +159,19 @@ cd client && go build -tags "desktop purego" -o kitsune-client ./cmd/kitsune-cli
 ./kitsune-client install-autostart   # optional
 ```
 
+On Windows, build through the packaging script instead of calling `go build`
+directly. cgo forces Go's external linker, which ignores `-H=windowsgui`; the
+script passes the GUI subsystem to the C linker and adds the icon and version
+resources generated from the SVG brand asset:
+
+```powershell
+$env:CC = 'zig cc'   # or a gcc on PATH
+./packaging/windows/build-client.ps1 -Version v0.2.0
+```
+
+`dist\kitsune-client.exe` is then a GUI executable: double-clicking it does not
+open a console, and Explorer shows the kitsune-whisper icon.
+
 The `desktop` tag adds the Wails Settings window and Tray; on Linux `purego`
 loads GTK4 and WebKitGTK 6.0 at runtime instead of linking their development
 headers. Add `gtk3` to build the legacy GTK3 + WebKit2GTK 4.1 variant

@@ -25,3 +25,5 @@ __pycache__/
 /dist/
 /wizard.json
 /packaging/windows/.cache/
+/packaging/windows/app.ico
+/client/cmd/kitsune-client/rsrc_windows_*.syso

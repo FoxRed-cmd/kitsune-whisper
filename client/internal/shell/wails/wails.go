@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/brand"
@@ -243,23 +244,29 @@ func (d *desktop) NewTray(initial shell.Snapshot) (port shell.Tray, err error) {
 	// only when its tray runner has already seen the menu, so a tray created
 	// during startup could otherwise answer the click with nothing.
 	tray.OnRightClick(func() { tray.OpenMenu() })
-	t := &trayPort{tray: tray}
-	t.Update(initial)
+	t := &trayPort{
+		tray:      tray,
+		signature: traySignature(initial),
+		latest:    initial,
+	}
+	// The event loop has not started, so SetMenu only stores the menu that
+	// Wails attaches when it creates the Tray window. Updates that arrive after
+	// the loop starts but before that window exists are coalesced into
+	// finishStartup.
+	t.apply(initial)
+	time.AfterFunc(trayMenuStartupDelay, t.finishStartup)
 	return t, nil
 }
 
 func (d *desktop) Run() error { return d.app.Run() }
 
-// Quit stops the event loop. Wails' Quit waits for the GTK main loop to run the
-// destroy callback, while the shell calls it from its watch goroutine. A tray
-// update already queued on the main loop can then deadlock the two, so quit is
-// dispatched asynchronously: the shell stops the runtime and returns, and the
-// process exits even if the platform loop is still draining.
+// Quit stops the event loop. The platform decides how: see quit_windows.go and
+// quit_other.go.
 func (d *desktop) Quit() {
 	if d.app == nil {
 		return
 	}
-	go d.app.Quit()
+	d.quitApp()
 }
 
 // window is the Wails Settings window.
@@ -336,13 +343,32 @@ func (w *window) OnIntent(handler func([]byte) error) {
 	w.desktop.setIntent(handler)
 }
 
+// trayMenuStartupDelay is the grace period between creating the Tray and the
+// first update. See trayPort.finishStartup.
+const trayMenuStartupDelay = 2 * time.Second
+
+// trayWidget is the part of *application.SystemTray the port uses, so the
+// startup ordering can be tested without a display.
+type trayWidget interface {
+	SetIcon([]byte) *application.SystemTray
+	SetDarkModeIcon([]byte) *application.SystemTray
+	SetTooltip(string)
+	SetMenu(*application.Menu) *application.SystemTray
+	OnClick(func()) *application.SystemTray
+	OnRightClick(func()) *application.SystemTray
+	OpenMenu()
+}
+
 // trayPort is the Wails notification-area image and menu.
 type trayPort struct {
-	tray   *application.SystemTray
+	tray   trayWidget
 	action func(shell.Action)
 
-	mu        sync.Mutex
-	signature string
+	mu            sync.Mutex
+	signature     string
+	menuSignature string
+	latest        shell.Snapshot
+	menuReady     bool
 }
 
 // traySignature covers the fields the Tray renders. A Server health probe
@@ -382,8 +408,34 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 		return
 	}
 	t.signature = signature
+	t.latest = snapshot
+	ready := t.menuReady
 	t.mu.Unlock()
+	if !ready {
+		return
+	}
+	t.apply(snapshot)
+}
 
+// finishStartup ends the coalescing window. Wails creates the Tray's window
+// when the application event loop starts, after NewTray. A menu created
+// through SetMenu between the loop's start and that window is bound to a zero
+// window handle, and TrackPopupMenuEx then silently fails for the rest of the
+// process; an icon set in that window can also leave Wails' light and dark
+// images out of sync. Updates that arrive in the meantime only record the
+// latest snapshot, and this applies it once the window exists.
+func (t *trayPort) finishStartup() {
+	t.mu.Lock()
+	t.menuReady = true
+	snapshot, signature, applied := t.latest, t.signature, t.menuSignature
+	t.mu.Unlock()
+	if signature != applied {
+		t.apply(snapshot)
+	}
+}
+
+// apply renders one snapshot: both theme images, the tooltip, and the menu.
+func (t *trayPort) apply(snapshot shell.Snapshot) {
 	labels := snapshot.Labels
 	status := labels.Status
 	if status == "" {
@@ -394,9 +446,25 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	if snapshot.Profile != "" && serverState != "" {
 		tooltip = status + " · " + snapshot.Profile + ": " + serverState
 	}
-	t.tray.SetIcon(shell.Icon(snapshot.State))
+	icon := shell.Icon(snapshot.State)
+	// Wails keeps a light and a dark tray image and picks one by the system
+	// theme. Setting only SetIcon leaves the dark image at its startup value
+	// when the first status update races the Tray's own startup: in dark mode
+	// every later update then picks the stale image, sees it already current,
+	// and does nothing, so the icon never changes colour. Set both to the
+	// same state image so either branch moves.
+	t.tray.SetIcon(icon)
+	t.tray.SetDarkModeIcon(icon)
 	t.tray.SetTooltip(tooltip)
+	t.tray.SetMenu(t.buildMenu(snapshot))
+	t.mu.Lock()
+	t.menuSignature = traySignature(snapshot)
+	t.mu.Unlock()
+}
 
+// buildMenu renders the Tray's popup for one snapshot.
+func (t *trayPort) buildMenu(snapshot shell.Snapshot) *application.Menu {
+	labels := snapshot.Labels
 	menu := application.NewMenu()
 	// Status rows live in the tooltip and the Settings window; the menu starts
 	// with actions so the first clickable item is not below four dead labels.
@@ -443,7 +511,7 @@ func (t *trayPort) Update(snapshot shell.Snapshot) {
 	menu.Add(labels.Restart).OnClick(func(*application.Context) { t.do(shell.ActionRestart) })
 	menu.AddSeparator()
 	menu.Add(labels.Quit).OnClick(func(*application.Context) { t.do(shell.ActionQuit) })
-	t.tray.SetMenu(menu)
+	return menu
 }
 
 func (t *trayPort) OnAction(handler func(shell.Action)) {

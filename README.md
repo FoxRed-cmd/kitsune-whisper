@@ -424,9 +424,10 @@ docker compose --profile gpu build
   `uv run ruff format --check .`, `uv run basedpyright`.
 - **Go (client)** — from `client/`: `go build ./...`, `go test ./...` (set
   `CGO_ENABLED=1` with a C compiler; `malgo` uses cgo). The desktop shell is
-  behind the `desktop` tag: `go build -tags "desktop purego" ./...` on Linux,
-  or `go build -tags desktop ./...` on Windows. Tests and the default build stay
-  headless and need no window toolkit.
+  behind the `desktop` tag: `go build -tags "desktop purego" ./...` on Linux.
+  On Windows use `packaging/windows/build-client.ps1`, which also sets the GUI
+  subsystem and embeds the icon and version resources. Tests and the default
+  build stay headless and need no window toolkit.
 
 ### End-to-end verification
 
