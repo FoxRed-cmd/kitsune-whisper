@@ -300,9 +300,9 @@ func (s *Shell) applyLifecycle(lifecycle servers.ServerLifecycle) {
 	s.updateServer(status)
 }
 
-// setStartup enables or disables a login autostart unit through the platform
-// controller. The switch is re-rendered from the real state afterwards, so a
-// unit a desktop refuses to change does not leave a lying toggle.
+// setStartup enables or disables a login autostart registration through the
+// platform controller. The switch is re-rendered from the real state afterwards,
+// so a unit or task a desktop refuses to change does not leave a lying toggle.
 func (s *Shell) setStartup(component string, enabled bool) {
 	if s.opts.Startup == nil {
 		s.pushMessages(nil, []string{s.catalog().T("error.startup.unavailable")})

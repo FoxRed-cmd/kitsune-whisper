@@ -20,7 +20,7 @@ const (
 	// LinuxUnit is the systemd user unit the Server bundle installs.
 	LinuxUnit = startup.ServerUnit
 	// WindowsTask is the per-user Task Scheduler task the Server bundle installs.
-	WindowsTask = "kitsune-server"
+	WindowsTask = startup.ServerTask
 )
 
 // Runner executes one supervisor command and returns its combined output.

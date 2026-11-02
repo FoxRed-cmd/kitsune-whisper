@@ -292,7 +292,7 @@ var english = map[string]string{
 	"startup.clientHelp":        "The Client starts hidden and appears in the Tray. Manual launches still work.",
 	"startup.server":            "Server at login",
 	"startup.serverHelp":        "The local Server starts with the session and is ready to transcribe.",
-	"startup.serverUnavailable": "The local Server is not installed as a service in this session.",
+	"startup.serverUnavailable": "The local Server is not registered to start at login in this session.",
 	"notice.startup.on":         "%s: autostart enabled.",
 	"notice.startup.off":        "%s: autostart disabled.",
 	"error.startup":             "Could not change autostart: %s",

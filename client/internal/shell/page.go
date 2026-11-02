@@ -560,7 +560,7 @@ func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
 
 // startupHTML renders the login autostart switches for the Client and the
 // local Server. The switches are plain toggles: Go enables or disables the
-// systemd user unit and re-renders the section.
+// platform registration and re-renders the section.
 func startupHTML(view StartupView, labels ServerLabels) string {
 	if !view.Available {
 		return ""

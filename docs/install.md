@@ -329,6 +329,13 @@ The Linux installer also registers `kitsune-server.service` and
 `graphical-session.target` dependency; it serves the network) and restarts on
 failure. The ydotool unit starts with the graphical session.
 
+Settings → Startup enables and disables these registrations on both platforms
+without uninstalling them: `systemctl --user enable|disable` on Linux and
+`schtasks /Change /ENABLE|/DISABLE` on Windows. The Client switch also covers
+the HKCU Run fallback and recreates a missing registration from the running
+binary. The Server switch stays unavailable when the session has no local
+Server registration (a Remote-only setup).
+
 ### Managing the running client
 
 `kitsune-client gui --hidden` (or the headless `kitsune-client run`) is a

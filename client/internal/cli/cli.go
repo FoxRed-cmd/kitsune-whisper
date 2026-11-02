@@ -644,7 +644,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			Servers:        serverService,
 			Wizard:         wizardService,
 			Spool:          newSpoolService(bootstrap.store, cfg, rt),
-			Startup:        startup.Default(),
+			Startup:        startup.Default(so.configPath),
 			GnomeShortcuts: newGnomeShortcuts(),
 			LogPath:        clientLogPath,
 			ApplyConfig:    rt.Apply,

@@ -36,6 +36,12 @@ _Avoid_: fallback, failover, rotation
 Stopping a Server's processing — unloading the model and refusing transcription — without terminating the process.
 _Avoid_: pause, suspend, shutdown
 
+**Autostart registration**:
+The OS entry that starts the Client or the Local Server at login — a systemd
+user unit on Linux or a per-user Task Scheduler task on Windows. The Startup
+switch turns it off without removing it.
+_Avoid_: service, daemon, startup item
+
 **Model catalog**:
 The set of Whisper model sizes the Server can download and run.
 _Avoid_: model list, model store
