@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 )
 
 const (
@@ -84,7 +85,7 @@ type Options struct {
 	Placement Placement
 	// Theme selects the palette matching the Settings window. The zero value
 	// is dark.
-	Theme Theme
+	Theme theme.Theme
 }
 
 // Previewer shows the real Recording indicator while the user edits its
@@ -115,7 +116,7 @@ type Indicator struct {
 
 	placement     Placement
 	basePlacement Placement
-	theme         Theme
+	theme         theme.Theme
 
 	cues     chan cycle.Cue
 	previews chan previewCommand
@@ -151,9 +152,9 @@ func New(opts Options) *Indicator {
 		clock = realClock{}
 	}
 	placement := opts.Placement.Normalized()
-	theme := opts.Theme
-	if theme == "" {
-		theme = ThemeDark
+	selectedTheme := opts.Theme
+	if selectedTheme == "" {
+		selectedTheme = theme.Dark
 	}
 	i := &Indicator{
 		presenter:     opts.Presenter,
@@ -164,7 +165,7 @@ func New(opts Options) *Indicator {
 		onWarning:     opts.OnWarning,
 		placement:     placement,
 		basePlacement: placement,
-		theme:         theme,
+		theme:         selectedTheme,
 		cues:          make(chan cycle.Cue, 16),
 		previews:      make(chan previewCommand, 4),
 		closeC:        make(chan struct{}),

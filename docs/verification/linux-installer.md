@@ -8,6 +8,8 @@ rule.
 ## What it proves
 
 - The installer verifies `checksums.txt` before touching the system.
+- It adds **kitsune-whisper** to the application menu with the fox icon, and
+  the entry opens Settings.
 - It asks for `sudo` at most once: to install the selected GTK/WebKitGTK stack,
   the `/dev/uinput` `uaccess` rule, and the `modules-load.d` entry.
 - A second run detects those pieces and does not ask again.
@@ -38,9 +40,14 @@ finishes:
 systemctl --user is-active kitsune-client kitsune-server kitsune-ydotoold
 getfacl /dev/uinput | grep "user:$USER"
 ls -l "$XDG_RUNTIME_DIR/.ydotool_socket"
+ls -l ~/.local/share/applications/kitsune-whisper.desktop \
+      ~/.local/share/icons/hicolor/scalable/apps/io.github.FoxRed-cmd.kitsune-whisper.svg
 ydotool type "installer check"     # focused text field, then remove the text
 curl -sk https://127.0.0.1:8765/health
 ```
+
+Open the application menu and launch **kitsune-whisper**: Settings should appear
+with the fox icon in the window list and the Tray.
 
 Re-running `./install.sh --from dist` should not prompt for a password.
 

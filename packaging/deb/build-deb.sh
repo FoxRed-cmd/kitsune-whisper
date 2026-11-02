@@ -8,10 +8,11 @@
 #   packaging/deb/build-deb.sh --legacy ...   # GTK3/WebKit2GTK 4.1 variant
 #
 # The package installs the Client, the native Server bundle, the bundled
-# ydotool/wtype helpers, the /dev/uinput uaccess rule, and three systemd user
-# units. `kitsune-whisper-setup` seeds a per-user config and starts them now;
-# they also start at the next login. Uninstall with apt; `kitsune-whisper-installer
-# --uninstall --purge` removes the per-user data and the udev rule.
+# ydotool/wtype helpers, the /dev/uinput uaccess rule, three systemd user units,
+# and the application-menu entry with its fox icon. `kitsune-whisper-setup`
+# seeds a per-user config and starts the units now; they also start at the next
+# login. Uninstall with apt; `kitsune-whisper-installer --uninstall --purge`
+# removes the per-user data and the udev rule.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -77,6 +78,8 @@ done
 [[ -f "$CLIENT" ]] || { echo "error: client binary not found: $CLIENT" >&2; exit 1; }
 [[ -f "$INSTALLER" ]] || { echo "error: installer not found: $INSTALLER" >&2; exit 1; }
 [[ -f "$EXAMPLE" ]] || { echo "error: example config not found: $EXAMPLE" >&2; exit 1; }
+[[ -f "$REPO_ROOT/client/internal/brand/icons/app.svg" ]] \
+  || { echo "error: application icon not found" >&2; exit 1; }
 if [[ -n "$SERVER_ARTIFACT" ]]; then
   [[ -f "$SERVER_ARTIFACT" ]] || { echo "error: server artifact not found: $SERVER_ARTIFACT" >&2; exit 1; }
 fi
@@ -111,15 +114,20 @@ fi
 work="$(mktemp -d "${TMPDIR:-/tmp}/kitsune-deb.XXXXXX")"
 trap 'rm -rf "$work"' EXIT
 stage="$work/stage"
+APP_ID="io.github.FoxRed-cmd.kitsune-whisper"
+ICON_SVG="$REPO_ROOT/client/internal/brand/icons/app.svg"
+
 mkdir -p "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/lib/udev/rules.d" \
   "$stage/usr/lib/systemd/user" "$stage/usr/lib/systemd/user-preset" \
   "$stage/usr/lib/modules-load.d" \
   "$stage/usr/share/applications" "$stage/usr/share/doc/$PACKAGE" \
+  "$stage/usr/share/icons/hicolor/scalable/apps" \
   "$stage/usr/share/kitsune-whisper"
 
 install -m 0755 "$CLIENT" "$stage/usr/bin/kitsune-client"
 install -m 0755 "$INSTALLER" "$stage/usr/bin/kitsune-whisper-installer"
 install -m 0644 "$EXAMPLE" "$stage/usr/share/kitsune-whisper/kitsune.example.yaml"
+install -m 0644 "$ICON_SVG" "$stage/usr/share/icons/hicolor/scalable/apps/$APP_ID.svg"
 
 if [[ -n "$SERVER_ARTIFACT" ]]; then
   mkdir -p "$stage/usr/lib/kitsune-whisper/server"
@@ -234,14 +242,30 @@ enable kitsune-server.service
 enable kitsune-ydotoold.service
 EOF
 
-cat > "$stage/usr/share/applications/io.github.FoxRed-cmd.kitsune-whisper.desktop" <<'EOF'
+cat > "$stage/usr/share/applications/$APP_ID.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=kitsune-whisper
 Comment=Private, LAN-local speech-to-text dictation
 Exec=/usr/bin/kitsune-client gui
+Icon=$APP_ID
 Terminal=false
 NoDisplay=true
+EOF
+
+cat > "$stage/usr/share/applications/kitsune-whisper.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=kitsune-whisper
+GenericName=Dictation
+Comment=Private, LAN-local speech-to-text dictation
+Exec=/usr/bin/kitsune-client gui
+Icon=$APP_ID
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=dictation;speech-to-text;transcription;voice;
+StartupNotify=true
+StartupWMClass=$APP_ID
 EOF
 
 cat > "$stage/usr/share/doc/$PACKAGE/README.Debian" <<EOF
@@ -249,8 +273,9 @@ kitsune-whisper for Debian/Ubuntu
 =================================
 
 This package installs the Client, the native Server bundle, the bundled
-ydotool/wtype helpers, the /dev/uinput uaccess rule, and three systemd user
-units. The package manager supplied GTK and WebKitGTK.
+ydotool/wtype helpers, the /dev/uinput uaccess rule, three systemd user units,
+and the kitsune-whisper application-menu entry with its fox icon. The package
+manager supplied GTK and WebKitGTK.
 
 The units are enabled for every user at login, and the post-install step starts
 them once for the account that ran apt when it has a live session. To seed a
@@ -297,6 +322,12 @@ if [ "$1" = configure ]; then
   modprobe uinput >/dev/null 2>&1 || true
   udevadm control --reload-rules >/dev/null 2>&1 || true
   udevadm trigger --name-match=uinput >/dev/null 2>&1 || true
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q /usr/share/applications >/dev/null 2>&1 || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor >/dev/null 2>&1 || true
+  fi
   # Start the user units now for the account that invoked apt, pkexec, or the
   # active seat. The units are also enabled globally for every user at login.
   start_user="${SUDO_USER:-}"

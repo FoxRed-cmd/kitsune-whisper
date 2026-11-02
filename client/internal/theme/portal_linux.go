@@ -1,6 +1,6 @@
 //go:build linux
 
-package indicator
+package theme
 
 import (
 	"context"

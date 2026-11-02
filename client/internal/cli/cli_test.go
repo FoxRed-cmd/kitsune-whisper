@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -567,6 +568,50 @@ func TestVersionFlagPrintsAndExitsWithoutConfig(t *testing.T) {
 	}
 	if got := strings.TrimSpace(stdout.String()); got != "kitsune-client "+cli.Version {
 		t.Fatalf("stdout = %q, want the version line", got)
+	}
+}
+
+func TestInstallDesktopRejectsPositionalArguments(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"install-desktop", "extra"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr %s)", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "install-desktop") {
+		t.Fatalf("stderr = %q, want usage", stderr.String())
+	}
+}
+
+func TestInstallDesktopWritesAndRemovesTheMenuEntry(t *testing.T) {
+	if goruntime.GOOS != "linux" {
+		t.Skip("the application-menu entry is Linux-only")
+	}
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run([]string{"install-desktop"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("install-desktop exit = %d, stderr = %s", code, stderr.String())
+	}
+	entry := filepath.Join(dataHome, "applications", "kitsune-whisper.desktop")
+	content, err := os.ReadFile(entry)
+	if err != nil {
+		t.Fatalf("read menu entry: %v", err)
+	}
+	if !strings.Contains(string(content), "Exec=") || !strings.Contains(string(content), " gui\n") {
+		t.Fatalf("menu entry does not launch the visible shell:\n%s", content)
+	}
+	if _, err := os.Stat(filepath.Join(dataHome, "icons", "hicolor", "scalable", "apps", "io.github.FoxRed-cmd.kitsune-whisper.svg")); err != nil {
+		t.Fatalf("SVG icon was not installed: %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := cli.Run([]string{"uninstall-desktop"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("uninstall-desktop exit = %d, stderr = %s", code, stderr.String())
+	}
+	if _, err := os.Stat(entry); !os.IsNotExist(err) {
+		t.Fatalf("menu entry still exists after uninstall: %v", err)
 	}
 }
 

@@ -48,6 +48,9 @@ CACHE_DIR="$CACHE_ROOT/kitsune-whisper"
 STATE_DIR="$STATE_ROOT/kitsune-whisper"
 SYSTEMD_DIR="$CONFIG_ROOT/systemd/user"
 DESKTOP_FILE="$DATA_ROOT/applications/io.github.FoxRed-cmd.kitsune-whisper.desktop"
+MENU_FILE="$DATA_ROOT/applications/kitsune-whisper.desktop"
+ICON_SVG="$DATA_ROOT/icons/hicolor/scalable/apps/io.github.FoxRed-cmd.kitsune-whisper.svg"
+ICON_PNG="$DATA_ROOT/icons/hicolor/256x256/apps/io.github.FoxRed-cmd.kitsune-whisper.png"
 UDEV_RULE="/etc/udev/rules.d/70-kitsune-whisper-uinput.rules"
 UDEV_RULE_SYSTEM="/usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules"
 MODULES_FILE="/etc/modules-load.d/kitsune-whisper.conf"
@@ -480,6 +483,8 @@ uninstall_all() {
   if [[ -x "$BIN_DIR/kitsune-client" ]]; then
     "$BIN_DIR/kitsune-client" uninstall-autostart >/dev/null 2>&1 \
       || warn "could not remove the Client autostart registration"
+    "$BIN_DIR/kitsune-client" uninstall-desktop >/dev/null 2>&1 \
+      || warn "could not remove the application-menu entry"
   fi
   if [[ -x "$SERVER_LAUNCHER" ]]; then
     "$SERVER_LAUNCHER" uninstall >/dev/null 2>&1 \
@@ -491,7 +496,7 @@ uninstall_all() {
   fi
 
   rm -f "$WAYLAND_UNIT" "$CLIENT_DROPIN" "$BIN_DIR/kitsune-client" "$SERVER_LAUNCHER" "$DESKTOP_FILE"
-  rm -f "$DATA_ROOT/applications/kitsune-whisper.desktop"
+  rm -f "$MENU_FILE" "$ICON_SVG" "$ICON_PNG"
   rm -f "$SYSTEMD_DIR/kitsune-server.service"
   rmdir "$(dirname "$CLIENT_DROPIN")" 2>/dev/null || true
   rm -rf "$WAYLAND_DIR" "$SERVER_ROOT"
@@ -642,6 +647,20 @@ if [[ -x "$BIN_DIR/kitsune-client" ]]; then
     warn "could not register the Client autostart from this shell"
     warn "run '$BIN_DIR/kitsune-client install-autostart' inside your desktop session"
   fi
+  if "$BIN_DIR/kitsune-client" install-desktop >/dev/null 2>&1; then
+    info "Added kitsune-whisper to the application menu"
+  else
+    warn "could not add the application-menu entry"
+    warn "run '$BIN_DIR/kitsune-client install-desktop' inside your desktop session"
+  fi
+  # Refresh the per-user caches so a launcher that is already open sees the
+  # entry and icon without waiting for its own rescan.
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database -q "$DATA_ROOT/applications" >/dev/null 2>&1 || true
+  fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+    gtk-update-icon-cache -q -t -f "$DATA_ROOT/icons/hicolor" >/dev/null 2>&1 || true
+  fi
 fi
 
 start_services
@@ -666,4 +685,4 @@ fi
 if [[ "$NO_SERVER" == 0 ]]; then
   info "  Server: $SERVER_LAUNCHER (systemctl --user status kitsune-server)"
 fi
-info "  Press Ctrl+Shift+Space to dictate; open Settings from the Tray."
+info "  Press Ctrl+Shift+Space to dictate; open Settings from the application menu or the Tray."

@@ -11,6 +11,8 @@ import (
 	"image"
 	"math"
 	"time"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 )
 
 // Logical frame geometry. The renderer works in logical pixels and scales the
@@ -61,7 +63,7 @@ type Frame struct {
 	// desktop, and fractional values such as 1.25 for a 125% desktop.
 	Scale float64
 	// Theme selects the Settings window palette. The zero value is dark.
-	Theme Theme
+	Theme theme.Theme
 }
 
 // FrameSize returns the physical pixel size of a frame at scale.

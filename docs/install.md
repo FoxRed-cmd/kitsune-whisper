@@ -41,8 +41,9 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 
 It downloads the Client, the native Server bundle, and the bundled Wayland
 helpers, verifies every SHA-256 against `checksums.txt`, installs them under your
-home directory, and registers three systemd **user** units. It asks for `sudo`
-at most once:
+home directory, registers three systemd **user** units, and adds
+**kitsune-whisper** to the application menu with the fox icon. It asks for
+`sudo` at most once:
 
 - install the GTK/WebKitGTK runtime packages the selected build needs;
 - write the udev `uaccess` rule and the `modules-load.d` entry for
@@ -194,12 +195,13 @@ values. Closing the Settings window hides it to the Tray; **Quit** in the
 Tray stops the Client and releases its hotkeys, microphone, control socket, and
 single-instance lock. **Restart** re-executes the Client.
 
-The desktop entry, the systemd unit, and the Windows logon task all launch
-`gui --hidden`, so dictation is available from login without a window. Only one
-long-lived Client may run per user session: a second visible `gui` launch asks
-the running instance to show Settings and exits, and a second `run` exits
-quietly. The Tray is best-effort — on a desktop without AppIndicator support,
-`kitsune-client settings` still opens the window on a running desktop Client.
+The autostart desktop entry, the systemd unit, and the Windows logon task all
+launch `gui --hidden`, so dictation is available from login without a window.
+The visible **kitsune-whisper** menu entry also launches `gui`, so a second click
+asks the running instance to show Settings and exits. Only one long-lived Client
+may run per user session. The Tray is best-effort — on a desktop without
+AppIndicator support, `kitsune-client settings` still opens the window on a
+running desktop Client.
 
 Handy subcommands:
 
@@ -223,18 +225,25 @@ autostart by calling the installed binary:
 ```sh
 kitsune-client install-autostart      # optional --config PATH pins a config
 kitsune-client uninstall-autostart
+kitsune-client install-desktop        # Linux menu entry + icon
+kitsune-client uninstall-desktop
 ```
 
-The generated unit, task, and desktop entry run `gui --hidden`: the Client starts
-in the Tray with no window, and the hotkey is available immediately.
+The generated unit, task, and autostart desktop entry run `gui --hidden`: the
+Client starts in the Tray with no window, and the hotkey is available
+immediately. `install-desktop` is separate from login autostart: it writes the
+visible `kitsune-whisper.desktop` launcher and the scalable fox icon under
+`~/.local/share/icons/hicolor`, so the client can always be opened from the
+application menu even after `uninstall-autostart`.
 
 - **Linux** — a systemd **user** unit at
   `~/.config/systemd/user/kitsune-client.service`, `WantedBy`/`After`
   `graphical-session.target`, `Restart=on-failure`. No linger (linger would start
   it at boot with no display). The installer also writes the
   `io.github.FoxRed-cmd.kitsune-whisper.desktop` file the Wayland
-  GlobalShortcuts portal needs, and a drop-in that puts the bundled
-  `ydotool`/`wtype` directory on the unit's `PATH`.
+  GlobalShortcuts portal needs, installs the matching icon, and adds a
+  drop-in that puts the bundled `ydotool`/`wtype` directory on the unit's
+  `PATH`.
 - **Windows** — a per-user **Task Scheduler** task `kitsune-client` at logon,
   running interactively with least privilege and restart-on-failure. If task
   registration is denied, it falls back to the
@@ -320,7 +329,8 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything
 ```
 
 Linux uninstall stops and removes the Client, Server, and ydotool user units,
-their binaries, the bundled helpers, and the `.desktop` file. It keeps
+their binaries, the bundled helpers, the application-menu entry, the icon, and
+autostart's hidden portal `.desktop` file. It keeps
 `kitsune.yaml`, Setup progress, Spool, logs, the certificate, Devices, and
 models. `--purge` additionally removes all of those and, with `sudo`, the
 `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On Windows `-Purge`

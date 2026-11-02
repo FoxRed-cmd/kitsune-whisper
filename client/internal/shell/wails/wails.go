@@ -15,6 +15,7 @@ import (
 	"sync"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/brand"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
@@ -59,6 +60,7 @@ func New(opts Options) (desktopPort shell.Desktop) {
 	options := application.Options{
 		Name:        "kitsune-whisper",
 		Description: "Private, LAN-local speech-to-text dictation",
+		Icon:        brand.AppPNG(256),
 		Assets: application.AssetOptions{
 			Handler: http.HandlerFunc(d.servePage),
 		},

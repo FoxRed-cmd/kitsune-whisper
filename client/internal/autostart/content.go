@@ -49,13 +49,14 @@ Type=Application
 Name=kitsune-whisper
 Comment=Private, LAN-local speech-to-text dictation
 Exec=%s
+Icon=%s
 Terminal=false
 NoDisplay=true
-`, desktopCommand(opts))
+`, desktopCommand(opts), AppID)
 }
 
 func desktopCommand(opts Options) string {
-	return commandArgs(opts, desktopQuote)
+	return commandArgs(opts, ExecQuote)
 }
 
 // commandArgs builds "binary [--config PATH] gui --hidden" with the given field
@@ -69,10 +70,11 @@ func commandArgs(opts Options, quote func(string) string) string {
 	return strings.Join(append(parts, "gui", "--hidden"), " ")
 }
 
-// desktopQuote applies the Exec key's quoting rules: an unquoted argument must
-// stay clear of reserved characters, otherwise it is double-quoted with
-// backslash escapes.
-func desktopQuote(s string) string {
+// ExecQuote applies the Exec key's quoting rules to one argument: an unquoted
+// argument must stay clear of reserved characters, otherwise it is
+// double-quoted with backslash escapes. It is shared with the desktop menu
+// entry so both launch commands are written the same way.
+func ExecQuote(s string) string {
 	if s != "" && !strings.ContainsAny(s, " \t\"'\\><~|&;$*?#()`") {
 		return s
 	}

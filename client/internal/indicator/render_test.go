@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 )
 
 func TestRenderUsesTheSelectedTheme(t *testing.T) {
@@ -12,13 +13,13 @@ func TestRenderUsesTheSelectedTheme(t *testing.T) {
 		Phase: indicator.PhaseRecording,
 		Alpha: 1,
 		Scale: 1,
-		Theme: indicator.ThemeLight,
+		Theme: theme.Light,
 	})
 	dark := indicator.Render(indicator.Frame{
 		Phase: indicator.PhaseRecording,
 		Alpha: 1,
 		Scale: 1,
-		Theme: indicator.ThemeDark,
+		Theme: theme.Dark,
 	})
 	if got := light.RGBAAt(10, 44); got.R < 200 || got.G < 200 || got.B < 200 {
 		t.Fatalf("light pill background = %+v, want a light card colour", got)

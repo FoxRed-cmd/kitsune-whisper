@@ -126,8 +126,14 @@ func TestInstallLinuxWritesUnitDesktopAndEnables(t *testing.T) {
 	}
 
 	desktop := filepath.Join(f.env.DataHome, "applications", autostart.AppID+".desktop")
-	if _, err := os.Stat(desktop); err != nil {
+	content, err := os.ReadFile(desktop)
+	if err != nil {
 		t.Fatalf("desktop entry basename must be the app id: %v", err)
+	}
+	for _, want := range []string{"Icon=" + autostart.AppID, "NoDisplay=true", "gui --hidden"} {
+		if !strings.Contains(string(content), want) {
+			t.Errorf("desktop entry missing %q:\n%s", want, content)
+		}
 	}
 
 	if !f.ran("systemctl", "--user", "daemon-reload") {

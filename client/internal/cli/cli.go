@@ -25,6 +25,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/desktop"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/gnome"
@@ -47,6 +48,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/startup"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
@@ -69,6 +71,8 @@ var subcommands = map[string]bool{
 	"record":              true,
 	"install-autostart":   true,
 	"uninstall-autostart": true,
+	"install-desktop":     true,
+	"uninstall-desktop":   true,
 }
 
 // Run parses args and executes, returning a process exit code.
@@ -115,6 +119,12 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(rest) > 0 && rest[0] == "uninstall-autostart" {
 		return runAutostart(rest[1:], *configPath, false, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "install-desktop" {
+		return runDesktop(rest[1:], true, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "uninstall-desktop" {
+		return runDesktop(rest[1:], false, stdout, stderr)
 	}
 
 	overrides := map[string]any{}
@@ -771,6 +781,44 @@ func runAutostart(args []string, configPath string, install bool, stdout, stderr
 	return 0
 }
 
+// runDesktop writes or removes the Linux application-menu entry and its icon.
+// The binary knows its own absolute path and the XDG data root, so the install
+// scripts stay thin.
+func runDesktop(args []string, install bool, stdout, stderr io.Writer) int {
+	action := "uninstall"
+	if install {
+		action = "install"
+	}
+	if len(args) != 0 {
+		fmt.Fprintf(stderr, "usage: kitsune-client %s-desktop\n", action)
+		return 2
+	}
+
+	env := desktop.Default(func(format string, a ...any) {
+		fmt.Fprintf(stderr, format+"\n", a...)
+	})
+	if install {
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(stderr, "desktop: locate executable: %v\n", err)
+			return 1
+		}
+		env.Binary = exe
+	}
+	var err error
+	if install {
+		err = desktop.Install(env)
+	} else {
+		err = desktop.Uninstall(env)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "desktop: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "desktop %sed\n", action)
+	return 0
+}
+
 // stdoutInjector is the record command's Injector: print the Transcription.
 type stdoutInjector struct {
 	out io.Writer
@@ -924,7 +972,7 @@ func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic
 		Level:     recorder,
 		Clock:     nil,
 		Placement: indicatorPlacement(cfg),
-		Theme:     indicator.DetectTheme(),
+		Theme:     theme.Detect(),
 		OnClick:   func() { send(cycle.Stop) },
 		OnLog:     func(message string) { logger.Debug("%s", message) },
 		OnWarning: func(message string) { logger.Warning("%s", message) },
@@ -1135,6 +1183,8 @@ Commands:
   record                       capture from the microphone and print the text
   install-autostart            register the client to launch at login
   uninstall-autostart          remove the login registration
+  install-desktop              add the application-menu entry and icon
+  uninstall-desktop            remove the application-menu entry and icon
 
 Flags:
   --config PATH     path to kitsune.yaml
