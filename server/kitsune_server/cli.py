@@ -280,8 +280,23 @@ def _load(args: argparse.Namespace) -> ServerConfig:
     )
 
 
+def _ensure_standard_streams() -> None:
+    """Give a windowless Windows start real stdout/stderr streams.
+
+    ``pythonw.exe`` starts with ``sys.stdout`` and ``sys.stderr`` set to
+    ``None``. Uvicorn's colour formatter calls ``sys.stdout.isatty()`` while
+    configuring logging, so the supervised Server would otherwise exit 1 right
+    after loading the model. A devnull sink keeps that call harmless.
+    """
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name) is None:
+            # The stream must outlive this call, so it cannot use a with block.
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))  # noqa: SIM115
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entry point. Returns a process exit code."""
+    _ensure_standard_streams()
     args = build_parser().parse_args(argv)
     if getattr(args, "version", False):
         print(f"kitsune-server {__version__}")

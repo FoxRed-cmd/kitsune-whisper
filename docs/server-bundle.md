@@ -179,8 +179,12 @@ authenticated `GET /status` reports the model, device, readiness, and a `gpu`
 block: `{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
 comes from CTranslate2, imported lazily; the resolved device honours
 `server.device`, so a GPU machine can still report `device: cpu`. CPU-only hosts
-are fully supported. CUDA wheels remain an optional download (later packaging
-ticket).
+are fully supported. CUDA wheels are an optional download: the Windows setup
+offers `nvidia-cublas-cu12` as a task, and `install.sh --cuda` installs it into
+the Linux bundle. `detect_cuda_devices` only reports CUDA after cuBLAS actually
+loads, so a GPU host without the runtime resolves to CPU instead of failing on
+the first transcription. Both installers skip the download when `nvidia-smi`
+finds no GPU.
 
 ## Building the artifact (release CI)
 
@@ -196,7 +200,9 @@ The command copies the runtime tree to `runtime/`, every child of each
 site-packages directory to `lib/`, writes `bundle.json` and `bootstrap.py`, and
 archives the four at the archive root. Publish the archive with a `sha256sum`
 entry; `install --artifact` verifies it before extracting. Publish natively per
-platform; CUDA wheels and models are never bundled.
+platform; CUDA wheels and models are never bundled. The installers download
+`nvidia-cublas-cu12` into the installed `lib/` on request, and the Server falls
+back to CPU when it is absent.
 
 Release CI builds the matching Windows bundle with
 `--platform windows` from a standalone Python tree that contains both

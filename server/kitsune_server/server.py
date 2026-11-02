@@ -16,7 +16,7 @@ import uvicorn
 
 from .app import create_app
 from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
-from .engine import WhisperTranscriber
+from .engine import EngineLoadError, WhisperTranscriber
 from .gpu import detect_cuda_devices
 from .lifecycle import RESTART_EXIT_CODE, Lifecycle, lifecycle_state_path
 from .llm import OpenAITextProcessor
@@ -252,6 +252,12 @@ def run_server(
         )
     # Detect once so model loading and /status cannot disagree.
     cuda_devices = detect_cuda_devices()
+    if config.device == "cuda" and cuda_devices == 0:
+        raise EngineLoadError(
+            "server.device is cuda, but the CUDA runtime (cuBLAS) is not available; "
+            "install the optional CUDA runtime (nvidia-cublas-cu12) or set "
+            "server.device to auto/cpu"
+        )
     # Validate the override catalog before downloading or loading a model, so a
     # bad catalog fails with a config error instead of after a costly load.
     ModelCatalog.load(config)

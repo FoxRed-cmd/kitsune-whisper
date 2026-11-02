@@ -239,6 +239,10 @@ func (d *desktop) NewTray(initial shell.Snapshot) (port shell.Tray, err error) {
 	if tray == nil {
 		return nil, fmt.Errorf("wails system tray could not be created")
 	}
+	// Open the menu explicitly on right-click. Wails installs the same default
+	// only when its tray runner has already seen the menu, so a tray created
+	// during startup could otherwise answer the click with nothing.
+	tray.OnRightClick(func() { tray.OpenMenu() })
 	t := &trayPort{tray: tray}
 	t.Update(initial)
 	return t, nil
@@ -336,9 +340,50 @@ func (w *window) OnIntent(handler func([]byte) error) {
 type trayPort struct {
 	tray   *application.SystemTray
 	action func(shell.Action)
+
+	mu        sync.Mutex
+	signature string
+}
+
+// traySignature covers the fields the Tray renders. A Server health probe
+// refreshes the snapshot often; rebuilding the Win32 popup on every probe can
+// close a menu the user just opened, so an unchanged snapshot is a no-op.
+func traySignature(snapshot shell.Snapshot) string {
+	payload, err := json.Marshal(struct {
+		State       shell.State          `json:"state"`
+		Profile     string               `json:"profile"`
+		Labels      shell.Labels         `json:"labels"`
+		Profiles    []shell.ProfileState `json:"profiles"`
+		Error       string               `json:"error"`
+		ErrorAction shell.Action         `json:"errorAction"`
+		ModelState  string               `json:"modelState"`
+		Server      trust.Status         `json:"server"`
+	}{
+		State:       snapshot.State,
+		Profile:     snapshot.Profile,
+		Labels:      snapshot.Labels,
+		Profiles:    snapshot.Profiles,
+		Error:       snapshot.Error,
+		ErrorAction: snapshot.ErrorAction,
+		ModelState:  snapshot.ModelState,
+		Server:      snapshot.Server,
+	})
+	if err != nil {
+		return ""
+	}
+	return string(payload)
 }
 
 func (t *trayPort) Update(snapshot shell.Snapshot) {
+	signature := traySignature(snapshot)
+	t.mu.Lock()
+	if signature == t.signature {
+		t.mu.Unlock()
+		return
+	}
+	t.signature = signature
+	t.mu.Unlock()
+
 	labels := snapshot.Labels
 	status := labels.Status
 	if status == "" {

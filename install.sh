@@ -18,6 +18,7 @@
 #     --no-wayland            skip the bundled Wayland helpers
 #     --no-elevate            never run sudo; install the degraded fallback
 #     --gui gtk4|gtk3|auto    desktop build (default: auto)
+#     --cuda                  download the NVIDIA CUDA runtime (~550 MB)
 #     --from DIR              install from release artifacts in DIR
 #     --force-config          overwrite an existing kitsune.yaml
 #     --dry-run               print the plan and change nothing
@@ -65,6 +66,7 @@ NO_SERVER=0
 NO_CLIENT=0
 NO_WAYLAND=0
 NO_ELEVATE=0
+CUDA=0
 DRY_RUN=0
 FORCE_CONFIG=0
 UNINSTALL=0
@@ -92,6 +94,7 @@ while [[ $# -gt 0 ]]; do
     --no-client) NO_CLIENT=1 ;;
     --no-wayland) NO_WAYLAND=1 ;;
     --no-elevate) NO_ELEVATE=1 ;;
+    --cuda) CUDA=1 ;;
     --force-config) FORCE_CONFIG=1 ;;
     --dry-run) DRY_RUN=1 ;;
     --uninstall) UNINSTALL=1 ;;
@@ -121,6 +124,10 @@ esac
 
 if [[ "$PURGE" == 1 && "$UNINSTALL" != 1 ]]; then
   die "--purge is only valid together with --uninstall"
+fi
+
+if [[ "$CUDA" == 1 && "$NO_SERVER" == 1 ]]; then
+  die "--cuda needs the native Server bundle; omit --no-server"
 fi
 
 need() {
@@ -441,6 +448,44 @@ install_server() {
   fi
 }
 
+install_cuda_runtime() {
+  [[ "$CUDA" == 1 ]] || return 0
+  if [[ "$SERVER_OK" != 1 || ! -x "$SERVER_ROOT/runtime/bin/python3" ]]; then
+    warn "CUDA was requested, but the Server bundle is not installed; keeping CPU"
+    return 0
+  fi
+  if ! command -v nvidia-smi >/dev/null 2>&1 || ! nvidia-smi -L >/dev/null 2>&1; then
+    warn "CUDA was requested, but no NVIDIA GPU was detected; keeping CPU"
+    return 0
+  fi
+  if [[ -f "$SERVER_ROOT/lib/nvidia/cublas/lib/libcublas.so.12" ]]; then
+    info "The CUDA runtime is already installed"
+    return 0
+  fi
+
+  if ! "$SERVER_ROOT/runtime/bin/python3" -m pip --version >/dev/null 2>&1; then
+    warn "the Server runtime has no pip; install nvidia-cublas-cu12 manually"
+    return 0
+  fi
+
+  info "Downloading the CUDA runtime (nvidia-cublas-cu12, ~550 MB)..."
+  if ! "$SERVER_ROOT/runtime/bin/python3" -m pip install \
+      --disable-pip-version-check --no-warn-script-location --no-input --upgrade \
+      --target "$SERVER_ROOT/lib" nvidia-cublas-cu12; then
+    warn "the CUDA runtime could not be installed; the Server will use CPU"
+    return 0
+  fi
+  if [[ ! -f "$SERVER_ROOT/lib/nvidia/cublas/lib/libcublas.so.12" ]]; then
+    warn "the CUDA runtime installed without libcublas.so.12; the Server will use CPU"
+    return 0
+  fi
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user restart kitsune-server.service >/dev/null 2>&1 \
+      || warn "could not restart kitsune-server.service after installing CUDA"
+  fi
+  info "Installed the CUDA runtime; the Server will use the GPU when it restarts"
+}
+
 start_services() {
   if ! command -v systemctl >/dev/null 2>&1; then
     warn "systemctl is not available; start kitsune-client and kitsune-server from your desktop session"
@@ -576,6 +621,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
   info "  Config:       $CONFIG"
   info "  Wayland:      $([[ "$NO_WAYLAND" == 0 ]] && printf '%s' "$WAYLAND_BIN" || printf 'disabled')"
   info "  Server:       $([[ "$NO_SERVER" == 0 ]] && printf '%s' "$SERVER_ROOT" || printf 'disabled')"
+  info "  CUDA:         $([[ "$CUDA" == 1 ]] && printf 'install nvidia-cublas-cu12 (~550 MB)' || printf 'not requested')"
   info "  Elevation:    $([[ "$NEEDS_ELEVATION" == 1 ]] && printf 'one sudo step (%s: %s)' "$PM" "$PACKAGES" || printf 'not needed')"
   exit 0
 fi
@@ -638,6 +684,7 @@ fi
 
 if [[ "$NO_SERVER" == 0 ]]; then
   install_server
+  install_cuda_runtime
 fi
 
 if [[ -x "$BIN_DIR/kitsune-client" ]]; then

@@ -82,12 +82,52 @@ def test_client_and_server_autostart_are_registered_with_the_hidden_shell() -> N
     assert "Start-Client" in helper
 
 
+def test_cuda_runtime_is_an_optional_windows_download() -> None:
+    script = read(INNO_SCRIPT)
+    helper = read(SETUP_HELPER)
+    assert 'Name: "cuda"' in script
+    assert "WizardIsTaskSelected('cuda')" in script
+    assert "Params + ' -Cuda'" in script
+    assert "nvidia-cublas-cu12" in helper
+    assert "Test-NvidiaGpu" in helper
+    assert "Server\\runtime\\python.exe" in helper
+    assert "'--target'" in helper
+    # Restart through the supervisor; `start` is the foreground Server and
+    # would block the setup until the user kills it.
+    assert "@('restart')" in helper
+    # A failed download is a warning, not an install failure.
+    assert "warning: CUDA runtime" in helper
+
+
+def test_in_place_upgrade_stops_the_tray_and_the_server_first() -> None:
+    # Inno's Restart Manager cannot close a tray process or a Task Scheduler
+    # process, so an upgrade must stop both before copying files instead of
+    # showing the "unable to close all applications" dialog.
+    script = read(INNO_SCRIPT)
+    assert "CloseApplications=no" in script
+    assert "procedure StopRunningProcesses" in script
+    assert "/End /TN kitsune-client" in script
+    assert "/End /TN kitsune-server" in script
+    assert "/F /IM kitsune-client.exe" in script
+    prepare = script.split("function PrepareToInstall", 1)[1]
+    assert "StopRunningProcesses;" in prepare.split("end;", 1)[0]
+
+
 def test_the_server_runs_hidden_and_the_port_preflight_is_actionable() -> None:
     helper = read(SETUP_HELPER).lower()
     assert "server.port" in helper
     assert "already in use" in helper
     assert "pythonw.exe" in helper
     assert "change server.port" in helper
+
+
+def test_helper_does_not_treat_native_stderr_as_a_failure() -> None:
+    # Windows PowerShell 5.1 raises NativeCommandError for a native command's
+    # stderr under ErrorActionPreference=Stop, which turned the Client's
+    # successful autostart log line into a reported install failure.
+    helper = read(SETUP_HELPER)
+    assert "$ErrorActionPreference = 'Continue'" in helper
+    assert "finally" in helper
 
 
 def test_uninstall_removes_tasks_and_binaries_but_keeps_user_data_by_default() -> None:

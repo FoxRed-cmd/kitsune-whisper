@@ -7,7 +7,38 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 )
+
+// TestTraySignatureChangesOnlyWithRenderedFields guards the menu rebuild: a
+// Server probe that leaves the Tray unchanged must not close an open popup.
+func TestTraySignatureChangesOnlyWithRenderedFields(t *testing.T) {
+	snapshot := shell.Snapshot{
+		State:   shell.StateIdle,
+		Profile: "Local Server",
+		Labels:  shell.Labels{Status: "Ready", Settings: "Settings"},
+	}
+	signature := traySignature(snapshot)
+	if signature == "" {
+		t.Fatal("tray signature is empty")
+	}
+	if traySignature(snapshot) != signature {
+		t.Fatal("equal snapshots produced different signatures")
+	}
+
+	changed := snapshot
+	changed.State = shell.StateRecording
+	if traySignature(changed) == signature {
+		t.Fatal("a changed icon state did not change the signature")
+	}
+
+	changed = snapshot
+	changed.Labels.Settings = "Настройки"
+	if traySignature(changed) == signature {
+		t.Fatal("a changed menu label did not change the signature")
+	}
+}
 
 // TestBridgeAcceptsTheIntentPathWithOrWithoutALeadingSlash covers both shapes
 // the Wails asset server can produce after stripping the registered route;

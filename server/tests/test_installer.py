@@ -187,6 +187,18 @@ def install_client_only(sandbox: dict[str, Any], artifacts: Path, **kwargs: Any)
     )
 
 
+def test_installer_offers_the_optional_cuda_runtime() -> None:
+    script = INSTALL_SH.read_text(encoding="utf-8")
+    assert "--cuda" in script
+    assert "install_cuda_runtime" in script
+    assert "nvidia-cublas-cu12" in script
+    assert "nvidia-smi" in script
+    assert '"$SERVER_ROOT/runtime/bin/python3" -m pip install' in script
+    assert '--target "$SERVER_ROOT/lib"' in script
+    # A GPU-less host must keep the CPU Server instead of failing the install.
+    assert "keeping CPU" in script
+
+
 def test_installer_is_valid_bash() -> None:
     completed = subprocess.run(["bash", "-n", str(INSTALL_SH)], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr

@@ -88,6 +88,21 @@ def test_version_prints_without_loading_a_config(capsys: pytest.CaptureFixture[s
     assert capsys.readouterr().out.strip() == f"kitsune-server {__version__}"
 
 
+def test_windowless_start_replaces_missing_standard_streams(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pythonw.exe starts with both streams set to None, and uvicorn's formatter
+    # calls stdout.isatty() while configuring logging.
+    monkeypatch.setattr(cli.sys, "stdout", None)
+    monkeypatch.setattr(cli.sys, "stderr", None)
+
+    cli._ensure_standard_streams()
+
+    assert cli.sys.stdout is not None
+    assert cli.sys.stderr is not None
+    assert cli.sys.stdout is not cli.sys.stderr
+
+
 def test_check_config_still_prints_the_effective_config(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

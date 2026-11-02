@@ -64,9 +64,16 @@ Useful installer options:
 install.sh --no-server        # Client and Wayland helpers only
 install.sh --no-wayland       # skip the bundled helpers and the ydotoold unit
 install.sh --gui gtk3         # force the legacy build (auto by default)
+install.sh --cuda             # download the NVIDIA CUDA runtime (~550 MB)
 install.sh --from ./release   # install verified artifacts from a directory
 install.sh --dry-run          # print the plan and change nothing
 ```
+
+The native Server bundle does not carry CUDA. On an NVIDIA host, `--cuda`
+downloads `nvidia-cublas-cu12` into the bundle and restarts the Server; without
+it (or when `nvidia-smi` finds no GPU) `server.device: auto` resolves to CPU.
+For the piped one-liner, pass it as
+`curl ... | bash -s -- --cuda`.
 
 On Debian or Ubuntu you can use the package instead. On Fedora (and other
 rpm-based distributions) use the `.rpm`. Both install the Client, the native
@@ -119,7 +126,10 @@ Download `kitsune-whisper_windows_amd64_setup.exe` from the
 and run it. It needs **no administrator rights** and installs the Client with
 its Tray and Settings window, the native Server bundle, the Start Menu entry, and
 both per-user logon tasks (`kitsune-client` and `kitsune-server`). The Tasks page
-offers an optional desktop shortcut; closing that page installs without one.
+offers an optional desktop shortcut and a **CUDA runtime** download (~550 MB,
+checked by default). The CUDA task is skipped when no NVIDIA GPU is present;
+declining it installs a CPU-only Server. Without the runtime `server.device:
+auto` resolves to CPU even on a GPU host.
 
 The one-liner downloads the same setup, verifies its SHA-256 against
 `checksums.txt`, and runs it:
@@ -657,9 +667,11 @@ An **NVIDIA/CUDA GPU is recommended**. On the measured host (Ryzen 7 8700F,
 RTX 4060) the default `small` model transcribes at ≈0.02–0.2× realtime — near
 instant. CPU-only hosts are **supported but slower**, at ≈0.6–0.7× realtime.
 
-- **GPU** — any recent NVIDIA driver; the container ships the CUDA 12.3 /
-  cuDNN 9 runtime. `compute_type: auto` resolves to `float16`. On a low-VRAM GPU
-  set `server.compute_type: int8_float16` to fit the model.
+- **GPU** - any recent NVIDIA driver. The Docker image ships the CUDA 12.3 /
+  cuDNN 9 runtime; the native bundle downloads cuBLAS separately (the Windows
+  setup's CUDA task, or `install.sh --cuda`). `compute_type: auto` resolves to
+  `float16`. On a low-VRAM GPU set `server.compute_type: int8_float16` to fit
+  the model.
 - **CPU** — `compute_type: auto` resolves to `int8`. For lower latency set
   `server.model` to `base` (the best accuracy↔speed trade for dictation, roughly
   2–3× faster than `small`) or `tiny` on the weakest hosts.

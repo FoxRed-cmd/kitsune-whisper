@@ -136,9 +136,24 @@ def test_run_server_warns_on_cpu_with_escape_hatch(
     assert any("CPU" in message and "base/tiny" in message for message in warnings)
 
 
+def test_run_server_rejects_pinned_cuda_without_the_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
+    loaded: list[object] = []
+    monkeypatch.setattr(server, "build_transcriber", loaded.append)
+
+    with pytest.raises(EngineLoadError) as caught:
+        server.run_server(ServerConfig(device="cuda"), port_check=allow_port)
+
+    assert loaded == []
+    assert "nvidia-cublas-cu12" in str(caught.value)
+
+
 def test_run_server_does_not_warn_on_cuda(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 1)
     fake = FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
     monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)

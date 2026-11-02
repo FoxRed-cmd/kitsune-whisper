@@ -246,6 +246,10 @@ bootstraps WebView2 per user, and registers per-user logon tasks for the Client
 and the hidden Server. You can also download that setup executable from the
 release and run it directly; the Tasks page offers an optional desktop shortcut.
 
+The native Server bundle does not ship CUDA. On an NVIDIA host leave the CUDA
+task checked in the Windows setup, or add `--cuda` to the Linux one-liner
+(`... | bash -s -- --cuda`); otherwise the Server falls back to CPU.
+
 The Linux installer verifies every archive checksum, installs the Client, the
 native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**
 units for all three. It asks for `sudo` once to install GTK/WebKitGTK and the

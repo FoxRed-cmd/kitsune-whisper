@@ -53,7 +53,10 @@ OutputBaseFilename=kitsune-whisper_windows_amd64_setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-CloseApplications=yes
+; The Client and the scheduled Server are stopped by StopRunningProcesses
+; below. Inno's Restart Manager cannot close a tray process or a Task Scheduler
+; process, so leaving this on would block every in-place upgrade.
+CloseApplications=no
 RestartApplications=no
 UninstallDisplayIcon={app}\bin\kitsune-client.exe
 VersionInfoVersion={#VersionInfoVersion}
@@ -66,6 +69,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+; CTranslate2 needs cuBLAS 12 on a CUDA host; the Server bundle deliberately
+; does not carry the ~550 MB wheel. The helper detects an NVIDIA GPU and skips
+; the download on CPU-only machines, so checking this by default is safe.
+Name: "cuda"; Description: "Download the NVIDIA CUDA runtime for GPU transcription (~550 MB, several minutes)"; GroupDescription: "Optional components:"; Flags: checkedonce
 
 [Files]
 Source: "{#ClientExe}"; DestDir: "{app}\bin"; DestName: "kitsune-client.exe"; Flags: ignoreversion
@@ -172,10 +179,30 @@ begin
   Result := (ResultCode = 0) and WebView2Installed;
 end;
 
+procedure StopRunningProcesses;
+var
+  ResultCode: Integer;
+begin
+  // An in-place upgrade replaces both kitsune-client.exe and the Server bundle.
+  // Stop the logon task and any manual tray instance before Setup copies files;
+  // the helper re-registers both tasks and starts the Client again afterwards.
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/End /TN kitsune-client',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM kitsune-client.exe',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\schtasks.exe'), '/End /TN kitsune-server',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Task Scheduler returns before Windows releases every mapped file handle.
+  Sleep(1000);
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   if InstallWebView2 then
-    Result := ''
+  begin
+    StopRunningProcesses;
+    Result := '';
+  end
   else
     Result := WebView2OfflineMessage;
 end;
@@ -200,6 +227,8 @@ begin
       ' -TemplatePath ' + Quote(ExpandConstant('{tmp}\kitsune.example.yaml'));
     if ExpandConstant('{param:FORCECONFIG|}') <> '' then
       Params := Params + ' -ForceConfig';
+    if WizardIsTaskSelected('cuda') then
+      Params := Params + ' -Cuda';
   end;
   if PurgeData then
     Params := Params + ' -Purge';

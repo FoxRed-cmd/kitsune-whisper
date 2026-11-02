@@ -12,6 +12,7 @@ name it in the failure message.
 
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import logging
 import os
@@ -66,6 +67,26 @@ def _cuda_library_dirs() -> list[Path]:
     return dirs
 
 
+def _preload_cuda_libraries(dirs: Iterable[Path]) -> None:
+    """Register nvidia-wheel sonames so a later ``dlopen`` finds them.
+
+    glibc fixes its library search path at process start, so updating
+    ``LD_LIBRARY_PATH`` at runtime does not affect ``dlopen``. Loading each
+    library by absolute path with ``RTLD_GLOBAL`` registers its soname in the
+    global namespace, which is what CTranslate2's ``dlopen("libcublas.so.12")``
+    resolves against.
+    """
+    for directory in dirs:
+        for name in ("libcublasLt.so.12", "libcublas.so.12", "libcudnn.so.9"):
+            candidate = directory / name
+            if not candidate.is_file():
+                continue
+            try:
+                ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                logger.debug("could not preload %s", candidate)
+
+
 def ensure_cuda_libraries(device: str) -> None:
     """Make pip-installed NVIDIA runtime libraries loadable on ``device=cuda``."""
     if device != "cuda":
@@ -87,6 +108,7 @@ def ensure_cuda_libraries(device: str) -> None:
         prefix = os.pathsep.join(str(directory) for directory in dirs)
         existing = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
+        _preload_cuda_libraries(dirs)
 
 
 def _load_error(

@@ -17,6 +17,7 @@ param(
     [string]$ConfigPath = (Join-Path $env:APPDATA 'kitsune-whisper\kitsune.yaml'),
     [string]$TemplatePath = '',
     [string]$LogPath = '',
+    [switch]$Cuda,
     [switch]$Purge,
     [switch]$ForceConfig
 )
@@ -55,8 +56,19 @@ function Invoke-Native {
         [string[]]$Arguments = @()
     )
     Write-Log ("run: {0} {1}" -f $FilePath, ($Arguments -join ' '))
-    $output = & $FilePath @Arguments 2>&1
-    $code = $LASTEXITCODE
+    # Windows PowerShell turns a native command's stderr into a terminating
+    # error when 2>&1 runs under ErrorActionPreference=Stop. The helper's own
+    # progress lines (Client autostart, for one) go to stderr, so the install
+    # would report failure even though the command succeeded.
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $FilePath @Arguments 2>&1
+        $code = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
     foreach ($line in @($output)) {
         Write-Log ([string]$line)
     }
@@ -163,6 +175,70 @@ function Install-ServerBundle {
     }
     finally {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Test-NvidiaGpu {
+    try {
+        $adapters = Get-CimInstance Win32_VideoController -ErrorAction Stop |
+            Where-Object { $_.Name -like '*NVIDIA*' }
+        return [bool]$adapters
+    }
+    catch {
+        Write-Log "could not query the video adapters: $_"
+        return $false
+    }
+}
+
+function Install-CudaRuntime {
+    if (-not $Cuda) {
+        return
+    }
+    $python = Join-Path $AppDir 'Server\runtime\python.exe'
+    if (-not (Test-Path -LiteralPath $python)) {
+        throw 'CUDA was requested, but the Server bundle is not installed'
+    }
+    if (-not (Test-NvidiaGpu)) {
+        Write-Log 'CUDA was requested, but no NVIDIA GPU was detected; keeping CPU'
+        return
+    }
+    $cublas = Join-Path $AppDir 'Server\lib\nvidia\cublas\bin\cublas64_12.dll'
+    if (Test-Path -LiteralPath $cublas) {
+        Write-Log 'the CUDA runtime is already installed'
+        return
+    }
+
+    # The wheel is ~550 MB and CTranslate2 loads it lazily on the first
+    # transcription. Stop the Server so the new DLLs are picked up on restart;
+    # a failed download must leave a working CPU Server, so the caller treats
+    # this as a warning.
+    $launcher = Join-Path $AppDir 'bin\kitsune-server.cmd'
+    $stopped = $false
+    try {
+        if (Test-Path -LiteralPath $launcher) {
+            $null = Invoke-Native $launcher @('stop')
+            $stopped = $true
+        }
+        $target = Join-Path $AppDir 'Server\lib'
+        $code = Invoke-Native $python @(
+            '-m', 'pip', 'install', '--disable-pip-version-check',
+            '--no-warn-script-location', '--no-input', '--upgrade',
+            '--target', $target, 'nvidia-cublas-cu12'
+        )
+        if ($code -ne 0) {
+            throw "the CUDA runtime could not be downloaded (exit $code). The Server still works on CPU."
+        }
+        if (-not (Test-Path -LiteralPath $cublas)) {
+            throw 'the CUDA runtime installed without cublas64_12.dll. The Server will use CPU.'
+        }
+        Write-Log 'installed the CUDA runtime (nvidia-cublas-cu12)'
+    }
+    finally {
+        if ($stopped -and (Test-Path -LiteralPath $launcher)) {
+            # `start` runs the Server in the foreground; the supervisor's
+            # restart returns after Task Scheduler accepts the start.
+            $null = Invoke-Native $launcher @('restart')
+        }
     }
 }
 
@@ -274,6 +350,15 @@ function Install-Kitsune {
     catch {
         $failures.Add("local Server: $_")
         Write-Log "error: local Server: $_"
+    }
+
+    try {
+        Install-CudaRuntime
+    }
+    catch {
+        # GPU is an optional acceleration: a failed download falls back to the
+        # CPU Server instead of failing the whole install.
+        Write-Log "warning: CUDA runtime: $_"
     }
 
     try {

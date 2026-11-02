@@ -260,6 +260,31 @@ def test_ensure_cuda_libraries_prepends_path_on_windows(
     assert "C:/original" in parts
 
 
+def test_ensure_cuda_libraries_preloads_linux_sonames(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    (tmp_path / "libcublasLt.so.12").write_text("", encoding="utf-8")
+    (tmp_path / "libcublas.so.12").write_text("", encoding="utf-8")
+    monkeypatch.setattr(engine, "_cuda_library_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(engine.sys, "platform", "linux")
+    monkeypatch.setattr(engine.os, "pathsep", ":")
+    loaded: list[str] = []
+
+    def fake_cdll(path: str, mode: int = 0) -> Any:
+        loaded.append(path)
+
+    monkeypatch.setattr(engine.ctypes, "CDLL", fake_cdll, raising=False)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+
+    engine.ensure_cuda_libraries("cuda")
+
+    assert loaded == [
+        str(tmp_path / "libcublasLt.so.12"),
+        str(tmp_path / "libcublas.so.12"),
+    ]
+    assert os.environ["LD_LIBRARY_PATH"] == str(tmp_path)
+
+
 def test_cuda_library_subdir_is_bin_on_windows_lib_elsewhere(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
