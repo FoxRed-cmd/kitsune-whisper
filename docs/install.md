@@ -67,21 +67,49 @@ install.sh --from ./release   # install verified artifacts from a directory
 install.sh --dry-run          # print the plan and change nothing
 ```
 
-On Debian or Ubuntu you can use the package instead. It installs the Client,
-the native Server bundle, the bundled Wayland helpers, the udev rule, and three
-systemd user units, and declares GTK/WebKitGTK as dependencies (the package
-manager owns the only elevated step). The units start at your next login; to
-seed a config template and start them in the current session, run:
+On Debian or Ubuntu you can use the package instead. On Fedora (and other
+rpm-based distributions) use the `.rpm`. Both install the Client, the native
+Server bundle, the bundled Wayland helpers, the udev rule, and three systemd
+user units, and declare GTK/WebKitGTK as dependencies (the package manager owns
+the only elevated step). The units start at your next login; to seed a config
+template and start them in the current session, run:
 
 ```sh
+# Debian/Ubuntu
 sudo apt install ./kitsune-whisper_<version>_amd64.deb
+# Fedora/RHEL
+sudo dnf install ./kitsune-whisper-<version>-1.x86_64.rpm
+
 kitsune-whisper-setup        # optional: seed config + start the user units now
 kitsune-server status        # bundled Server CLI from the package
 ```
 
 The package installs the Server bundle too, so `kitsune-server status`, `pair`,
 and `devices` work without the one-line installer. Older LTS distributions use
-`kitsune-whisper-legacy_<version>_amd64.deb`.
+`kitsune-whisper-legacy_<version>_amd64.deb` or
+`kitsune-whisper-legacy-<version>-1.x86_64.rpm`.
+
+### AppImage
+
+The AppImage is the no-install option: download it, make it executable, and run
+it. It carries the Client, the native Server bundle, and the bundled
+`ydotool`/`wtype` helpers. On first run it seeds `kitsune.yaml`; it starts the
+bundled Local Server and `ydotoold` for the duration of the session (unless the
+matching systemd user unit is already active) and stops them when the Client
+exits. It uses the host's GTK4/WebKitGTK 6.0 libraries; older LTS hosts can use
+the legacy AppImage built against GTK3/WebKit2GTK 4.1.
+
+```sh
+chmod +x kitsune-whisper-<version>-x86_64.AppImage
+./kitsune-whisper-<version>-x86_64.AppImage                 # Settings + Tray
+./kitsune-whisper-<version>-x86_64.AppImage --server status  # bundled Server CLI
+```
+
+Set `KITSUNE_APPIMAGE_NO_SERVER=1` when another Server already serves the
+machine. The AppImage does not install the `/dev/uinput` rule; without it,
+Wayland injection stays clipboard-only until you add the rule from
+[Wayland injection](#wayland-injection-is-set-up-for-you) or run the one-line
+installer once with elevation.
 
 Windows (PowerShell 7+) — the Client only:
 

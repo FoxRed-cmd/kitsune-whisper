@@ -53,7 +53,8 @@ archive anywhere, then run
 ```
 
 The bootstrap prepends the sibling `lib/` and calls the CLI, so the Linux
-one-line installer and the `.deb` finisher install a host with no system Python.
+one-line installer and the `.deb`/`.rpm` finishers install a host with no
+system Python.
 `kitsune-server install --artifact` is the reference implementation of the
 layout and supervisor steps for a host that already has Python.
 

@@ -51,6 +51,31 @@ with the fox icon in the window list and the Tray.
 
 Re-running `./install.sh --from dist` should not prompt for a password.
 
+## Package variants
+
+The same checks apply to the system packages and the AppImage:
+
+```sh
+# Fedora/RHEL
+sudo dnf install ./dist/kitsune-whisper-<version>-1.x86_64.rpm
+kitsune-whisper-setup
+rpm -q --requires kitsune-whisper     # gtk4, webkitgtk6.0
+
+# Debian/Ubuntu
+sudo apt install ./dist/kitsune-whisper_<version>_amd64.deb
+
+# AppImage (no system install)
+chmod +x dist/kitsune-whisper-<version>-x86_64.AppImage
+./dist/kitsune-whisper-<version>-x86_64.AppImage --version
+./dist/kitsune-whisper-<version>-x86_64.AppImage
+```
+
+For the AppImage, check that the bundled Server answers `/health` while the
+window is open, that `ydotool type "hello"` reaches a focused field, and that
+both children exit with the Client. The AppImage deliberately does not write
+the udev rule, so on a host without it the ydotoold child stays down and
+injection is clipboard-only.
+
 ## Dictation cycle
 
 Use **Settings → Servers and Devices** (or the Setup wizard) to make the Local

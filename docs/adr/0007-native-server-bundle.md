@@ -20,10 +20,10 @@ CPU still supported. The Docker images stay as the supported deployment for a
 dedicated host (for example the GPU desktop) and expose the same API, auth, and
 config as the native Server.
 
-> **Amended by the Linux `.deb`:** a system package may place the read-only
-> bundle under `/usr/lib/kitsune-whisper/server` and set `KITSUNE_SERVER_ROOT`;
-> configuration, state, and models stay per user. The per-user bundle remains
-> the default for `install.sh` and Windows.
+> **Amended by the Linux `.deb`/`.rpm`:** a system package may place the
+> read-only bundle under `/usr/lib/kitsune-whisper/server` and set
+> `KITSUNE_SERVER_ROOT`; configuration, state, and models stay per user. The
+> per-user bundle remains the default for `install.sh` and Windows.
 
 ## Considered options
 

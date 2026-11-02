@@ -8,6 +8,8 @@ name: Release
 #   kitsune-server_linux_amd64.tar.gz          native Server bundle
 #   kitsune-wayland_linux_amd64.tar.gz         ydotool/ydotoold/wtype
 #   kitsune-whisper_*_amd64.deb                Debian/Ubuntu package
+#   kitsune-whisper-*-1.x86_64.rpm             Fedora/RHEL package
+#   kitsune-whisper-*-x86_64.AppImage          portable AppImage
 on:
   push:
     tags: ["v*"]
@@ -36,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/build-linux-artifacts.sh \
-            --no-server --no-wayland --no-deb \
+            --no-server --no-wayland --no-deb --no-rpm --no-appimage \
             --output dist --version "${GITHUB_REF_NAME:-dev}"
 
       - uses: actions/upload-artifact@v4
@@ -110,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/build-linux-artifacts.sh \
-            --no-client --no-wayland --no-deb \
+            --no-client --no-wayland --no-deb --no-rpm --no-appimage \
             --output dist --version "${GITHUB_REF_NAME:-dev}"
 
       - uses: actions/upload-artifact@v4
@@ -185,10 +187,112 @@ jobs:
           path: dist/kitsune-whisper*.deb
           if-no-files-found: error
 
+  rpm:
+    name: fedora package
+    runs-on: ubuntu-24.04
+    needs: [client-linux, server-bundle, wayland-tools]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist
+
+      - name: Build the GTK4 and legacy packages
+        run: |
+          set -euo pipefail
+          tar -xzf dist/kitsune-client_linux_amd64.tar.gz -C dist
+          mkdir -p dist/legacy
+          tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
+          packaging/rpm/build-rpm.sh \
+            --client dist/kitsune-client \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+          packaging/rpm/build-rpm.sh \
+            --client dist/legacy/kitsune-client --legacy \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora-package
+          path: dist/kitsune-whisper*.rpm
+          if-no-files-found: error
+
+  appimage:
+    name: appimage
+    runs-on: ubuntu-24.04
+    needs: [client-linux, server-bundle, wayland-tools]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist
+
+      - name: Fetch appimagetool
+        run: |
+          set -euo pipefail
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+      - name: Build the GTK4 and legacy AppImages
+        env:
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+        run: |
+          set -euo pipefail
+          tar -xzf dist/kitsune-client_linux_amd64.tar.gz -C dist
+          mkdir -p dist/legacy
+          tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
+          packaging/appimage/build-appimage.sh \
+            --client dist/kitsune-client \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+          packaging/appimage/build-appimage.sh \
+            --client dist/legacy/kitsune-client --legacy \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/kitsune-whisper*.AppImage
+          if-no-files-found: error
+
   release:
     name: publish
     runs-on: ubuntu-24.04
-    needs: [client-linux, client-windows, server-bundle, wayland-tools, deb]
+    needs: [client-linux, client-windows, server-bundle, wayland-tools, deb, rpm, appimage]
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -213,4 +317,6 @@ jobs:
             dist/kitsune-server_linux_amd64.tar.gz
             dist/kitsune-wayland_linux_amd64.tar.gz
             dist/kitsune-whisper*_amd64.deb
+            dist/kitsune-whisper*.rpm
+            dist/kitsune-whisper*.AppImage
             dist/checksums.txt
