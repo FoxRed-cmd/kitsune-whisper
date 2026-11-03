@@ -1422,6 +1422,98 @@ const pageHTML = `<!doctype html>
     if (immediate) sendIndicatorPreview();
     else previewTimer = setTimeout(sendIndicatorPreview, 120);
   }
+  // Unsaved edits and the caret survive a re-render. Every settings refresh
+  // replaces the whole fragment, so a health probe, a Device appearing, or a
+  // Model download would otherwise drop whatever the user typed since the last
+  // save. A control counts as edited when its value differs from the one Go
+  // last rendered; only those values are put back, so a save, a reset, or a
+  // rejected value still follows Go. A successful pairing also keeps its typed
+  // form: the page cannot tell which refresh consumed it, and dropping a user's
+  // text is the worse outcome.
+  function controlKey(el) {
+    if (el.dataset.serverPath) return "server:" + el.dataset.serverPath;
+    if (el.dataset.path) return "path:" + el.dataset.path;
+    if (el.id) return "id:" + el.id;
+    return "";
+  }
+  function controlValue(el) {
+    if (el.type === "checkbox" || el.type === "radio") return el.checked ? "1" : "0";
+    return el.value;
+  }
+  // Controls that save themselves on change follow Go: restoring a rejected
+  // choice would contradict the failure message.
+  function liveControl(el) {
+    if (el.closest("[data-startup-component], [data-log-level]")) return true;
+    return el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
+  }
+  function markRendered(root) {
+    if (!root) return;
+    var controls = root.querySelectorAll("input, textarea, select");
+    for (var i = 0; i < controls.length; i++) {
+      controls[i].__kitsuneRendered = controlValue(controls[i]);
+    }
+  }
+  function captureEdits(root) {
+    var edits = [];
+    if (!root) return edits;
+    var controls = root.querySelectorAll("input, textarea, select");
+    for (var i = 0; i < controls.length; i++) {
+      var el = controls[i];
+      if (el.disabled || liveControl(el)) continue;
+      var key = controlKey(el);
+      if (!key || el.__kitsuneRendered === undefined) continue;
+      var value = controlValue(el);
+      if (value === el.__kitsuneRendered) continue;
+      edits.push({ key: key, value: value });
+    }
+    return edits;
+  }
+  function findControl(root, key) {
+    if (!root) return null;
+    var controls = root.querySelectorAll("input, textarea, select");
+    for (var i = 0; i < controls.length; i++) {
+      if (controlKey(controls[i]) === key) return controls[i];
+    }
+    return null;
+  }
+  function hasOption(select, value) {
+    for (var i = 0; i < select.options.length; i++) {
+      if (select.options[i].value === value) return true;
+    }
+    return false;
+  }
+  function restoreEdits(root, edits) {
+    for (var i = 0; i < edits.length; i++) {
+      var el = findControl(root, edits[i].key);
+      if (!el || el.disabled) continue;
+      if (el.type === "checkbox" || el.type === "radio") el.checked = edits[i].value === "1";
+      else if (el.tagName === "SELECT" && !hasOption(el, edits[i].value)) continue;
+      else el.value = edits[i].value;
+    }
+  }
+  function captureFocus(root) {
+    var el = document.activeElement;
+    if (!root || !el || !root.contains(el)) return null;
+    var key = controlKey(el);
+    if (!key) return null;
+    var start = null;
+    var end = null;
+    try {
+      start = el.selectionStart;
+      end = el.selectionEnd;
+    } catch (e) {}
+    return { key: key, start: start, end: end };
+  }
+  function restoreFocus(root, focus) {
+    if (!root || !focus) return;
+    var el = findControl(root, focus.key);
+    if (!el || !el.focus) return;
+    el.focus();
+    if (focus.start === null || !el.setSelectionRange) return;
+    try {
+      el.setSelectionRange(focus.start, focus.end);
+    } catch (e) {}
+  }
   function renderSettings(v) {
     var host = document.getElementById("settings");
     var pane = document.getElementById("settings-pane");
@@ -1429,7 +1521,13 @@ const pageHTML = `<!doctype html>
     var previousSection = activeSection;
     var previousScroll = pane ? pane.scrollTop : 0;
     var previousFields = fields ? fields.scrollTop : 0;
+    var edits = captureEdits(host);
+    var focus = captureFocus(host);
     if (host) host.innerHTML = (v && v.html) || "";
+    if (host) {
+      markRendered(host);
+      restoreEdits(host, edits);
+    }
     if (v && v.language) document.documentElement.lang = v.language;
     if (v && v.title) {
       document.title = v.title;
@@ -1477,6 +1575,7 @@ const pageHTML = `<!doctype html>
     }
     var wizardOutput = document.getElementById("wizard-try-output");
     if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
+    else restoreFocus(host, focus);
   }
   function renderSpool(v) {
     var host = document.getElementById("settings-pane") || document.getElementById("settings");
@@ -1493,14 +1592,20 @@ const pageHTML = `<!doctype html>
     var host = document.getElementById("settings-pane") || document.getElementById("settings");
     if (!host) return;
     var current = host.querySelector("[data-section='wizard']");
+    var edits = captureEdits(current);
+    var focus = captureFocus(current);
     var holder = document.createElement("div");
     holder.innerHTML = (v && v.html) || "";
     var next = holder.firstElementChild;
     if (current && next) current.replaceWith(next);
     else if (current) current.remove();
     else if (next) host.insertBefore(next, host.firstChild);
+    var rendered = host.querySelector("[data-section='wizard']");
+    markRendered(rendered);
+    restoreEdits(rendered, edits);
     var output = document.getElementById("wizard-try-output");
     if (output && output.focus) output.focus();
+    else restoreFocus(rendered, focus);
   }
   function renderMessages(m) {
     var host = document.getElementById("messages");
@@ -1877,6 +1982,7 @@ const pageHTML = `<!doctype html>
   window.addEventListener("beforeunload", hideIndicatorPreview);
   renderStatus(__INITIAL__);
   selectSection("");
+  markRendered(document.getElementById("settings"));
   // Fill the Diagnostics cache when the window opens; the first visit to the
   // screen then shows real values instead of empty placeholders.
   primeDiagnostics();

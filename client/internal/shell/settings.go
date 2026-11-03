@@ -979,8 +979,10 @@ func (s *Shell) pairRemote(intent Intent) {
 	defer cancel()
 	profile, err := s.opts.Servers.AddRemote(ctx, intent.Address, intent.Code, intent.Name)
 	if err != nil {
+		// Only the message changes: rebuilding the form here would drop the
+		// address and code the user just typed. Nothing was saved, so the
+		// rendered form is still current.
 		s.pushMessages(nil, []string{s.catalog().T("error.server.pair", err.Error())})
-		s.pushSettings()
 		return
 	}
 	notices := []string{s.catalog().T("notice.server.paired", profile.Name)}

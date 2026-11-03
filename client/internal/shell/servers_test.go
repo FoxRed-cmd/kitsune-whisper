@@ -609,10 +609,14 @@ func TestPairRemoteFailureShowsTheServersDistinctMessage(t *testing.T) {
 
 	done := startWithWindow(t, sh, desktop)
 	window := desktop.getWindow()
+	before := window.settingsCount()
 	if err := window.sendIntent(t, shell.Intent{
 		Action: shell.IntentPairRemote, Address: "desktop.local", Code: "ABCD2345",
 	}); err != nil {
 		t.Fatalf("intent: %v", err)
+	}
+	if after := window.settingsCount(); after != before {
+		t.Fatalf("a pairing failure rebuilt the form: %d -> %d", before, after)
 	}
 	if applyCalls != 0 {
 		t.Fatal("a failed pairing was applied to the runtime")

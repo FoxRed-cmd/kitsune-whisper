@@ -550,6 +550,76 @@ func TestPageIntentBridgePostsToOneEndpoint(t *testing.T) {
 	}
 }
 
+func TestPageKeepsUnsavedEditsAcrossASettingsRefresh(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+
+	start := strings.Index(page, "function renderSettings(v)")
+	if start < 0 {
+		t.Fatal("the page has no settings renderer")
+	}
+	end := strings.Index(page[start:], "function renderSpool(")
+	if end < 0 {
+		t.Fatal("could not delimit the settings renderer")
+	}
+	renderer := page[start : start+end]
+
+	// A refresh rebuilds the fragment, so the values the user typed but has not
+	// saved must be captured before the rebuild and put back afterwards. The
+	// caret moves with them, or the next keystroke lands in the wrong place.
+	replace := strings.Index(renderer, "host.innerHTML =")
+	capture := strings.Index(renderer, "var edits = captureEdits(host);")
+	caret := strings.Index(renderer, "var focus = captureFocus(host);")
+	restore := strings.Index(renderer, "restoreEdits(host, edits);")
+	restoreCaret := strings.Index(renderer, "restoreFocus(host, focus);")
+	if capture < 0 || replace < 0 || capture > replace {
+		t.Fatal("the settings renderer rebuilds the form before saving the user's edits")
+	}
+	if caret < 0 || caret > replace {
+		t.Fatal("the settings renderer rebuilds the form before remembering the caret")
+	}
+	if restore < 0 || restore < replace {
+		t.Fatal("the settings renderer does not restore the user's edits after the rebuild")
+	}
+	if restoreCaret < 0 || restoreCaret < replace {
+		t.Fatal("the settings renderer does not restore the caret after the rebuild")
+	}
+
+	for _, want := range []string{
+		`markRendered(document.getElementById("settings"))`,
+		"function markRendered(",
+		"function captureEdits(",
+		"function restoreEdits(",
+		"function captureFocus(",
+		"function restoreFocus(",
+		// A control that saves itself on change must follow Go, not the page.
+		`el.dataset.path === "client.ui_language"`,
+		`el.closest("[data-startup-component], [data-log-level]")`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the page does not keep unsaved edits: missing %q", want)
+		}
+	}
+
+	// The wizard form is replaced on its own, so it needs the same treatment.
+	wizardStart := strings.Index(page, "function renderWizard(v)")
+	if wizardStart < 0 {
+		t.Fatal("the page has no wizard renderer")
+	}
+	wizardEnd := strings.Index(page[wizardStart:], "function renderMessages(")
+	if wizardEnd < 0 {
+		t.Fatal("could not delimit the wizard renderer")
+	}
+	wizard := page[wizardStart : wizardStart+wizardEnd]
+	wizardReplace := strings.Index(wizard, "current.replaceWith(next)")
+	wizardCapture := strings.Index(wizard, "captureEdits(current)")
+	if wizardReplace < 0 || wizardCapture < 0 || wizardCapture > wizardReplace {
+		t.Fatal("the wizard renderer rebuilds the step before saving the user's edits")
+	}
+	if strings.Index(wizard, "restoreEdits(rendered, edits)") < wizardReplace {
+		t.Fatal("the wizard renderer does not restore the user's edits after the rebuild")
+	}
+}
+
 func TestPageUpdatesTheWindowChromeOnALanguageSwitch(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, sampleView())
 	if !strings.Contains(page, `<h1 id="page-title">kitsune-whisper</h1>`) {
