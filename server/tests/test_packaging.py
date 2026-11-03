@@ -359,6 +359,9 @@ def test_docker_smoke_workflow_is_opt_in_and_not_in_default_ci() -> None:
     assert "schedule" in triggers
     assert "pull_request" not in triggers
 
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "docker-smoke" not in ci
+
 
 def test_e2e_trust_harness_covers_the_release_surface() -> None:
     script = REPO_ROOT / "scripts" / "e2e_trust.py"
@@ -372,7 +375,9 @@ def test_e2e_trust_harness_covers_the_release_surface() -> None:
         "/admin/start",
         "/admin/restart",
         "auto_pair",
-        "spool",
+        "--spool-on-error",
+        '"spool", "retry"',
+        '"spool", "delete"',
         "RESTART_EXIT_CODE",
         "wait_restart",
         "--report",
@@ -405,9 +410,6 @@ def test_documentation_covers_install_release_and_troubleshooting() -> None:
             assert needle in text, f"{name}: {needle}"
         if name != "verification/manual-matrix.md":
             assert f"docs/{name}" in readme, name
-
-    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
-    assert "docker-smoke" not in ci
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:

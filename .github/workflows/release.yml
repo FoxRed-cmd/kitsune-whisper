@@ -16,8 +16,9 @@ name: Release
 #   kitsune-server_windows_amd64.tar.gz        native Server bundle
 #   kitsune-whisper_windows_amd64_setup.exe    per-user Inno Setup installer
 #
-# The publish job also attaches install.sh and install.ps1, the verified updater
-# entry points, with checksums.txt covering the whole release.
+# The publish job also attaches install.sh (the Linux updater's verified asset)
+# and install.ps1 (the pinned Windows bootstrap), with checksums.txt covering
+# the whole release.
 on:
   push:
     tags: ["v*"]
@@ -47,6 +48,11 @@ jobs:
           fi
           if ! grep -q "__version__ = \"$version\"" server/kitsune_server/__init__.py; then
             echo "server/kitsune_server/__init__.py does not declare version $version" >&2
+            exit 1
+          fi
+          if ! grep -A1 '^name = "kitsune-server"$' server/uv.lock \
+            | grep -q "^version = \"$version\"$"; then
+            echo "server/uv.lock does not declare kitsune-server $version" >&2
             exit 1
           fi
           echo "releasing $tag"
@@ -423,6 +429,9 @@ jobs:
       - rpm
       - appimage
     steps:
+      # install.sh and install.ps1 are checked out, not downloaded artifacts.
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -431,8 +440,9 @@ jobs:
       - name: Generate checksums
         run: |
           set -euo pipefail
-          # install.sh and install.ps1 are the verified updater entry points.
-          # They download the rest of this release themselves.
+          # install.sh is the Linux updater's verified asset; install.ps1 is
+          # the pinned Windows bootstrap. Both download the rest of this
+          # release themselves.
           cp install.sh dist/install.sh
           cp install.ps1 dist/install.ps1
           cd dist

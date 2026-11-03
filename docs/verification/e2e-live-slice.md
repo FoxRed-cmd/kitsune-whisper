@@ -14,7 +14,8 @@ The authenticated desktop slice from issue #83 is a separate harness:
 token-protected Server and covers local auto-pairing, a remote Pairing code,
 Device revocation and re-pairing, the manual Server switch, soft-stop/start, a
 supervised restart (including a persisted soft-stop), an unreachable Server, and
-Spool recovery. The release matrix lives in
+Spool save/retry/delete (`transcribe-file --spool-on-error`, `spool list`,
+`spool retry`, `spool delete`). The release matrix lives in
 [manual-matrix.md](manual-matrix.md).
 
 ## What the harness covers
@@ -91,7 +92,7 @@ model `small`, 9.10 s SAPI speech WAV, 2026-10-05.
 | `local-gpu` | `cuda` / `float16` | 0.32 s | 0.03–0.04× | 9/9 |
 
 1.0.0 release check (2026-11-03): Fedora 44, GNOME Wayland, CPU-only, model
-`tiny`. All 8 live checks and all 18 authenticated trust checks passed; the
+`tiny`. All 8 live checks and all 20 authenticated trust checks passed; the
 speech round trip took 1.21 s for 5.92 s of audio (0.21× realtime). The
 authenticated harness is [`e2e_trust.py`](../../scripts/e2e_trust.py); see
 [manual-matrix.md](manual-matrix.md).

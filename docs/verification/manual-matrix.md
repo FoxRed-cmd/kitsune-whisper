@@ -33,15 +33,20 @@ bash scripts/docker-smoke.sh --model tiny
 real Client, an unreachable Server, and latency. `e2e_trust.py` covers local
 auto-pairing over HTTPS, a remote Pairing code, Device revocation and re-pairing,
 the manual Server switch with no fallback, soft-stop/start, supervised restart,
-the persisted soft-stop, and Spool recovery. `docker_smoke.py` covers the
-container contract: `docker exec` pairing, the writable `/config`, `/state`
-persistence, restart policy, and recreation.
+the persisted soft-stop, and Spool save/retry/delete through the real Client.
+`docker_smoke.py` covers the container contract: `docker exec` pairing, the
+writable `/config`, `/state` persistence, restart policy, and recreation.
+
+The trust harness drives remote pairing and the profile switch through the HTTP
+contract and the Client's `servers`/`active_server` configuration. The Settings
+and Tray clicks that exercise the same services are unit-tested and stay in the
+manual matrix.
 
 | Check | A (GNOME Wayland) | B (Windows) | C (CUDA host) |
 | --- | --- | --- | --- |
 | `e2e_live.py` (local CPU) | Pass 2026-11-03 (`tiny`, 8/8) | Pending | — |
 | `e2e_live.py` (local GPU) | — | — | Pending |
-| `e2e_trust.py` | Pass 2026-11-03 (`tiny`, 18/18) | Pending | Pending |
+| `e2e_trust.py` | Pass 2026-11-03 (`tiny`, 20/20) | Pending | Pending |
 | `docker_smoke.py` | Pending (opt-in) | Pending (opt-in) | Pending (opt-in) |
 
 ## Manual matrix
@@ -118,7 +123,7 @@ says "Pending" has not been executed and must not be treated as a pass.
 
 | Date | Release | Environment | Checks | Result |
 | --- | --- | --- | --- | --- |
-| 2026-11-03 | 1.0.0 | Fedora 44, GNOME Wayland, CPU | Automated `e2e_live.py` / `e2e_trust.py` | **Pass**: 8/8 and 18/18 |
+| 2026-11-03 | 1.0.0 | Fedora 44, GNOME Wayland, CPU | Automated `e2e_live.py` / `e2e_trust.py` | **Pass**: 8/8 and 20/20 |
 | | 1.0.0 | Linux GNOME Wayland, CPU | Manual matrix 1–34 | Pending |
 | | 1.0.0 | Windows 11 | Automated + manual matrix 1–34 | Pending |
 | | 1.0.0 | Real NVIDIA GPU | Automated + manual matrix 8, 25–29 | Pending |

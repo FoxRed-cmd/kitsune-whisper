@@ -59,7 +59,9 @@ The `verify-version` job runs first and every build job depends on it.
 
 `checksums.txt` is generated in the release job with `sha256sum` over every
 `kitsune-*` asset plus the two installer scripts. The installers and the Client's
-update check verify a download against it before running anything.
+update check verify a download against it before running anything. `install.sh`
+is the Linux updater's verified asset; `install.ps1` is the pinned Windows
+bootstrap.
 
 Docker images are published separately by `publish-server-image.yml`:
 `ghcr.io/foxred-cmd/kitsune-whisper-server:cpu` and `:gpu`, with

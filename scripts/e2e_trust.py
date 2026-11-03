@@ -7,8 +7,9 @@ lifecycle surface on a real Server and the real Client binary.
 
 Checks:
 
-- ``/health`` is unauthenticated and reports the release version from ``VERSION``;
-  ``/status`` and ``/transcribe`` reject an anonymous request;
+- ``/health`` is unauthenticated and reports the Server package version, which
+  must match ``VERSION`` in a release checkout; ``/status`` and ``/transcribe``
+  reject an anonymous request;
 - local auto-pairing (the Client's ``auto_pair`` profile) pins the certificate
   and dictates through HTTPS;
 - remote pairing redeems a one-time code, the Device token transcribes, and a
@@ -29,7 +30,6 @@ model that can be loaded; it starts and stops its own Server.
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import os
 import platform
@@ -312,7 +312,7 @@ class Harness:
         expected = self.repository_version()
         got = str((health or {}).get("version", ""))
         self.check(
-            "/health reports the release version from VERSION",
+            "/health reports the version declared by VERSION",
             health is not None and got == expected,
             f"version={got!r} want={expected!r}",
         )
@@ -572,28 +572,49 @@ class Harness:
         )
 
     def check_spool_recovery(self) -> None:
-        spool = self.workdir / "spool"
-        spool.mkdir(parents=True, exist_ok=True)
-        if self.speech is None:
-            self.speech = self.ensure_speech()
-        entry = spool / f"utterance-{time.strftime('%Y%m%dT%H%M%S')}.000000-001.wav"
-        shutil.copyfile(self.speech, entry)
-
-        profile = {
-            "id": f"e2e-spool-{uuid.uuid4().hex[:8]}",
-            "name": "E2E Spool",
+        bad = {
+            "id": f"e2e-spool-bad-{uuid.uuid4().hex[:8]}",
+            "name": "E2E Spool Unreachable",
+            "url": "https://127.0.0.1:1",
+            "auto_pair": True,
+        }
+        good = {
+            "id": f"e2e-spool-good-{uuid.uuid4().hex[:8]}",
+            "name": "E2E Spool Server",
             "url": self.base_url,
             "auto_pair": True,
         }
-        config = self.client_config("spool", [profile], profile["id"])
-        recovered = self.run_client(config, "transcribe-file", str(entry))
-        self.check(
-            "a Spooled utterance is recovered through the real Client",
-            recovered.returncode == 0 and bool(recovered.stdout.strip()),
-            f"exit={recovered.returncode} stdout={recovered.stdout.strip()[:120]!r}",
+        failed_config = self.client_config("spool", [bad, good], bad["id"])
+        failed = self.run_client(
+            failed_config, "transcribe-file", "--spool-on-error", str(self.speech)
         )
-        with contextlib.suppress(OSError):
-            entry.unlink()
+        listed = self.run_client(failed_config, "spool", "list")
+        entry = listed.stdout.split()[0] if listed.stdout.strip() else ""
+        self.check(
+            "a failed utterance is written to the Spool",
+            failed.returncode != 0 and bool(entry),
+            f"exit={failed.returncode} entry={entry!r}",
+        )
+
+        recovered_config = self.client_config("spool", [bad, good], good["id"])
+        recovered = self.run_client(recovered_config, "spool", "retry", entry) if entry else None
+        self.check(
+            "the Spooled utterance is recovered through the real Client",
+            recovered is not None and recovered.returncode == 0 and bool(recovered.stdout.strip()),
+            f"exit={getattr(recovered, 'returncode', None)} "
+            f"stdout={recovered.stdout.strip()[:120]!r}",
+        )
+
+        deleted = self.run_client(recovered_config, "spool", "delete", entry) if entry else None
+        after = self.run_client(recovered_config, "spool", "list") if entry else None
+        self.check(
+            "deleting the Spool entry removes it",
+            deleted is not None
+            and deleted.returncode == 0
+            and after is not None
+            and entry not in after.stdout,
+            f"delete={getattr(deleted, 'returncode', None)}",
+        )
 
     # -- report ----------------------------------------------------------
 

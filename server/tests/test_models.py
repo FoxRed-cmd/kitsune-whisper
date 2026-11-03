@@ -560,10 +560,11 @@ def test_file_storage_accepts_a_hugging_face_snapshot(tmp_path: Path) -> None:
 
     assert storage.installed("tiny") is True
     assert storage.path("tiny") == snapshot
-    assert storage.size("tiny") >= 24
+    # model.bin (8) + config.json ("{}", 2) + blob (16)
+    assert storage.size("tiny") == 26
 
     freed = storage.delete("tiny")
-    assert freed >= 24
+    assert freed == 26
     assert storage.installed("tiny") is False
     assert not repo.exists()
 

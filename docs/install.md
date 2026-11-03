@@ -235,6 +235,7 @@ manual setup is still:
 | Config | `~/.config/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
 | Spool | `~/.cache/kitsune-whisper/spool` | `%LOCALAPPDATA%\kitsune-whisper\spool` |
+| Spool, headless | `kitsune-client spool list / retry / delete` | same command |
 | Models | `~/.cache/kitsune-whisper/models` | `server.download_root` |
 | Client log | `~/.cache/kitsune-whisper/client.log` | `%LOCALAPPDATA%\kitsune-whisper\client.log` |
 | Server state | `~/.local/state/kitsune-whisper` (TLS, Devices, pairing, log, soft-stop) | `%LOCALAPPDATA%\kitsune-whisper` |

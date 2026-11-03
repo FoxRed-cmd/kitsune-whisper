@@ -71,6 +71,7 @@ var subcommands = map[string]bool{
 	"cancel":              true,
 	"transcribe-file":     true,
 	"record":              true,
+	"spool":               true,
 	"install-autostart":   true,
 	"uninstall-autostart": true,
 	"install-desktop":     true,
@@ -88,6 +89,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	device := fs.String("device", "", "audio input device override")
 	verbose := fs.Bool("verbose", false, "shorthand for log_level=debug, also echoed to stderr")
 	seconds := fs.Float64("seconds", 5, "record: capture length in seconds")
+	spoolOnError := fs.Bool(
+		"spool-on-error", false, "transcribe-file: save the audio to the Spool when transcription fails",
+	)
 	hidden := fs.Bool("hidden", false, "gui: start in the Tray without a window")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
@@ -182,9 +186,15 @@ func Run(args []string, stdout, stderr io.Writer) int {
 			verbose:    *verbose,
 			configPath: *configPath,
 			overrides:  overrides,
-		}, stdout, stderr)
+		}, *spoolOnError, stdout, stderr)
 	case "record":
 		return runRecord(rest[1:], *seconds, cfg, serveOptions{
+			verbose:    *verbose,
+			configPath: *configPath,
+			overrides:  overrides,
+		}, stdout, stderr)
+	case "spool":
+		return runSpool(rest[1:], cfg, serveOptions{
 			verbose:    *verbose,
 			configPath: *configPath,
 			overrides:  overrides,
@@ -200,7 +210,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runTranscribeFile(args []string, cfg config.ClientConfig, so serveOptions, stdout, stderr io.Writer) int {
+func runTranscribeFile(
+	args []string,
+	cfg config.ClientConfig,
+	so serveOptions,
+	spoolOnError bool,
+	stdout, stderr io.Writer,
+) int {
 	if len(args) != 1 {
 		fmt.Fprintln(stderr, "usage: kitsune-client transcribe-file <path.wav>")
 		return 2
@@ -232,6 +248,13 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, so serveOptions, 
 	transcription, err := client.Transcribe(ctx, data)
 	if err != nil {
 		logger.Error("transcribe failed: %v", err)
+		if spoolOnError {
+			if saveErr := newSpool(cfg, logger).Save(
+				cycle.Utterance{Audio: data, Duration: utteranceDuration},
+			); saveErr != nil {
+				logger.Error("cannot spool %s: %v", args[0], saveErr)
+			}
+		}
 		return 1
 	}
 	logger.Debug("transcription: language=%s duration=%.2fs", transcription.Language, transcription.Duration)
@@ -311,6 +334,73 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, so serve
 		return 1
 	}
 	return 0
+}
+
+// runSpool lists, retries, or deletes utterances saved by failed dictations.
+// The Settings window uses the same Spool package; this is the headless path
+// that lets a script recover speech when no desktop shell is running.
+func runSpool(
+	args []string,
+	cfg config.ClientConfig,
+	so serveOptions,
+	stdout, stderr io.Writer,
+) int {
+	logger := newLogger(cfg, so.verbose, stderr)
+	defer func() { _ = logger.Close() }()
+	store := newSpool(cfg, logger)
+
+	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
+		entries, err := store.Entries()
+		if err != nil {
+			logger.Error("cannot list the Spool: %v", err)
+			return 1
+		}
+		for _, entry := range entries {
+			saved := time.Unix(int64(entry.SavedAt), 0).UTC().Format(time.RFC3339)
+			fmt.Fprintf(stdout, "%s\t%.3fs\t%s\n", entry.ID, entry.Duration, saved)
+		}
+		return 0
+	}
+
+	if len(args) != 2 {
+		fmt.Fprintln(stderr, "usage: kitsune-client spool [list | retry <id> | delete <id>]")
+		return 2
+	}
+	switch args[0] {
+	case "retry":
+		bootstrap := prepareTrust(context.Background(), cfg, so, logger)
+		utterance, err := store.Load(args[1])
+		if err != nil {
+			logger.Error("cannot load %s: %v", args[1], err)
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			cycle.SelectTimeout(
+				asDuration(bootstrap.cfg.TimeoutSeconds),
+				utterance.Duration,
+			),
+		)
+		defer cancel()
+		client := newTranscriber(bootstrap.cfg, logger, bootstrap.manager)
+		transcription, err := client.Transcribe(ctx, utterance.Audio)
+		if err != nil {
+			logger.Error("spool retry failed: %v", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, transcription.Text)
+		return 0
+	case "delete":
+		if err := store.Delete(args[1]); err != nil {
+			logger.Error("cannot delete %s: %v", args[1], err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "deleted %s\n", args[1])
+		return 0
+	default:
+		fmt.Fprintln(stderr, "usage: kitsune-client spool [list | retry <id> | delete <id>]")
+		return 2
+	}
 }
 
 // runClient starts the headless Client. It takes the single-instance lock so a
@@ -1293,6 +1383,7 @@ Commands:
   cancel                       discard the current utterance over the control socket
   transcribe-file <path.wav>   transcribe a WAV file and print the text
   record                       capture from the microphone and print the text
+  spool [list|retry|delete]    list, retry, or delete failed utterances
   install-autostart            register the client to launch at login
   uninstall-autostart          remove the login registration
   install-desktop              add the application-menu entry and icon
@@ -1305,6 +1396,7 @@ Flags:
   --check-config    print the effective config and exit
   --device NAME     audio input device override
   --seconds N       record: capture length in seconds (default 5)
+  --spool-on-error  transcribe-file: save the audio to the Spool on failure
   --hidden          gui: start in the Tray without a window
   --verbose         shorthand for log_level=debug, also echoed to stderr
   --version         print the version and exit

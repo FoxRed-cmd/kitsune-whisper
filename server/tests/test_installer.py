@@ -603,10 +603,19 @@ def test_release_workflow_publishes_every_artifact() -> None:
     assert "packaging/appimage/build-appimage.sh" in text
     assert "sha256sum" in text
 
+    # The publish job copies install.sh and install.ps1 from the checkout, so
+    # it must check the repository out before generating checksums.
+    release_steps = workflow["jobs"]["release"]["steps"]
+    assert any(step.get("uses") == "actions/checkout@v4" for step in release_steps)
+    assert "cp install.sh dist/install.sh" in text
+    assert "cp install.ps1 dist/install.ps1" in text
+
     # The tag must match the single version file before anything is published.
     assert "verify-version" in text
     assert '[[ "$tag" != "v$version" ]]' in text
     assert "server/pyproject.toml" in text
+    assert "server/kitsune_server/__init__.py" in text
+    assert "server/uv.lock" in text
 
 
 def test_the_wayland_builder_exposes_all_three_helpers() -> None:

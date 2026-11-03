@@ -298,10 +298,10 @@ class FileModelStorage:
 
     def path(self, name: str) -> Path:
         """The directory to load: catalog first, then the HF snapshot."""
-        return self.snapshot(name) or self.root / name
+        return self._model_dir(name) or self.root / name
 
     def installed(self, name: str) -> bool:
-        return self.snapshot(name) is not None
+        return self._model_dir(name) is not None
 
     def size(self, name: str) -> int:
         total = 0
@@ -318,21 +318,20 @@ class FileModelStorage:
             shutil.rmtree(directory, ignore_errors=True)
         return freed
 
-    def snapshot(self, name: str) -> Path | None:
+    def _model_dir(self, name: str) -> Path | None:
         direct = self.root / name
         if _has_ctranslate2_files(direct):
             return direct
-        repo = self.root / f"models--Systran--faster-whisper-{name}"
-        for snapshot in sorted((repo / "snapshots").glob("*"), reverse=True):
+        for snapshot in sorted((self._hf_repo(name) / "snapshots").glob("*"), reverse=True):
             if _has_ctranslate2_files(snapshot):
                 return snapshot
         return None
 
+    def _hf_repo(self, name: str) -> Path:
+        return self.root / f"models--Systran--faster-whisper-{name}"
+
     def _directories(self, name: str) -> tuple[Path, Path]:
-        return (
-            self.root / name,
-            self.root / f"models--Systran--faster-whisper-{name}",
-        )
+        return (self.root / name, self._hf_repo(name))
 
 
 def _has_ctranslate2_files(directory: Path) -> bool:

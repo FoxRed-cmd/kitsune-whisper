@@ -129,7 +129,20 @@ otherwise errors with an actionable message.
   pass clicks through, so only the stop button is clickable and never activates
   the Client.
 
+## Verification and troubleshooting
+
+The 1.0.0 release candidate passed the automated slices on Fedora 44 / GNOME
+Wayland (2026-11-03): `e2e_live.py` 8/8 and `e2e_trust.py` 20/20 with a CPU
+model. The manual GNOME Wayland rows in
+[`verification/manual-matrix.md`](verification/manual-matrix.md) are still a
+release gate: a real focused editor and terminal must confirm the portal
+hotkey, `ydotool` injection, clipboard restoration, and the Recording
+indicator.
+
 If the hotkey or injection isn't working, check the Client log
 (`~/.cache/kitsune-whisper/client.log`) — the selected backend and any fallback
-are logged there. See [Configuration](configuration.md) for the keys above and
+are logged there. Common causes and the recovery steps are in
+[troubleshooting.md](troubleshooting.md#dictation); the trust and exposure
+boundary is in [security.md](security.md). See
+[Configuration](configuration.md) for the keys above and
 [Install](install.md) for paths.

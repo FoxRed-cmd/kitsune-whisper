@@ -105,7 +105,22 @@ the start cue. An empty result injects nothing and leaves the clipboard alone.
 **A failed utterance disappeared.** It should be in the Spool
 (**Settings → Spool**) because the Server was unreachable, timed out, or
 returned an error. Use **Retry** against the active profile, then **Copy** or
-**Insert**. A `4xx` is not retried automatically.
+**Insert**. A `4xx` is not retried automatically. From a terminal (for example
+on a headless machine):
+
+```sh
+kitsune-client spool list                 # id, duration, capture time
+kitsune-client spool retry <id>           # print the text
+kitsune-client spool delete <id>
+```
+
+`kitsune-client transcribe-file --spool-on-error clip.wav` saves the file when
+that one-shot transcription fails, which is handy for a scripted import.
+
+**A spooled utterance will not retry.** The Spool keeps the audio but the
+active profile must be able to transcribe it. Pair the Server again, start a
+soft-stopped Server, or switch to a healthy profile and retry. A failed retry
+leaves the entry in place.
 
 ## Server and trust
 

@@ -155,6 +155,99 @@ func TestTranscribeFilePostsAndPrintsText(t *testing.T) {
 	}
 }
 
+func TestSpoolListRetryAndDeleteRecoverAFailedUtterance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"text":"recovered speech"}`)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	spoolDir := filepath.Join(dir, "spool")
+	if err := os.MkdirAll(spoolDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entry := "utterance-20260101T000000.000000-001.wav"
+	if err := os.WriteFile(filepath.Join(spoolDir, entry), wavBytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configPath := writeConfigFile(t, map[string]any{
+		"server_url": server.URL,
+		"spool_dir":  spoolDir,
+	})
+
+	var stdout, stderr bytes.Buffer
+	if code := cli.Run(
+		[]string{"--config", configPath, "spool", "list"}, &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("list exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), entry) {
+		t.Fatalf("list = %q, want %s", stdout.String(), entry)
+	}
+
+	stdout.Reset()
+	if code := cli.Run(
+		[]string{"--config", configPath, "spool", "retry", entry}, &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("retry exit = %d, stderr = %s", code, stderr.String())
+	}
+	if strings.TrimSpace(stdout.String()) != "recovered speech" {
+		t.Fatalf("retry = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	if code := cli.Run(
+		[]string{"--config", configPath, "spool", "delete", entry}, &stdout, &stderr,
+	); code != 0 {
+		t.Fatalf("delete exit = %d, stderr = %s", code, stderr.String())
+	}
+	if _, err := os.Stat(filepath.Join(spoolDir, entry)); !os.IsNotExist(err) {
+		t.Fatalf("spool entry still exists: %v", err)
+	}
+}
+
+func TestTranscribeFileSpoolOnErrorSavesTheUtterance(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, `{"error":{"code":"engine","message":"no model"}}`, http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	wavPath := filepath.Join(dir, "clip.wav")
+	sample := wavBytes()
+	if err := os.WriteFile(wavPath, sample, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	spoolDir := filepath.Join(dir, "spool")
+	configPath := writeConfigFile(t, map[string]any{
+		"server_url": server.URL,
+		"spool_dir":  spoolDir,
+	})
+
+	var stdout, stderr bytes.Buffer
+	code := cli.Run(
+		[]string{"--config", configPath, "transcribe-file", "--spool-on-error", wavPath},
+		&stdout, &stderr,
+	)
+	if code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %s)", code, stderr.String())
+	}
+	entries, err := os.ReadDir(spoolDir)
+	if err != nil {
+		t.Fatalf("read spool: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("spooled %d entries, want 1", len(entries))
+	}
+	saved, err := os.ReadFile(filepath.Join(spoolDir, entries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(saved, sample) {
+		t.Fatalf("spooled %d bytes, want %d", len(saved), len(sample))
+	}
+}
+
 func TestTranscribeFileUsesTheActiveServerProfile(t *testing.T) {
 	var firstCalls, secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
