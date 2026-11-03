@@ -654,6 +654,11 @@ def test_the_deb_builder_produces_a_working_package(tmp_path):
     if not (shutil_which("dpkg-deb") or shutil_which("ar")):
         pytest.skip("neither dpkg-deb nor ar is available")
 
+    # Newer dpkg defaults to zstd; the package contract and the ar fallback use
+    # gzip, so the builder must pin it explicitly.
+    source = (REPO_ROOT / "packaging" / "deb" / "build-deb.sh").read_text(encoding="utf-8")
+    assert "-Zgzip" in source
+
     client = tmp_path / "kitsune-client"
     client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     client.chmod(0o755)

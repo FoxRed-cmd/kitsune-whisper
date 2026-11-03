@@ -66,6 +66,23 @@ func writeConfigFile(t *testing.T, client map[string]any) string {
 	if _, ok := client["spool_dir"]; !ok {
 		client["spool_dir"] = filepath.Join(dir, "spool")
 	}
+	// A loopback legacy server_url migrates to an auto-pairing Local Server
+	// profile, which would make every test hit /pair/local and store a token in
+	// the real user config. Pin an explicit non-auto-pair profile instead; the
+	// pairing flow has its own tests.
+	if legacy, ok := client["server_url"].(string); ok {
+		if _, hasServers := client["servers"]; !hasServers {
+			client["servers"] = []any{map[string]any{
+				"id":        "test-server",
+				"name":      "Test Server",
+				"url":       legacy,
+				"auto_pair": false,
+			}}
+			if _, hasActive := client["active_server"]; !hasActive {
+				client["active_server"] = "test-server"
+			}
+		}
+	}
 	path := filepath.Join(dir, "kitsune.yaml")
 	raw, err := yaml.Marshal(map[string]any{"client": client})
 	if err != nil {

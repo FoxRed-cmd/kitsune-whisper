@@ -369,7 +369,9 @@ OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 deb="$OUTPUT_DIR/${PACKAGE}_${VERSION}_${DEB_ARCH}.deb"
 
 if command -v dpkg-deb >/dev/null 2>&1; then
-  dpkg-deb --root-owner-group --build "$stage" "$deb" >/dev/null
+  # Force the same members on every build host. Newer dpkg defaults to zstd
+  # (Ubuntu 24.04), while the ar+tar fallback and the package tests use gzip.
+  dpkg-deb --root-owner-group -Zgzip --build "$stage" "$deb" >/dev/null
 else
   # dpkg-deb is not on every build host; the .deb format is an ar archive of
   # three members, so ar+tar is enough for a valid package.
