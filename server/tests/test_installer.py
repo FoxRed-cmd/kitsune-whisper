@@ -623,7 +623,7 @@ def test_the_wayland_builder_exposes_all_three_helpers() -> None:
     completed = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
     source = script.read_text(encoding="utf-8")
-    for tool in ("ydotool", "ydotoold", "wtype"):
+    for tool in ("ydotool", "ydotoold", "wtype", "scdoc"):
         assert tool in source, tool
     assert "kitsune-wayland_linux_" in source
 

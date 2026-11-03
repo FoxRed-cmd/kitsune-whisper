@@ -4,7 +4,8 @@
 #   wtype            (wlroots virtual-keyboard)
 #
 # Release CI runs this on Ubuntu; a developer can run it where cmake, meson,
-# ninja, libwayland-dev, libxkbcommon-dev, and wayland-protocols are installed.
+# ninja, scdoc, libwayland-dev, libxkbcommon-dev, and wayland-protocols are
+# installed. scdoc generates ydotool's man pages during `cmake --build`.
 #
 #   scripts/build-wayland-tools.sh --output dist
 #
@@ -40,6 +41,7 @@ need git
 need cmake
 need meson
 need ninja
+need scdoc
 
 case "$(uname -m)" in
   x86_64|amd64) ARCH=amd64 ;;
