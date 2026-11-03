@@ -246,6 +246,9 @@ func (s *Shell) awaitServer() {
 	for attempt := 0; attempt < attempts; attempt++ {
 		status := s.probeActiveServer(context.Background())
 		s.updateServer(status)
+		// The Servers screen shows the live listener, so refresh it when the
+		// reachability state changes, not on every poll.
+		s.pushSettingsIfHealthChanged()
 		if status.State == trust.StateOnline {
 			s.pushMessages([]string{s.catalog().T("notice.server.ready", name)}, nil)
 			return

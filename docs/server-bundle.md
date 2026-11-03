@@ -109,7 +109,10 @@ same actionable line instead of at the next login.
   user journal (`journalctl --user -u kitsune-server`).
 - **Windows** — a per-user Task Scheduler task (`kitsune-server`) registered at
   logon from a UTF-16 XML definition. It runs the bundle's `pythonw.exe`, sets
-  `<Hidden>true</Hidden>`, and restarts on failure, so no console window opens.
+  `<Hidden>true</Hidden>`, and declares restart-on-failure, so no console window
+  opens. The Client does not rely on that policy: Task Scheduler ignores
+  `RestartOnFailure` for a task started with `schtasks /Run`, so a Client
+  restart waits for the old process to exit and then starts the task itself.
   The cached XML lives in `%APPDATA%\kitsune-whisper\kitsune-server-task.xml`.
   Task Scheduler discards the process output, so every start (including fatal
   startup failures) appends to `%LOCALAPPDATA%\kitsune-whisper\server.log`;

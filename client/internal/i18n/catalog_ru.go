@@ -66,6 +66,10 @@ var russian = map[string]string{
 	"server.exposureConfirm":  "Разрешить этому серверу принимать клиентов из локальной сети? После перезапуска он будет слушать 0.0.0.0.",
 	"server.exposureStateOn":  "включён",
 	"server.exposureStateOff": "выключен",
+	"server.exposureLiveOn":   "Сервер сейчас доступен клиентам из локальной сети.",
+	"server.exposureLiveOff":  "Сервер сейчас доступен только на этом компьютере.",
+	"server.exposureListen":   "Адрес прослушивания: %s.",
+	"server.exposurePending":  "Изменение записано в конфигурацию и вступит в силу после перезапуска сервера.",
 
 	"field.ui_language":        "Язык интерфейса",
 	"help.ui_language":         "Язык этого окна и значка в трее. Используется язык системы, если не выбран другой.",
@@ -338,8 +342,8 @@ var russian = map[string]string{
 	"server.choice.warning":     "Предупреждения (warning)",
 	"server.choice.error":       "Только ошибки (error)",
 
-	"server.field.host":           "Адрес прослушивания",
-	"server.help.host":            "IP-адрес, на котором сервер принимает подключения. 127.0.0.1 — только этот компьютер.",
+	"server.field.host":           "Адрес привязки",
+	"server.help.host":            "Адрес, на котором сервер слушает, когда доступ из локальной сети выключен. 127.0.0.1 — только этот компьютер. При включённом доступе из сети сервер всегда слушает 0.0.0.0.",
 	"server.field.port":           "Порт",
 	"server.help.port":            "TCP-порт Admin API и распознавания.",
 	"server.field.tlsEnabled":     "HTTPS (TLS)",

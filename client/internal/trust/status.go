@@ -58,6 +58,19 @@ type Status struct {
 	// GPU is the CUDA availability the Server reports. A nil pointer means an
 	// older Server did not report it, which is different from "no CUDA".
 	GPU *GPUStatus `json:"gpu,omitempty"`
+	// Network is the listener the Server reports: whether LAN exposure is on,
+	// the address it binds, and the port. A nil pointer means an older Server
+	// did not report it.
+	Network *NetworkStatus `json:"network,omitempty"`
+}
+
+// NetworkStatus is the Server's effective listener from the authenticated
+// /status body. BindHost is the address the process is actually listening on,
+// which differs from the configured server.host while LAN exposure is on.
+type NetworkStatus struct {
+	ExposeToNetwork bool   `json:"expose_to_network"`
+	BindHost        string `json:"bind_host"`
+	Port            int    `json:"port"`
 }
 
 // GPUStatus is the Server's CUDA availability from the authenticated /status
@@ -123,13 +136,14 @@ func CheckServer(
 // Diagnostics render. Older Servers omit these keys; the zero values keep the
 // reachability report intact.
 type statusBody struct {
-	Model             string     `json:"model"`
-	ModelState        string     `json:"model_state"`
-	ModelPath         string     `json:"model_path"`
-	IdleUnloadSeconds int        `json:"idle_unload_seconds"`
-	Device            string     `json:"device"`
-	ComputeType       string     `json:"compute_type"`
-	GPU               *GPUStatus `json:"gpu"`
+	Model             string         `json:"model"`
+	ModelState        string         `json:"model_state"`
+	ModelPath         string         `json:"model_path"`
+	IdleUnloadSeconds int            `json:"idle_unload_seconds"`
+	Device            string         `json:"device"`
+	ComputeType       string         `json:"compute_type"`
+	GPU               *GPUStatus     `json:"gpu"`
+	Network           *NetworkStatus `json:"network"`
 	Lifecycle         struct {
 		Stopped bool `json:"stopped"`
 		Loaded  bool `json:"loaded"`
@@ -151,6 +165,7 @@ func applyStatus(status *Status, body []byte) {
 	status.Device = parsed.Device
 	status.ComputeType = parsed.ComputeType
 	status.GPU = parsed.GPU
+	status.Network = parsed.Network
 	status.Stopped = parsed.Lifecycle.Stopped
 	status.Loaded = parsed.Lifecycle.Loaded
 }

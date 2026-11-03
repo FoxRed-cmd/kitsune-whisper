@@ -168,6 +168,10 @@ type Options struct {
 	// Start, and Restart are hard actions on this machine. Nil keeps the Admin
 	// API's soft-stop for every profile.
 	LocalServer LocalServer
+	// RestartSettle bounds how long a Local Server restart waits for the old
+	// process to release its port before the supervisor starts it. 0 uses
+	// 5 seconds.
+	RestartSettle time.Duration
 }
 
 // Service is the Server-profile and Device-management service.

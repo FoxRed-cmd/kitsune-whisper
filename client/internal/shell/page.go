@@ -270,12 +270,39 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`<section class="group" data-section="exposure">`)
 	out.WriteString(`<h2>` + escape(labels.ExposureTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.ExposureHelp) + `</p>`)
-	if view.Exposure != nil {
-		state := labels.ExposureOffState
-		if view.Exposure.Expose {
-			state = labels.ExposureOnState
+	live := activeNetwork(view)
+	if live != nil {
+		state := labels.ExposureLiveOff
+		exposed := "off"
+		if live.ExposeToNetwork {
+			state = labels.ExposureLiveOn
+			exposed = "on"
 		}
-		out.WriteString(`<p class="notice">` + escape(labels.ExposureTitle) + `: ` + escape(state) + `</p>`)
+		out.WriteString(`<p class="notice" data-exposure-live="` + exposed + `">` + escape(state) + `</p>`)
+		address := fmt.Sprintf("%s:%d", live.BindHost, live.Port)
+		out.WriteString(`<p class="help" data-exposure-listen="` + escape(address) + `">` +
+			escape(fmt.Sprintf(labels.ExposureListen, address)) + `</p>`)
+	}
+	if live == nil {
+		if view.Exposure != nil {
+			state := labels.ExposureOffState
+			if view.Exposure.Expose {
+				state = labels.ExposureOnState
+			}
+			out.WriteString(`<p class="notice">` + escape(labels.ExposureTitle) + `: ` + escape(state) + `</p>`)
+		} else if configured, ok := configuredExposure(view.Config); ok {
+			state := labels.ExposureOffState
+			configuredState := "off"
+			if configured {
+				state = labels.ExposureOnState
+				configuredState = "on"
+			}
+			out.WriteString(`<p class="notice" data-exposure-configured="` + configuredState + `">` +
+				escape(labels.ExposureTitle) + `: ` + escape(state) + `</p>`)
+		}
+	}
+	if pendingExposure(view, live) {
+		out.WriteString(`<p class="notice pending" data-exposure-pending="true">` + escape(labels.ExposurePending) + `</p>`)
 	}
 	out.WriteString(`<div class="actions-inline">`)
 	out.WriteString(`<button type="button" data-action="exposure" data-expose="on" data-confirm="` + escape(labels.ExposureConfirm) + `">` + escape(labels.ExposureOn) + `</button>`)
@@ -324,6 +351,43 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`</section>`)
 	out.WriteString(modelsHTML(view.Models, view.ModelsError, modelLabels))
 	return out.String()
+}
+
+// activeNetwork returns the listener the active Server reports from its last
+// health check. nil means the Server is unreachable or predates the field.
+func activeNetwork(view servers.View) *trust.NetworkStatus {
+	for _, profile := range view.Profiles {
+		if profile.ID == view.ActiveID {
+			return profile.Health.Network
+		}
+	}
+	return nil
+}
+
+// configuredExposure reads the LAN switch from the Server configuration the
+// Diagnostics screen already loaded.
+func configuredExposure(config *servers.ServerConfig) (bool, bool) {
+	if config == nil {
+		return false, false
+	}
+	value, ok := config.Config["expose_to_network"].(bool)
+	return value, ok
+}
+
+// pendingExposure reports a saved LAN switch the running Server has not
+// applied yet, so the page can say a restart is required.
+func pendingExposure(view servers.View, live *trust.NetworkStatus) bool {
+	if live == nil {
+		return false
+	}
+	if view.Exposure != nil && len(view.Exposure.RestartRequired) > 0 {
+		return true
+	}
+	if view.Exposure != nil {
+		return view.Exposure.Expose != live.ExposeToNetwork
+	}
+	configured, ok := configuredExposure(view.Config)
+	return ok && configured != live.ExposeToNetwork
 }
 
 // SpoolHTML renders only the Spool screen, for a live refresh that leaves the

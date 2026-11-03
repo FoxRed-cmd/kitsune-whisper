@@ -205,6 +205,9 @@ func localService(
 		Store:       store,
 		Tokens:      trust.NewTokenStoreWithKeyring(newFakeKeyring(), t.TempDir()),
 		LocalServer: local,
+		// The fake health never changes, so keep the restart grace short: the
+		// restart tests then exercise the "process did not exit" branch.
+		RestartSettle: time.Millisecond,
 		Check: func(context.Context, config.ServerProfile, string, time.Duration) trust.Status {
 			return health
 		},
@@ -328,7 +331,63 @@ func TestLocalServerRestartUsesTheHardAdminEndpoint(t *testing.T) {
 	if strings.Join(fake.lifecycleCalls, ",") != "hard-restart" {
 		t.Fatalf("Admin API calls = %v", fake.lifecycleCalls)
 	}
+	if strings.Join(local.calls, ",") != "restart" {
+		t.Fatalf("supervisor calls = %v", local.calls)
+	}
 	if !result.Hard || !result.Restarting {
+		t.Fatalf("result = %+v", result)
+	}
+}
+
+// A hard-restarted Local Server exits with code 75 and expects the supervisor
+// to bring it back. Windows Task Scheduler does not apply RestartOnFailure to
+// a task started by schtasks /Run, so the Client must ask the supervisor to
+// replace the process once the old one has released its port.
+func TestLocalServerRestartReplacesTheProcessAfterItExits(t *testing.T) {
+	fake := newFakeServer(t)
+	local := &fakeLocalServer{available: true}
+	store, err := settings.Open(settings.Options{
+		Path: t.TempDir() + "/kitsune.yaml",
+		Env:  map[string]string{},
+	})
+	if err != nil {
+		t.Fatalf("open settings: %v", err)
+	}
+	service := servers.New(servers.Options{
+		Store:         store,
+		Tokens:        trust.NewTokenStoreWithKeyring(newFakeKeyring(), t.TempDir()),
+		LocalServer:   local,
+		RestartSettle: 50 * time.Millisecond,
+		Check: func(context.Context, config.ServerProfile, string, time.Duration) trust.Status {
+			if strings.Contains(strings.Join(fake.lifecycleCalls, ","), "hard-restart") {
+				return trust.Status{State: trust.StateOffline}
+			}
+			return trust.Status{State: trust.StateOnline}
+		},
+		PairLocal: func(context.Context, string, string, string) (trust.Pairing, error) {
+			return trust.Pairing{
+				Device:      trust.Device{ID: "dev-local", Name: "Local client"},
+				Token:       fake.token,
+				Fingerprint: fake.fingerprint,
+			}, nil
+		},
+	})
+	profile, err := service.EnsureLocal(context.Background(), fake.URL)
+	if err != nil {
+		t.Fatalf("ensure local: %v", err)
+	}
+
+	result, err := service.Restart(context.Background(), profile.ID)
+	if err != nil {
+		t.Fatalf("restart: %v", err)
+	}
+	if strings.Join(fake.lifecycleCalls, ",") != "hard-restart" {
+		t.Fatalf("Admin API calls = %v", fake.lifecycleCalls)
+	}
+	if strings.Join(local.calls, ",") != "restart" {
+		t.Fatalf("supervisor calls = %v", local.calls)
+	}
+	if !result.Hard || !result.Restarting || result.ModelState != "loading" {
 		t.Fatalf("result = %+v", result)
 	}
 }

@@ -78,3 +78,26 @@ func TestStatusWithoutGPUKeepsNil(t *testing.T) {
 		t.Fatalf("model = %q", status.Model)
 	}
 }
+
+func TestStatusParsesTheEffectiveNetworkListener(t *testing.T) {
+	server := statusServer(t, map[string]any{
+		"status": "ok",
+		"network": map[string]any{
+			"expose_to_network": true,
+			"bind_host":         "0.0.0.0",
+			"port":              8765,
+		},
+	})
+	status := trust.CheckServer(context.Background(), config.ServerProfile{
+		ID: "local", URL: server.URL,
+	}, "ktn_good", time.Second)
+	if status.State != trust.StateOnline {
+		t.Fatalf("state = %q: %s", status.State, status.Error)
+	}
+	if status.Network == nil {
+		t.Fatal("Network is nil for a Server that reported it")
+	}
+	if !status.Network.ExposeToNetwork || status.Network.BindHost != "0.0.0.0" || status.Network.Port != 8765 {
+		t.Fatalf("Network = %+v", status.Network)
+	}
+}

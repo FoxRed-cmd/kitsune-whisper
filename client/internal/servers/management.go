@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
@@ -244,19 +245,61 @@ func (s *Service) runLocalLifecycle(
 			return ServerLifecycle{}, ErrLocalUnavailable
 		}
 		if online {
-			if result, err := serverLifecycle(ctx, profile, token, "hard-restart", s.opts.Timeout); err == nil {
-				result.Hard = true
-				return result, nil
-			} else if !canUseSupervisorFallback(err) {
-				return ServerLifecycle{}, err
+			// The hard endpoint only clears the soft-stop and ends the
+			// process; the supervisor is expected to start it again.
+			if _, err := serverLifecycle(ctx, profile, token, "hard-restart", s.opts.Timeout); err != nil {
+				if !canUseSupervisorFallback(err) {
+					return ServerLifecycle{}, err
+				}
 			}
 		}
+		// Do not rely on the supervisor's restart-on-failure policy: Windows
+		// Task Scheduler ignores RestartOnFailure for a task started by
+		// schtasks /Run, so the Server would stay down. Wait for the old
+		// process to release its port, then replace it through the supervisor.
+		// A process that is still up after the grace period is replaced
+		// outright, which also stops an unresponsive daemon.
+		s.awaitShutdown(ctx, profile, token)
 		if err := local.Restart(); err != nil {
 			return ServerLifecycle{}, err
 		}
 		return ServerLifecycle{Hard: true, Restarting: true, ModelState: "loading"}, nil
 	default:
 		return ServerLifecycle{}, fmt.Errorf("servers: unknown lifecycle action %q", action)
+	}
+}
+
+// awaitShutdown gives a hard-restarted Local Server time to exit, so the
+// supervisor is asked to start it only after the old process released its
+// port. It is best-effort: when the process is still reachable after the grace
+// period, the caller replaces it outright.
+func (s *Service) awaitShutdown(
+	ctx context.Context, profile config.ServerProfile, token string,
+) {
+	grace := s.opts.RestartSettle
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	interval := grace / 20
+	if interval > 100*time.Millisecond {
+		interval = 100 * time.Millisecond
+	}
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	deadline := time.Now().Add(grace)
+	for {
+		if s.opts.Check(ctx, profile, token, s.opts.Timeout).State != trust.StateOnline {
+			return
+		}
+		if !time.Now().Before(deadline) || ctx.Err() != nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
 	}
 }
 

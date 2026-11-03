@@ -68,6 +68,10 @@ var english = map[string]string{
 	"server.exposureConfirm":  "Allow this Server to accept Clients from the LAN? It will bind 0.0.0.0 after a restart.",
 	"server.exposureStateOn":  "on",
 	"server.exposureStateOff": "off",
+	"server.exposureLiveOn":   "The Server is currently reachable from the LAN.",
+	"server.exposureLiveOff":  "The Server is currently reachable only on this computer.",
+	"server.exposureListen":   "Listening on %s.",
+	"server.exposurePending":  "The change is saved and takes effect after the Server restarts.",
 
 	"field.ui_language":        "Interface language",
 	"help.ui_language":         "The language of this window and the Tray. The system language is used unless you pick one.",
@@ -340,8 +344,8 @@ var english = map[string]string{
 	"server.choice.warning":     "Warnings (warning)",
 	"server.choice.error":       "Errors only (error)",
 
-	"server.field.host":           "Listen address",
-	"server.help.host":            "The IP address the Server accepts connections on. 127.0.0.1 means this computer only.",
+	"server.field.host":           "Bind address",
+	"server.help.host":            "The address the Server listens on while LAN exposure is off. 127.0.0.1 means this computer only. With LAN exposure on, the Server always listens on 0.0.0.0.",
 	"server.field.port":           "Port",
 	"server.help.port":            "The TCP port for the Admin API and transcription.",
 	"server.field.tlsEnabled":     "HTTPS (TLS)",

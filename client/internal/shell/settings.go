@@ -135,6 +135,10 @@ type ServerLabels struct {
 	ExposureConfirm  string            `json:"exposureConfirm"`
 	ExposureOnState  string            `json:"exposureOnState"`
 	ExposureOffState string            `json:"exposureOffState"`
+	ExposureLiveOn   string            `json:"exposureLiveOn"`
+	ExposureLiveOff  string            `json:"exposureLiveOff"`
+	ExposureListen   string            `json:"exposureListen"`
+	ExposurePending  string            `json:"exposurePending"`
 
 	ManagementTitle string `json:"managementTitle"`
 	ManagementHelp  string `json:"managementHelp"`
@@ -449,6 +453,10 @@ func (s *Shell) serverLabels() ServerLabels {
 		ExposureConfirm:  catalog.T("server.exposureConfirm"),
 		ExposureOnState:  catalog.T("server.exposureStateOn"),
 		ExposureOffState: catalog.T("server.exposureStateOff"),
+		ExposureLiveOn:   catalog.T("server.exposureLiveOn"),
+		ExposureLiveOff:  catalog.T("server.exposureLiveOff"),
+		ExposureListen:   catalog.T("server.exposureListen"),
+		ExposurePending:  catalog.T("server.exposurePending"),
 
 		ManagementTitle: catalog.T("server.managementTitle"),
 		ManagementHelp:  catalog.T("server.managementHelp"),

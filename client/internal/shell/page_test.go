@@ -162,6 +162,10 @@ func sampleView() shell.SettingsView {
 			ExposureConfirm:  "Разрешить доступ из сети?",
 			ExposureOnState:  "включён",
 			ExposureOffState: "выключен",
+			ExposureLiveOn:   "Сервер сейчас доступен из локальной сети.",
+			ExposureLiveOff:  "Сервер сейчас доступен только на этом компьютере.",
+			ExposureListen:   "Адрес прослушивания: %s.",
+			ExposurePending:  "Перезапустите сервер, чтобы применить изменение.",
 		},
 	}
 }
@@ -564,6 +568,52 @@ func TestPageUpdatesTheWindowChromeOnALanguageSwitch(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("settings renderer does not update the window chrome: missing %q", want)
 		}
+	}
+}
+
+func TestPageShowsTheLiveListenerAndAPendingRestart(t *testing.T) {
+	view := sampleView()
+	view.Servers.Profiles[0].Health.Network = &trust.NetworkStatus{
+		ExposeToNetwork: true, BindHost: "0.0.0.0", Port: 8765,
+	}
+	view.Servers.Config = &servers.ServerConfig{
+		Config: map[string]any{"expose_to_network": false},
+	}
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		`data-exposure-live="on"`,
+		"Сервер сейчас доступен из локальной сети.",
+		`data-exposure-listen="0.0.0.0:8765"`,
+		"Адрес прослушивания: 0.0.0.0:8765.",
+		`data-exposure-pending="true"`,
+		"Перезапустите сервер, чтобы применить изменение.",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestPageShowsLoopbackOnlyWhenLANExposureIsOff(t *testing.T) {
+	view := sampleView()
+	view.Servers.Profiles[0].Health.Network = &trust.NetworkStatus{
+		BindHost: "127.0.0.1", Port: 8765,
+	}
+	view.Servers.Config = &servers.ServerConfig{
+		Config: map[string]any{"expose_to_network": false},
+	}
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		`data-exposure-live="off"`,
+		"Сервер сейчас доступен только на этом компьютере.",
+		`data-exposure-listen="127.0.0.1:8765"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+	if strings.Contains(page, `data-exposure-pending="true"`) {
+		t.Fatal("an unchanged loopback listener is reported as pending a restart")
 	}
 }
 

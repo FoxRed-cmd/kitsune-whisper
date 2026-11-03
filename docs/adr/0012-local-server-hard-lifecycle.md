@@ -22,7 +22,8 @@ local when it points at a loopback address and is the Local Server profile
   when the process is down; when the process is already up it clears a soft-stop
   through `POST /admin/start`.
 - Restart calls `POST /admin/hard-restart`, which clears the soft-stop and
-  exits with code `75`, so the supervisor replaces the process with a
+  exits with code `75`; the Client waits for the process to release its port
+  and then asks the supervisor to start it, so the replacement is a
   model-loaded one. A restart requires an installed supervisor because the
   Client cannot bring an unsupervised process back.
 
@@ -44,6 +45,10 @@ A Remote Server uses the existing `/admin/stop`, `/admin/start`, and
 
 - `/admin/hard-stop` and `/admin/hard-restart` are local-only Admin API surface;
   a non-loopback peer receives `403 local_only`.
+- The Client does not depend on the supervisor's restart-on-failure policy.
+  Windows Task Scheduler ignores `RestartOnFailure` for a task started with
+  `schtasks /Run`, so after `/admin/hard-restart` the Client starts the
+  supervisor's task itself.
 - The Client falls back to the OS supervisor when a Server predates the hard
   endpoints (`404`) or the connection drops, so a mixed-version install still
   stops.

@@ -262,11 +262,11 @@ Server:
 | `POST /admin/models/idle-unload` | Set the idle unload timeout in seconds (`0` = never). |
 | `DELETE /admin/models/{name}` | Delete one downloaded, non-active model. |
 | `GET /admin/logs?tail=N` | The last `N` lines (1–1000, default 200) of the Server log and whether older lines were cut. |
-| `POST /admin/restart` | Answer `202` with the lifecycle payload plus `restarting: true`, then exit with code `75`; systemd `Restart=on-failure`, Task Scheduler `RestartOnFailure`, and Docker bring the Server back. The Client polls health until it is ready. |
+| `POST /admin/restart` | Answer `202` with the lifecycle payload plus `restarting: true`, then exit with code `75`; systemd `Restart=on-failure` and Docker bring the Server back. The Client polls health until it is ready. |
 | `POST /admin/stop` | Soft-stop: unload the model, persist `stopped`, keep the Admin API alive. `/transcribe` returns `503` with code `stopped`. |
 | `POST /admin/start` | Clear the soft-stop, load the model again, and accept transcription. |
 | `POST /admin/hard-stop` | Local Server only, loopback peer: clear the soft-stop and answer `202`, then exit with code `0` so the supervisor leaves the process stopped. |
-| `POST /admin/hard-restart` | Local Server only, loopback peer: clear the soft-stop and answer `202`, then exit with code `75` so the supervisor replaces the process with a model-loaded one. |
+| `POST /admin/hard-restart` | Local Server only, loopback peer: clear the soft-stop and answer `202`, then exit with code `75` so the supervisor replaces the process with a model-loaded one. The Client waits for the port to close and then starts the task/unit itself, because Task Scheduler does not apply `RestartOnFailure` to a task started with `schtasks /Run`. |
 
 `/status`, stop, start, and restart return the same model payload
 (`stopped`, `loaded`, `model`, `model_state`, `model_path`,
