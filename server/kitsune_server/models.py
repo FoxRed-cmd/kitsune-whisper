@@ -283,38 +283,73 @@ class ThreadScheduler:
 
 
 class FileModelStorage:
-    """Downloads live under ``server.download_root/<model>``."""
+    """Model files under ``server.download_root``.
+
+    The catalog download copies the CTranslate2 files to
+    ``download_root/<model>``. A model loaded by faster-whisper before the
+    catalog was ever used lives in the Hugging Face cache instead
+    (``models--Systran--faster-whisper-<model>/snapshots/<revision>``). Both
+    layouts must count as installed, otherwise a soft-stop or an idle unload of
+    a model that was loaded from the cache cannot be started again.
+    """
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser()
 
     def path(self, name: str) -> Path:
-        return self.root / name
+        """The directory to load: catalog first, then the HF snapshot."""
+        return self.snapshot(name) or self.root / name
 
     def installed(self, name: str) -> bool:
-        directory = self.path(name)
-        return (directory / "model.bin").is_file() and (directory / "config.json").is_file()
+        return self.snapshot(name) is not None
 
     def size(self, name: str) -> int:
-        directory = self.path(name)
-        if not directory.is_dir():
-            return 0
         total = 0
-        for child in directory.rglob("*"):
-            try:
-                if child.is_file():
-                    total += child.stat().st_size
-            except OSError:
-                continue
+        for directory in self._directories(name):
+            total += _directory_size(directory)
         return total
 
     def delete(self, name: str) -> int:
-        directory = self.path(name)
-        if not directory.is_dir():
-            return 0
-        freed = self.size(name)
-        shutil.rmtree(directory, ignore_errors=True)
+        freed = 0
+        for directory in self._directories(name):
+            if not directory.is_dir():
+                continue
+            freed += _directory_size(directory)
+            shutil.rmtree(directory, ignore_errors=True)
         return freed
+
+    def snapshot(self, name: str) -> Path | None:
+        direct = self.root / name
+        if _has_ctranslate2_files(direct):
+            return direct
+        repo = self.root / f"models--Systran--faster-whisper-{name}"
+        for snapshot in sorted((repo / "snapshots").glob("*"), reverse=True):
+            if _has_ctranslate2_files(snapshot):
+                return snapshot
+        return None
+
+    def _directories(self, name: str) -> tuple[Path, Path]:
+        return (
+            self.root / name,
+            self.root / f"models--Systran--faster-whisper-{name}",
+        )
+
+
+def _has_ctranslate2_files(directory: Path) -> bool:
+    return (directory / "model.bin").is_file() and (directory / "config.json").is_file()
+
+
+def _directory_size(directory: Path) -> int:
+    if not directory.is_dir():
+        return 0
+    total = 0
+    for child in directory.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:
+            continue
+    return total
 
 
 class WhisperLoader:

@@ -18,6 +18,7 @@ from kitsune_server.models import (
     CatalogError,
     DownloadCancelledError,
     DownloadedModel,
+    FileModelStorage,
     ModelCatalog,
     ModelLoadError,
     ModelManager,
@@ -525,6 +526,46 @@ async def test_deleting_the_active_model_is_refused() -> None:
 
     assert storage.deleted == ["base"]
     assert storage.installed("base") is False
+
+
+def _write_model(directory: Path, size: int = 8) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "model.bin").write_bytes(b"x" * size)
+    (directory / "config.json").write_text("{}", encoding="utf-8")
+
+
+def test_file_storage_accepts_the_catalog_layout(tmp_path: Path) -> None:
+    storage = FileModelStorage(tmp_path)
+    _write_model(tmp_path / "tiny")
+
+    assert storage.installed("tiny") is True
+    assert storage.path("tiny") == tmp_path / "tiny"
+    assert storage.size("tiny") > 0
+    assert storage.installed("base") is False
+    assert storage.path("base") == tmp_path / "base"
+
+
+def test_file_storage_accepts_a_hugging_face_snapshot(tmp_path: Path) -> None:
+    """A model loaded by faster-whisper before the catalog is still installed.
+
+    Soft-stop and idle unload reload the active model through the manager;
+    refusing an HF-cached model would leave the Server stopped until a restart.
+    """
+    storage = FileModelStorage(tmp_path)
+    repo = tmp_path / "models--Systran--faster-whisper-tiny"
+    snapshot = repo / "snapshots" / "abc123"
+    _write_model(snapshot)
+    (repo / "blobs").mkdir()
+    (repo / "blobs" / "blob").write_bytes(b"y" * 16)
+
+    assert storage.installed("tiny") is True
+    assert storage.path("tiny") == snapshot
+    assert storage.size("tiny") >= 24
+
+    freed = storage.delete("tiny")
+    assert freed >= 24
+    assert storage.installed("tiny") is False
+    assert not repo.exists()
 
 
 async def test_deleting_an_unknown_name_is_refused_without_touching_the_disk() -> None:
