@@ -428,6 +428,12 @@ type Shell struct {
 	wizardOffered bool
 	wizardPoll    chan struct{}
 
+	// windowVisible reports whether the Settings window is on screen. The
+	// embedded adapter hides the window to the Tray instead of unloading the
+	// page, so the page's preview debounce or an in-flight preview request can
+	// arrive after the user closed it.
+	windowVisible bool
+
 	quitCh    chan struct{}
 	restartCh chan struct{}
 	quitOnce  sync.Once
@@ -534,7 +540,13 @@ func (s *Shell) open(desktop Desktop, hidden bool) {
 	if err != nil {
 		s.log.Warning("settings window unavailable: %v", err)
 	} else if window != nil {
+		s.mu.Lock()
+		s.windowVisible = !hidden
+		s.mu.Unlock()
 		window.OnClose(func() {
+			s.mu.Lock()
+			s.windowVisible = false
+			s.mu.Unlock()
 			s.hideIndicatorPreview()
 			window.Hide()
 		})
@@ -1024,6 +1036,9 @@ func (s *Shell) Snapshot() Snapshot {
 func (s *Shell) ShowSettings() error {
 	s.mu.Lock()
 	window := s.window
+	if window != nil {
+		s.windowVisible = true
+	}
 	s.mu.Unlock()
 	if window == nil {
 		return errors.New("settings window is not available")

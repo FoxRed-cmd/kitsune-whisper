@@ -481,9 +481,10 @@ func TestQuitReleasesARunningMicrophoneTest(t *testing.T) {
 
 func TestIndicatorPreviewIntentMovesAndHidesThePill(t *testing.T) {
 	var calls []string
+	desktop := newFakeDesktop()
 	sh := shell.New(shell.Options{
 		Runtime:  newFakeRuntime(),
-		Desktop:  newFakeDesktop(),
+		Desktop:  desktop,
 		Settings: newFakeSettings(i18n.English),
 		PreviewIndicator: func(anchor string, offsetX, offsetY int) error {
 			calls = append(calls, fmt.Sprintf("%s:%d:%d", anchor, offsetX, offsetY))
@@ -492,15 +493,90 @@ func TestIndicatorPreviewIntentMovesAndHidesThePill(t *testing.T) {
 		HideIndicatorPreview: func() { calls = append(calls, "hide") },
 		Logger:               &fakeLogger{},
 	})
-	if err := sh.HandleIntent([]byte(`{"action":"preview-indicator","anchor":"bottom-right","offset_x":12,"offset_y":-4}`)); err != nil {
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	waitFor(t, "window intent handler", window.intentInstalled)
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentPreviewIndicator, Anchor: "bottom-right", OffsetX: 12, OffsetY: -4}); err != nil {
 		t.Fatalf("preview intent: %v", err)
 	}
-	if err := sh.HandleIntent([]byte(`{"action":"hide-indicator-preview"}`)); err != nil {
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentHideIndicator}); err != nil {
 		t.Fatalf("hide intent: %v", err)
 	}
 	want := []string{"bottom-right:12:-4", "hide"}
 	if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
 		t.Fatalf("preview calls = %v, want %v", calls, want)
+	}
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestPreviewDoesNotComeBackAfterTheSettingsWindowCloses(t *testing.T) {
+	var mu sync.Mutex
+	previews, hides := 0, 0
+	desktop := newFakeDesktop()
+	sh := shell.New(shell.Options{
+		Runtime:  newFakeRuntime(),
+		Desktop:  desktop,
+		Settings: newFakeSettings(i18n.English),
+		PreviewIndicator: func(string, int, int) error {
+			mu.Lock()
+			previews++
+			mu.Unlock()
+			return nil
+		},
+		HideIndicatorPreview: func() {
+			mu.Lock()
+			hides++
+			mu.Unlock()
+		},
+		Logger: &fakeLogger{},
+	})
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	waitFor(t, "window intent handler", window.intentInstalled)
+	waitFor(t, "window close handler", window.closeInstalled)
+
+	// The appearance tab previews the pill while the window is open.
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentPreviewIndicator, Anchor: "top-center"}); err != nil {
+		t.Fatalf("preview intent: %v", err)
+	}
+
+	// Closing hides the window, but the embedded page stays alive: its 120 ms
+	// preview debounce can still post an intent after the close.
+	window.close(t)
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentPreviewIndicator, Anchor: "top-center"}); err != nil {
+		t.Fatalf("late preview intent: %v", err)
+	}
+
+	mu.Lock()
+	gotPreviews, gotHides := previews, hides
+	mu.Unlock()
+	if gotPreviews != 1 {
+		t.Fatalf("preview calls = %d, want 1: a late preview must not resurrect the pill", gotPreviews)
+	}
+	if gotHides != 1 {
+		t.Fatalf("hide calls = %d, want 1", gotHides)
+	}
+
+	// Reopening the Settings window makes previews live again.
+	if err := sh.ShowSettings(); err != nil {
+		t.Fatalf("show settings: %v", err)
+	}
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentPreviewIndicator, Anchor: "top-center"}); err != nil {
+		t.Fatalf("preview after reopen: %v", err)
+	}
+	mu.Lock()
+	gotPreviews = previews
+	mu.Unlock()
+	if gotPreviews != 2 {
+		t.Fatalf("preview calls after reopen = %d, want 2", gotPreviews)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
 	}
 }
 

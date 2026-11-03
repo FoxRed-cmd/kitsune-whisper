@@ -167,7 +167,32 @@ func (w *fakeWindow) Update(snapshot shell.Snapshot) {
 }
 
 func (w *fakeWindow) OnClose(handler func()) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	w.onClose = handler
+}
+
+func (w *fakeWindow) closeInstalled() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.onClose != nil
+}
+
+func (w *fakeWindow) intentInstalled() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.onIntent != nil
+}
+
+func (w *fakeWindow) close(t *testing.T) {
+	t.Helper()
+	w.mu.Lock()
+	handler := w.onClose
+	w.mu.Unlock()
+	if handler == nil {
+		t.Fatal("window has no close handler")
+	}
+	handler()
 }
 
 func (w *fakeWindow) OnIntent(handler func([]byte) error) {

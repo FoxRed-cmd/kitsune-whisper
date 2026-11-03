@@ -1382,6 +1382,7 @@ const pageHTML = `<!doctype html>
     syncIndicatorPreview();
   }
   var previewTimer = null;
+  var previewWanted = false;
   function indicatorPreviewPosition() {
     var anchor = document.querySelector("#settings [data-path='client.feedback.indicator_anchor']");
     if (!anchor) return null;
@@ -1396,7 +1397,7 @@ const pageHTML = `<!doctype html>
   }
   function sendIndicatorPreview() {
     var position = indicatorPreviewPosition();
-    if (!position || activeSection !== "appearance") return;
+    if (!position || activeSection !== "appearance" || !previewWanted || document.hidden) return;
     fetch("/kitsune/intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1404,10 +1405,18 @@ const pageHTML = `<!doctype html>
     }).catch(function () {});
   }
   function hideIndicatorPreview() {
+    previewWanted = false;
+    if (previewTimer) {
+      clearTimeout(previewTimer);
+      previewTimer = null;
+    }
     fetch("/kitsune/intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "hide-indicator-preview" })
+      body: JSON.stringify({ action: "hide-indicator-preview" }),
+      // A tab close can unload the page before an ordinary request leaves;
+      // keepalive lets the hide reach Go anyway.
+      keepalive: true
     }).catch(function () {});
   }
   function syncIndicatorPreview(immediate) {
@@ -1415,10 +1424,11 @@ const pageHTML = `<!doctype html>
       clearTimeout(previewTimer);
       previewTimer = null;
     }
-    if (activeSection !== "appearance") {
+    if (activeSection !== "appearance" || document.hidden) {
       hideIndicatorPreview();
       return;
     }
+    previewWanted = true;
     if (immediate) sendIndicatorPreview();
     else previewTimer = setTimeout(sendIndicatorPreview, 120);
   }

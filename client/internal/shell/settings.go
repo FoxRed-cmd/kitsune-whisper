@@ -820,7 +820,17 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		s.save(patch)
 		return nil
 	case IntentPreviewIndicator:
-		s.previewIndicator(intent.Anchor, intent.OffsetX, intent.OffsetY)
+		// A preview may only show while the Settings window is on screen. The
+		// embedded adapter hides the window without unloading the page, so a
+		// debounced or in-flight preview can arrive after the user closed it;
+		// showing that one would pin the pill to the desktop with no Settings
+		// window left to dismiss it. Holding the lock across the call also
+		// orders it against the close handler's hide.
+		s.mu.Lock()
+		if s.windowVisible {
+			s.previewIndicator(intent.Anchor, intent.OffsetX, intent.OffsetY)
+		}
+		s.mu.Unlock()
 		return nil
 	case IntentHideIndicator:
 		s.hideIndicatorPreview()
