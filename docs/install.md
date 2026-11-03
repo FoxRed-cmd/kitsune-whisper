@@ -445,10 +445,11 @@ autostart's hidden portal `.desktop` file. On a terminal it asks separately
 about downloaded models and Server data; without a terminal it keeps both
 unless `--remove-models` or `--remove-server-data` is passed. It always keeps
 `kitsune.yaml`, Setup progress, Spool, and Device tokens. `--purge` removes the
-configuration, models, certificates, Devices, Spool, logs, wizard progress, and,
-with `sudo`, the `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On
-Windows `-Purge` removes config, Setup progress, Spool, logs, certificates,
-Devices, and the default model cache.
+configuration, Device tokens (including the desktop keyring entries), models,
+certificates, Devices, Spool, logs, wizard progress, WebView storage, and, with
+`sudo`, the `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On Windows
+`-Purge` removes config, Setup progress, Spool, logs, certificates, Devices, and
+the default model cache.
 
 ## Server
 

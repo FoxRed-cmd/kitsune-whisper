@@ -123,6 +123,14 @@ def fake_commands(tmp_path: Path) -> Path:
         "dnf": '#!/bin/sh\necho "dnf $*" >> "$SUDO_LOG"\nexit 0\n',
         "pacman": '#!/bin/sh\necho "pacman $*" >> "$SUDO_LOG"\nexit 0\n',
         "zypper": '#!/bin/sh\necho "zypper $*" >> "$SUDO_LOG"\nexit 0\n',
+        "secret-tool": (
+            "#!/bin/sh\n"
+            'echo "secret-tool $*" >> "$CALL_LOG"\n'
+            'if [ "$1" = "search" ]; then\n'
+            "  printf 'attribute.username = local\\nattribute.username = work\\n' >&2\n"
+            "fi\n"
+            "exit 0\n"
+        ),
     }
     for name, content in scripts.items():
         path = directory / name
@@ -478,7 +486,8 @@ def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
     config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper"
     cache = Path(str(sandbox["env"]["XDG_CACHE_HOME"])) / "kitsune-whisper"
     state = Path(str(sandbox["env"]["XDG_STATE_HOME"])) / "kitsune-whisper"
-    for directory in (config, cache, state):
+    webview = Path(str(sandbox["env"]["XDG_DATA_HOME"])) / "io.github.FoxRed-cmd.kitsune-whisper"
+    for directory in (config, cache, state, webview):
         directory.mkdir(parents=True, exist_ok=True)
         (directory / "kept").write_text("x", encoding="utf-8")
 
@@ -494,7 +503,11 @@ def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
     assert not config.exists()
     assert not cache.exists()
     assert not state.exists()
+    assert not webview.exists()
     assert "uninstall-autostart" in read_log(sandbox, "calls.log")
+    calls = read_log(sandbox, "calls.log")
+    assert "secret-tool clear service kitsune-whisper username local" in calls
+    assert "secret-tool clear service kitsune-whisper username work" in calls
 
 
 def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):

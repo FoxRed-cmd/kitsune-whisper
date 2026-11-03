@@ -44,6 +44,7 @@ SERVER_ROOT="$LOCAL_LIB/server"
 SERVER_LAUNCHER="$HOME/.local/bin/kitsune-server"
 CONFIG_ROOT="${XDG_CONFIG_HOME:-$HOME/.config}"
 DATA_ROOT="${XDG_DATA_HOME:-$HOME/.local/share}"
+APP_DATA="$DATA_ROOT/io.github.FoxRed-cmd.kitsune-whisper"
 STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}"
 CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}"
 CONFIG_DIR="$CONFIG_ROOT/kitsune-whisper"
@@ -545,6 +546,23 @@ confirm() {
   [[ "$answer" =~ ^[Yy]$ ]]
 }
 
+# forget_keyring_tokens removes the Device tokens the Client stored in the
+# desktop keyring. A purge must not leave working credentials behind, and the
+# tokens are keyed by profile id, so every matching entry is cleared. A system
+# without secret-tool or a locked keyring leaves the fallback token files, which
+# live in CONFIG_DIR and are removed with it.
+forget_keyring_tokens() {
+  command -v secret-tool >/dev/null 2>&1 || return 0
+  local users user
+  users="$(secret-tool search --all service kitsune-whisper 2>&1 \
+    | awk -F' = ' '/^attribute.username = /{print $2}')"
+  [[ -n "$users" ]] || return 0
+  while IFS= read -r user; do
+    [[ -n "$user" ]] || continue
+    secret-tool clear service kitsune-whisper username "$user" >/dev/null 2>&1 || true
+  done <<< "$users"
+}
+
 ask_what_to_delete() {
   if [[ "$PURGE" == 1 ]]; then
     return 0
@@ -601,7 +619,8 @@ uninstall_all() {
   fi
 
   if [[ "$PURGE" == 1 ]]; then
-    rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB"
+    forget_keyring_tokens
+    rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB" "$APP_DATA"
     if [[ "$NO_ELEVATE" == 0 ]] && command -v sudo >/dev/null 2>&1; then
       if [[ -f "$UDEV_RULE" || -f "$MODULES_FILE" ]]; then
         if sudo sh -c "rm -f '$UDEV_RULE' '$MODULES_FILE' && { udevadm control --reload-rules >/dev/null 2>&1 || true; }"; then
