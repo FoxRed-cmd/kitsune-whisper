@@ -8,7 +8,10 @@ audio never leaves your network.
   resamples to 16 kHz mono, and injects the transcription via clipboard +
   synthetic paste.
 - A Python **Server** transcribes with faster-whisper, auto-detects CUDA vs CPU,
-  and exposes `POST /transcribe` and `GET /health`. It ships as a Docker image.
+  and exposes the authenticated `POST /transcribe` and `GET /status` plus an
+  unauthenticated `GET /health`. It ships as a native
+  per-user bundle (pinned runtime, no system Python or Docker) and as a Docker
+  image for a dedicated host.
 - An optional **LLM sidecar** (the official llama.cpp server, behind the opt-in
   `llm` compose profile) runs on your GPU for local Refine/Summarize. The Server
   talks to it — or to any OpenAI-compatible endpoint (Ollama, LM Studio, a cloud
@@ -32,9 +35,9 @@ touch the models. Audio never leaves the network.
 - **Server** (Python + faster-whisper) — behind `POST /transcribe` it decodes the
   request, runs the VAD silence gate, transcribes on the auto-resolved device,
   and returns JSON. It can optionally post-process the text through an
-  OpenAI-compatible LLM endpoint (see **Processing** below). `GET /health`
-  reports the resolved device, compute type, model, and whether processing is
-  enabled.
+  OpenAI-compatible LLM endpoint (see **Processing** below). The authenticated
+  `GET /status` reports the resolved device, compute type, model, and whether
+  processing is enabled; `GET /health` stays minimal.
 - **Processing** (optional) — a request may ask the Server to **Refine** (remove
   disfluencies, add punctuation) and/or **Summarize** (compress to the key
   points). Refine runs before Summarize. It is off by default and never makes
@@ -43,9 +46,10 @@ touch the models. Audio never leaves the network.
   in `warnings`. The Server talks to any **OpenAI-compatible** chat-completions
   endpoint: the bundled llama.cpp sidecar (opt-in `llm` compose profile), an
   existing Ollama / LM Studio service, or a cloud API. It is configured under
-  `server.processing` in `kitsune.yaml`; the Client asks for it with
-  `client.refine` / `client.summarize`
-  (see [Configuration](docs/configuration.md)). The built-in `base_url` is
+  `server.processing` in `kitsune.yaml` and requested per utterance through the
+  `/transcribe` API; the experimental switches are not exposed by the Client
+  (the legacy `client.refine` / `client.summarize` keys are ignored with a
+  warning). The built-in `base_url` is
   loopback, so processing stays local; the bundled `llm` profile points it at
   the sidecar instead, and an **external `base_url` sends the transcribed text
   off the host** (the audio still stays on your network).
@@ -69,12 +73,12 @@ flowchart LR
     mic["Microphone"]
     app["Focused application"]
 
-    subgraph server["Server — Docker container (Python)"]
+    subgraph server["Server — native bundle or Docker (Python)"]
         api["FastAPI<br/>POST /transcribe · GET /health"]
         vad["VAD silence gate"]
         engine["faster-whisper (CTranslate2)<br/>device: auto → CUDA or CPU"]
         proc["LLM endpoint (optional)<br/>OpenAI-compatible · Refine → Summarize"]
-        models[("Model cache<br/>/models volume")]
+        models[("Model cache<br/>download_root")]
     end
 
     subgraph sidecar["LLM sidecar — Docker (opt-in llm profile)"]
@@ -111,7 +115,7 @@ sequenceDiagram
     User->>T: press Ctrl+Shift+Space
     T->>C: start
     C->>C: capture + resample to 16 kHz mono
-    User->>T: press again (toggle), release (hold), or Esc
+    User->>T: press again or Esc
     T->>C: stop / cancel
 
     alt cancelled or too short
@@ -155,19 +159,25 @@ are in [`docs/install.md`](docs/install.md).
 ### 1. Server + local LLM (Docker)
 
 ```sh
-cp kitsune.example.yaml kitsune.yaml
+mkdir -p config
+cp kitsune.example.yaml config/kitsune.yaml
 ```
 
-Turn the feature on in `kitsune.yaml` — the Server master switch and the Client's
-per-utterance flags (`server.processing.enabled` is `false` by default):
+The Server mounts `./config` as a **writable directory**, not a single file:
+the Admin API saves settings with an atomic rename inside that directory, so a
+read-only file mount would break config writes. The image sets
+`KITSUNE_CONFIG=/config/kitsune.yaml`, which `docker exec` also inherits, so
+pairing inside the container reads the same file as the Server.
+
+Turn the feature on in `config/kitsune.yaml` — the Server master switch
+(`server.processing.enabled` is `false` by default). A request then opts in with
+its `refine` / `summarize` form fields; the Client does not send them, so this is
+for direct API users:
 
 ```yaml
 server:
   processing:
     enabled: true      # was false
-client:
-  refine: true         # was false
-  summarize: true      # was false
 ```
 
 Then start the Server and the matching sidecar (targeting both starts exactly
@@ -177,54 +187,105 @@ those two and auto-enables their profiles):
 docker compose up -d server-gpu llama-gpu
 ```
 
-The Server reads `/config/kitsune.yaml` (bind-mounted from the file above), so
-restart it after later edits (`docker compose restart server-gpu`). The Client
+The Server reads `/config/kitsune.yaml` (mounted from the directory above), so
+restart it after later file edits (`docker compose restart server-gpu`). Hot
+settings such as `log_level` can also be changed from the Admin API/Settings
+window without a restart; the Server writes them back into
+`config/kitsune.yaml`. The Client
 reads the `client:` section from its own config (see [step 2](#2-client)); you can
-point it at this same file instead with `--config ./kitsune.yaml` or
-`KITSUNE_CONFIG=$PWD/kitsune.yaml`.
+point it at this same file instead with `--config ./config/kitsune.yaml` or
+`KITSUNE_CONFIG=$PWD/config/kitsune.yaml`.
 
 The first run downloads the Whisper `small` model and the Qwen3 GGUF into the
 shared `kitsune-models` volume; later runs reuse them. The Server listens on
-`http://localhost:8000`, and the sidecar is reachable on the compose network as
-`llama` — which the Server services are already pointed at.
+`https://localhost:8765` with a self-signed certificate (the `-k` flag below
+accepts it; the Client pins the fingerprint instead), and the sidecar is
+reachable on the compose network as `llama` — which the Server services are
+already pointed at.
 
-Confirm the GPU and processing are live (give the sidecar a moment to warm up;
-the Server degrades gracefully until it answers):
-
-```sh
-curl http://localhost:8000/health
-```
-
-`device` should be `cuda`, `compute_type` `float16`, and `processing.enabled`
-`true`. To smoke-test the pipeline without the Client:
+Every transcription and management request needs a Device token. The loopback
+auto-pairing path cannot see a Docker port forward as loopback, so a Docker
+Server pairs with a one-time code generated inside the container (wait until
+`/health` answers first, so the Server and the CLI do not race on the
+certificate):
 
 ```sh
-curl -F audio=@sample.wav -F refine=true http://localhost:8000/transcribe
+docker exec <container> kitsune-server pair
 ```
+
+The command prints the config file it read, the code, its 10-minute expiry, and
+the certificate fingerprint. In the Client's **Settings → Servers and Devices**,
+enter `https://<host>:8765` (or your `KITSUNE_HOST_PORT`) and the code; the
+Client pins the certificate and stores the Device token. The Device and pairing
+stores, the TLS pair, the soft-stop flag, and the log live on the
+`kitsune-state` volume, so they survive a container restart and recreation.
+`GET /health` needs no token and reports `status` and `version` only:
+
+```sh
+curl -k https://localhost:8765/health
+```
+
+It returns `status` and `version` only. The native per-user install does not
+have this limitation: the Client auto-pairs over loopback on the same machine.
 
 ### 2. Client
 
 ```sh
-# Linux
+# Linux: Client, Tray, local Server bundle, and Wayland helpers in one command
 curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
 ```
 
 ```powershell
-# Windows (PowerShell 7+)
+# Windows (PowerShell 7+): per-user setup, Tray, local Server bundle
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-The installer verifies the archive checksum, installs the binary, drops a
-`kitsune.yaml` template (only if absent), and registers autostart in the user
-session. Point it at the Server and enable the flags above in the Client's config
-(path in [`docs/install.md`](docs/install.md#where-things-go)):
+The Windows one-liner downloads `kitsune-whisper_windows_amd64_setup.exe`,
+verifies its SHA-256, and runs it. The setup needs no administrator rights,
+bootstraps WebView2 per user, and registers per-user logon tasks for the Client
+and the hidden Server. You can also download that setup executable from the
+release and run it directly; the Tasks page offers an optional desktop shortcut.
+
+The native Server bundle does not ship CUDA. On an NVIDIA host leave the CUDA
+task checked in the Windows setup, or add `--cuda` to the Linux one-liner
+(`... | bash -s -- --cuda`); otherwise the Server falls back to CPU.
+
+The Linux installer verifies every archive checksum, installs the Client, the
+native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**
+units for all three. It asks for `sudo` once to install GTK/WebKitGTK and the
+udev `uaccess` rule, then never again. Docker remains the supported deployment
+for a dedicated GPU host; the one-liner installs both parts locally by default.
+On Ubuntu 24.04+/Fedora 40+ the default build is GTK4/WebKitGTK 6.0; older LTS
+hosts automatically get the GTK3/WebKit2GTK 4.1 build. Self-contained `.deb`
+(Debian/Ubuntu) and `.rpm` (Fedora/RHEL) packages install it system-wide and
+start the user units at login; `kitsune-whisper-setup` seeds a config and starts
+them immediately. A portable `.AppImage` is also published for hosts where you
+do not want a system package; it carries the Client, the Server bundle, and the
+bundled helpers, and runs the Local Server for the session.
+
+Declining elevation still installs a working headless Client: Settings open in
+the browser and Wayland injection stays clipboard-only until you re-run with
+`sudo`. Both installers drop a `kitsune.yaml` template **only if absent**. The
+active Server profile is `local` by default:
 
 ```yaml
 client:
-  server_url: http://localhost:8000
-  refine: true
-  summarize: true
+  servers:
+    - id: local
+      name: Local Server
+      url: https://localhost:8765
+      fingerprint: ""
+      auto_pair: true
+  active_server: local
 ```
+
+On the same machine the Client auto-pairs with the Local Server over loopback:
+it receives a Device token, stores it in the OS keychain (or a `0600` file), and
+pins the certificate fingerprint into the profile. A Remote Server is added in
+**Settings → Servers and Devices** with its address and a one-time Pairing code;
+the same screen lists and revokes trusted Devices (the Local Client's own
+Device is read-only while the Local Server profile is active). Tokens never
+appear in this file or in the logs.
 
 Restart the Client service after editing (`systemctl --user restart
 kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask
@@ -235,9 +296,8 @@ kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask
 
 With the Client running, press **Ctrl+Shift+Space** to start recording, speak,
 and press it again to stop. The transcription is pasted into the focused field.
-Press **Esc** to cancel without injecting. The hotkey, the cancel key, and the
-trigger mode are all configurable; `client.trigger: hold` switches to
-push-to-talk.
+Press **Esc** to cancel without injecting. The hotkey and the cancel key are
+configurable.
 
 If the Server isn't reachable the Client reports it and saves the audio to the
 Spool instead of losing your speech. An empty transcription injects nothing. If
@@ -246,22 +306,63 @@ the raw transcription.
 
 ## The hotkey
 
-- **Toggle** (default): press to start, press again to stop.
-- **Hold**: hold to talk, release to stop — set `client.trigger: hold`.
-- **Cancel**: `client.cancel_hotkey` (default `Esc`) aborts the utterance.
+- **Toggle**: press to start, press again to stop.
+- **Cancel**: `client.cancel_hotkey` (default `Ctrl+Shift+Q`) aborts the utterance.
+  On GNOME Wayland, Settings can install the shortcuts as GNOME custom
+  keybindings (`kitsune-client toggle` / `kitsune-client cancel`); they stay in
+  sync with the hotkeys above.
 
 The defaults are `client.hotkey: Ctrl+Shift+Space` and
-`client.cancel_hotkey: Esc`. On Wayland, hotkeys are best-effort; see
+`client.cancel_hotkey: Ctrl+Shift+Q`. On Wayland, hotkeys are best-effort; see
 [Wayland support and known limitations](docs/wayland.md).
 
-## Server (Docker)
+## Server (Docker for a dedicated host)
 
-The Server ships as a Docker image with two profiles:
+For a laptop or desktop that already runs the Client, install the native
+per-user bundle instead: its unit or task starts and restarts it, and running
+it needs no system Python and no Docker. Installing it is a Python command, so
+a host without Python needs a bootstrap interpreter (the release installers
+own that; see [the native Server bundle](docs/server-bundle.md)). `install`
+pins the config file it resolves into the supervisor, so the Client and the
+supervised Server read the same `kitsune.yaml`; `kitsune-server status` prints
+the pinned path, and Windows log output goes to
+`%LOCALAPPDATA%\kitsune-whisper\server.log`.
+
+The same Server also ships as a Docker image with two profiles:
 
 | Profile | Base image | When to use |
 | --- | --- | --- |
 | `cpu` | `python:3.11-slim` | Any host; slower, no GPU needed |
 | `gpu` | `nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04` | NVIDIA GPU; near-instant |
+
+A dedicated host keeps its persistent data outside the container:
+
+| Host | Container | Contents |
+| --- | --- | --- |
+| `./config/` (bind, writable) | `/config` | `kitsune.yaml`; the Admin API saves here. |
+| `kitsune-state` volume | `/state` | TLS cert/key, Devices, pairing codes, soft-stop flag, log. |
+| `kitsune-models` volume | `/models` | Whisper models and the optional llama.cpp GGUF. |
+
+The published port is `${KITSUNE_HOST_PORT:-8765}` on the host and `8765`
+inside the container; set `KITSUNE_HOST_PORT` in a `.env` next to
+`compose.yaml` if 8765 is taken. `restart: unless-stopped` is what makes the
+Client's restart (`202`, then exit `75`) bring the container back; a bare
+`docker run` needs `--restart unless-stopped` and `-v` mounts for `/models` and
+`/state`.
+
+**Soft-stop vs stopping the container.** For a Remote Server, `POST /admin/stop`
+(the Client's Stop in a remote profile) unloads the model and returns `503` for
+transcription while the process, the Admin API, and `/health` stay up;
+`/admin/start` reloads. The Client hard-stops only a Local Server profile.
+`docker compose stop` or `docker stop` is a hard stop: `restart: unless-stopped`
+will not bring a manually stopped container back until you `docker compose start`
+it again.
+
+**`down` vs `down -v`.** `docker compose down` removes the container and keeps
+all three stores; the next `up` reuses the same certificate, Devices, models,
+and settings. `docker compose down -v` deletes the named volumes too — the
+certificate changes, so every Client must pair again, and the models are
+downloaded again. Use it only for a deliberate fresh start.
 
 An opt-in `llm` profile starts a bundled llama.cpp sidecar
 (`ghcr.io/ggml-org/llama.cpp:server` / `:server-cuda`) for local
@@ -283,8 +384,8 @@ The `gpu` profile needs the host to expose an NVIDIA GPU to Docker:
 - **Windows (WSL2)**: use Docker Desktop with the WSL2 backend and a distro with
   GPU passthrough; confirm `nvidia-smi` works inside WSL before starting.
 - The image bundles `nvidia-cublas-cu12`, because the CTranslate2 wheel ships cuDNN
-  but not cuBLAS. `/health` reports the resolved `device`/`compute_type`, so you can
-  confirm the GPU is actually in use.
+  but not cuBLAS. The authenticated `/status` reports the resolved
+  `device`/`compute_type`, so you can confirm the GPU is actually in use.
 
 ### Recommended hardware
 
@@ -313,6 +414,13 @@ docker compose --profile gpu build
 
 - [`docs/install.md`](docs/install.md) — install, paths, autostart, upgrade/uninstall, hardware.
 - [`docs/configuration.md`](docs/configuration.md) — the full `kitsune.yaml` reference.
+- [`docs/security.md`](docs/security.md) — TLS, Device tokens, pairing, revocation, LAN exposure.
+- [`docs/models.md`](docs/models.md) — model catalog, download/activate/delete, idle unload, CUDA.
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — diagnostics, logs, common failures.
+- [`docs/release.md`](docs/release.md) — versioning, artifacts, checksums, release checklist.
+- [`docs/verification/e2e-live-slice.md`](docs/verification/e2e-live-slice.md) — the automated live slices.
+- [`docs/verification/docker-smoke.md`](docs/verification/docker-smoke.md) — real-container parity smoke.
+- [`docs/verification/manual-matrix.md`](docs/verification/manual-matrix.md) — GNOME Wayland, Windows, and CUDA matrix.
 - [`docs/wayland.md`](docs/wayland.md) — Wayland support matrix and known limitations.
 - [`docs/adr/`](docs/adr/) — architecture decisions; [`GLOSSARY.md`](GLOSSARY.md) — domain terms.
 
@@ -321,21 +429,36 @@ docker compose --profile gpu build
 - **Python (server)** — from `server/`: `uv run pytest`, `uv run ruff check .`,
   `uv run ruff format --check .`, `uv run basedpyright`.
 - **Go (client)** — from `client/`: `go build ./...`, `go test ./...` (set
-  `CGO_ENABLED=1` with a C compiler; `malgo` uses cgo).
+  `CGO_ENABLED=1` with a C compiler; `malgo` uses cgo). The desktop shell is
+  behind the `desktop` tag: `go build -tags "desktop purego" ./...` on Linux.
+  On Windows use `packaging/windows/build-client.ps1`, which also sets the GUI
+  subsystem and embeds the icon and version resources. Tests and the default
+  build stay headless and need no window toolkit.
 
 ### End-to-end verification
 
 `scripts/e2e-live.ps1` (Windows) and `scripts/e2e-live.sh` (Linux) bring up a real
 Server and run the live slice — speech round trip, latency, silence, and error
-paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). See
-`docs/verification/e2e-live-slice.md` for the automated checks and the manual
-hotkey/capture/injection checklist.
+paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). The authenticated
+slice, `scripts/e2e-trust.sh` / `.ps1`, adds local and remote pairing, Device
+revocation, manual Server switch, soft-stop/start, supervised restart, and Spool
+recovery. See `docs/verification/e2e-live-slice.md` and
+`docs/verification/manual-matrix.md`. The Linux installer's one-sudo, `uaccess`,
+bundled-helper, and full-cycle checks are recorded in
+[`docs/verification/linux-installer.md`](docs/verification/linux-installer.md).
 
 ### Releases
 
-Tagging `v*` runs `.github/workflows/release-client.yml`: it builds the Client on
-native Linux and Windows runners and attaches checksummed archives to the GitHub
-Release. `publish-server-image.yml` publishes the Server images to GHCR.
+The current release line is **1.0.0**. The root [`VERSION`](VERSION),
+`server/pyproject.toml`, and `server/kitsune_server/__init__.py` carry the same
+version, and release CI refuses a tag that does not match.
+
+Tagging `v*` runs `.github/workflows/release.yml`: it builds the GTK4 and GTK3
+Clients, the native Server bundle, the bundled Wayland helpers, the Windows
+setup, both `.deb` and `.rpm` packages, and both AppImages on native runners,
+then attaches them with `install.sh`, `install.ps1`, and `checksums.txt` to the
+GitHub Release. `publish-server-image.yml` publishes the Server images to GHCR.
+See [`docs/release.md`](docs/release.md) for the checklist.
 
 ## License
 

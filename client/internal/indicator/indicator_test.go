@@ -21,21 +21,23 @@ type shownFrame struct {
 }
 
 type fakePresenter struct {
-	scale  float64
-	frames chan shownFrame
-	hides  chan struct{}
-	closed chan struct{}
-	clicks chan struct{}
-	panic  atomic.Bool
+	scale      float64
+	frames     chan shownFrame
+	hides      chan struct{}
+	closed     chan struct{}
+	clicks     chan struct{}
+	placements chan indicator.Placement
+	panic      atomic.Bool
 }
 
 func newFakePresenter() *fakePresenter {
 	return &fakePresenter{
-		scale:  1,
-		frames: make(chan shownFrame, 256),
-		hides:  make(chan struct{}, 16),
-		closed: make(chan struct{}, 4),
-		clicks: make(chan struct{}, 16),
+		scale:      1,
+		frames:     make(chan shownFrame, 256),
+		hides:      make(chan struct{}, 16),
+		closed:     make(chan struct{}, 4),
+		clicks:     make(chan struct{}, 16),
+		placements: make(chan indicator.Placement, 16),
 	}
 }
 
@@ -50,6 +52,12 @@ func (p *fakePresenter) Show(frame *image.RGBA, input image.Rectangle) {
 func (p *fakePresenter) Hide()                   { p.hides <- struct{}{} }
 func (p *fakePresenter) Close()                  { p.closed <- struct{}{} }
 func (p *fakePresenter) Clicks() <-chan struct{} { return p.clicks }
+func (p *fakePresenter) SetPlacement(placement indicator.Placement) {
+	select {
+	case p.placements <- placement:
+	default:
+	}
+}
 
 type fakeTicker struct {
 	ch   chan time.Time
@@ -358,6 +366,69 @@ func TestFailedFrameDisablesOnceWithoutBreakingTheCycle(t *testing.T) {
 	}
 }
 
+func TestPreviewShowsThePillWithoutACycleAndIgnoresClicks(t *testing.T) {
+	h := newHarness(t)
+	h.indicator.Preview(indicator.Placement{Anchor: indicator.AnchorBottomLeft})
+	frame := h.waitFrame(t)
+	if frame.input != indicator.StopRegion(1) {
+		t.Fatalf("preview input region = %v, want %v", frame.input, indicator.StopRegion(1))
+	}
+	h.presenter.clicks <- struct{}{}
+	select {
+	case <-h.clicks:
+		t.Fatal("a preview click must not start or stop dictation")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	h.indicator.PreviewOff()
+	h.waitHide(t)
+}
+
+func TestPreviewDoesNotChangeTheSavedPlacement(t *testing.T) {
+	h := newHarness(t)
+	h.indicator.Preview(indicator.Placement{Anchor: indicator.AnchorBottomRight, OffsetX: 40})
+	h.waitFrame(t)
+	h.indicator.PreviewOff()
+	h.waitHide(t)
+
+	deadline := time.After(2 * time.Second)
+	seenPreview := false
+	for {
+		select {
+		case placement := <-h.presenter.placements:
+			if placement.Anchor == indicator.AnchorBottomRight {
+				seenPreview = true
+				continue
+			}
+			if seenPreview && placement == indicator.DefaultPlacement {
+				return
+			}
+		case <-deadline:
+			t.Fatal("preview never restored the saved placement")
+		}
+	}
+}
+
+func TestPreviewYieldsToARealCue(t *testing.T) {
+	h := newHarness(t)
+	h.indicator.Preview(indicator.Placement{})
+	h.waitFrame(t)
+
+	h.indicator.Cue(cycle.CueStart)
+	h.waitLog(t, "indicator: recording")
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case frame := <-h.presenter.frames:
+			if frame.input == indicator.StopRegion(1) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("recording input region after preview never became %v", indicator.StopRegion(1))
+		}
+	}
+}
+
 func TestPresenterSelection(t *testing.T) {
 	newPresenter := func(name string, err error) (func() (indicator.Presenter, error), *atomic.Int32) {
 		calls := &atomic.Int32{}
@@ -370,19 +441,23 @@ func TestPresenterSelection(t *testing.T) {
 		}, calls
 	}
 	cases := []struct {
-		name       string
-		configured string
-		env        indicator.Environment
-		layerErr   error
-		x11Err     error
-		want       string
-		wantErr    bool
-		layerCalls int32
-		x11Calls   int32
+		name        string
+		configured  string
+		env         indicator.Environment
+		layerErr    error
+		x11Err      error
+		windowsErr  error
+		want        string
+		wantErr     bool
+		layerCalls  int32
+		x11Calls    int32
+		windowsCall int32
 	}{
 		{name: "auto prefers layer shell", configured: "auto", env: indicator.Environment{LayerShell: true, X11: true}, want: "layer_shell", layerCalls: 1},
 		{name: "auto falls back to x11", configured: "auto", env: indicator.Environment{LayerShell: true, X11: true}, layerErr: fmt.Errorf("no layer shell"), want: "x11", layerCalls: 1, x11Calls: 1},
 		{name: "auto uses x11 without wayland", configured: "auto", env: indicator.Environment{X11: true}, want: "x11", x11Calls: 1},
+		{name: "auto uses win32 on windows", configured: "auto", env: indicator.Environment{Windows: true}, want: "win32", windowsCall: 1},
+		{name: "host OS wins over stray X11", configured: "auto", env: indicator.Environment{X11: true, Windows: true}, want: "win32", windowsCall: 1},
 		{name: "auto has no backend", configured: "auto", env: indicator.Environment{}, wantErr: true},
 		{name: "explicit layer shell does not fall back", configured: "layer_shell", env: indicator.Environment{LayerShell: true, X11: true}, layerErr: fmt.Errorf("broken"), wantErr: true, layerCalls: 1},
 		{name: "explicit layer shell unavailable", configured: "layer_shell", env: indicator.Environment{X11: true}, wantErr: true},
@@ -393,7 +468,8 @@ func TestPresenterSelection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			layer, layerCalls := newPresenter("layer_shell", tc.layerErr)
 			x11, x11Calls := newPresenter("x11", tc.x11Err)
-			presenter, err := indicator.Open(tc.configured, tc.env, indicator.Factories{LayerShell: layer, X11: x11})
+			win32, windowsCalls := newPresenter("win32", tc.windowsErr)
+			presenter, err := indicator.Open(tc.configured, tc.env, indicator.Factories{LayerShell: layer, X11: x11, Windows: win32})
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("Open = %v, want error", presenter)
@@ -411,6 +487,9 @@ func TestPresenterSelection(t *testing.T) {
 			}
 			if x11Calls.Load() != tc.x11Calls {
 				t.Fatalf("x11 factory calls = %d, want %d", x11Calls.Load(), tc.x11Calls)
+			}
+			if windowsCalls.Load() != tc.windowsCall {
+				t.Fatalf("win32 factory calls = %d, want %d", windowsCalls.Load(), tc.windowsCall)
 			}
 		})
 	}

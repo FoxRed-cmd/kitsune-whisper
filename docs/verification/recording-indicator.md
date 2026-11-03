@@ -36,6 +36,14 @@ editor with the cursor in a document for the focus checks.
       dictating.
 - [ ] With `--verbose`, the log shows `indicator: recording`, `processing`,
       `delivering`, `finished`, and the matching cue lines.
+- [ ] The pill uses the Settings window's palette: light card on a light
+      desktop, dark card on a dark desktop, with the same accent and danger
+      colours as the form.
+- [ ] On **On-screen indicator**, picking each of the six presets moves the
+      real pill immediately; changing either offset moves it by the entered
+      number of logical pixels and the pill stays on the monitor.
+- [ ] Leaving the screen, closing the window, or disabling the indicator hides
+      the preview.
 
 ## X11 (plain Xorg session)
 
@@ -87,11 +95,39 @@ editor with the cursor in a document for the focus checks.
 - [ ] Fullscreen stacking follows Mutter's override-redirect placement; note the
       result.
 
-## Windows (deferred, #42)
+## Windows (#42)
 
-When the Win32 layered-window presenter lands, run the same common checks plus:
+`auto` selects `recording indicator: win32 backend`. The presenter is a layered
+`WS_POPUP` window (`WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW |
+WS_EX_NOACTIVATE`) drawn with `UpdateLayeredWindow`, with a locked message-pump
+thread. Run the common checks plus:
 
+- [x] DWM composites the premultiplied BGRA frame correctly: the recording pill,
+      the level bars, and the pink stop button render as on Linux.
+- [x] The Processing wave renders after the stop cue and the window hides after
+      the fade.
+- [x] The window is created unmapped, measures 144×72 logical pixels at 100%,
+      and is placed top-centre with the 16 px inset; `WS_EX_LAYERED`,
+      `WS_EX_TOPMOST`, `WS_EX_TOOLWINDOW`, and `WS_EX_NOACTIVATE` are all set.
+- [x] `WM_MOUSEACTIVATE` returns `MA_NOACTIVATE`; a press at the stop-button
+      centre reaches `Clicks`, and a press elsewhere in the frame does not.
+- [x] The real Client logs `recording indicator: win32 backend`, shows the pill
+      on `kitsune-client toggle`, and removes it on `kitsune-client cancel`.
 - [ ] The indicator appears on the monitor with the foreground window.
-- [ ] Per-monitor V2 DPI gives a crisp frame at each monitor's scale.
+- [ ] Per-monitor V2 DPI gives a crisp frame at each monitor's scale (1.25× at
+      125%, 1.5× at 150%).
 - [ ] It is hidden while an exclusive-fullscreen app owns the display.
-- [ ] No taskbar or Alt-Tab entry; the stop button does not activate the window.
+- [ ] Transparent pixels pass clicks through to the window underneath.
+- [ ] No taskbar or Alt-Tab entry; the injected text still lands in the focused
+      app after clicking stop.
+- [ ] `feedback.indicator: off` starts no window, and an unavailable presenter
+      logs exactly one warning.
+
+The checked items were verified on Windows 11 at 100% scale, first with a
+temporary harness that drove the real presenter and posted the mouse messages,
+then end to end with the built Client. The rest are the same manual desktop
+checks as the sections above.
+
+Note: `go test ./...` still has pre-existing Windows failures in unrelated
+packages (Unix sockets, file modes, Linux autostart), so run the indicator
+package directly (`go test ./internal/indicator/`) when checking this work.

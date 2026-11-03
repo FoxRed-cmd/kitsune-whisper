@@ -41,6 +41,8 @@ func ResolveBackend(requested string, wayland, x11, portal bool) (Backend, error
 			return 0, fmt.Errorf("hotkey backend portal requested but the GlobalShortcuts portal is unavailable")
 		}
 		return BackendPortal, nil
+	case "external":
+		return BackendExternal, nil
 	case "auto":
 		if wayland {
 			if portal {

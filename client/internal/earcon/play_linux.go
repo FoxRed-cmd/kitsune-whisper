@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 )
 
 // players are tried in order; the first installed one wins.
@@ -40,7 +42,7 @@ func play(wav []byte) error {
 			continue
 		}
 		args := append(append([]string(nil), player[1:]...), name)
-		cmd := exec.Command(path, args...)
+		cmd := process.Command(path, args...)
 		if err := cmd.Start(); err != nil {
 			continue
 		}

@@ -216,6 +216,20 @@ func New(opts Options) (*Injector, error) {
 	}, nil
 }
 
+// Copy places text on the clipboard without synthesizing a paste. The Spool
+// uses it to let the user recover a Transcription and choose where it goes.
+// An empty or whitespace-only text is a no-op, like Inject.
+func (i *Injector) Copy(text string) error {
+	if strings.TrimSpace(text) == "" {
+		i.log("empty transcription: clipboard untouched")
+		return nil
+	}
+	if err := i.clipboard.Write(text); err != nil {
+		return fmt.Errorf("write clipboard: %w", err)
+	}
+	return nil
+}
+
 // Inject places text into the focused field. An empty or whitespace-only
 // transcription is a no-op that leaves the clipboard untouched. With paste
 // disabled the transcript is left on the clipboard for the user to paste

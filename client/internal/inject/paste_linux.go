@@ -7,13 +7,13 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
 )
 
 // waylandPaster synthesizes the paste keystroke with wtype or ydotool, trying
-// each helper in turn. Both are detected, never bundled; when neither is
-// present newPaster returns no paster and the Injector degrades to
-// clipboard-only.
+// each helper in turn. The Linux installer bundles both and puts them on the
+// unit's PATH; a build or host without them degrades to clipboard-only.
 type waylandPaster struct {
 	tools []waylandTool
 }
@@ -29,7 +29,7 @@ func runWaylandTool(tool waylandTool, shortcut Shortcut) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
-	if err := exec.CommandContext(ctx, name, args...).Run(); err != nil {
+	if err := process.CommandContext(ctx, name, args...).Run(); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil

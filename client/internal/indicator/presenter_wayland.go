@@ -41,6 +41,15 @@ type waylandPresenter struct {
 	updates chan waylandUpdate
 	done    chan struct{}
 
+	// placement is written by the indicator goroutine and consumed by the
+	// update loop.
+	placement placementHolder
+	// lastPill and resetFrames are owned by the update loop. They force both
+	// double-buffered slots to be cleared after the pill moves, so an old
+	// position cannot leave a ghost on screen.
+	lastPill    image.Rectangle
+	resetFrames int
+
 	mu               sync.Mutex
 	width            int
 	height           int
@@ -225,6 +234,7 @@ func NewLayerShell() (Presenter, error) {
 		updateDone: make(chan struct{}),
 		eventDone:  make(chan struct{}),
 	}
+	p.placement.Set(DefaultPlacement)
 	if seat != nil {
 		if pointer, err := seat.GetPointer(); err == nil {
 			p.pointer = pointer
@@ -266,6 +276,11 @@ func NewLayerShell() (Presenter, error) {
 func (p *waylandPresenter) Name() string            { return "layer_shell" }
 func (p *waylandPresenter) Scale() float64          { return float64(p.scale) }
 func (p *waylandPresenter) Clicks() <-chan struct{} { return p.clicks }
+
+// SetPlacement moves the layer surface on the next frame.
+func (p *waylandPresenter) SetPlacement(placement Placement) {
+	p.placement.Set(placement)
+}
 
 func (p *waylandPresenter) Show(frame *image.RGBA, input image.Rectangle) {
 	update := waylandUpdate{frame: frame, input: input}
@@ -347,6 +362,7 @@ func (p *waylandPresenter) eventLoop() {
 }
 
 func (p *waylandPresenter) apply(update waylandUpdate) {
+	p.configureLayer()
 	p.mu.Lock()
 	width := p.width
 	if width <= 0 {
@@ -363,9 +379,18 @@ func (p *waylandPresenter) apply(update waylandUpdate) {
 	}
 
 	frameWidth := update.frame.Bounds().Dx()
-	offsetX := (width*p.scale - frameWidth) / 2
-	if offsetX < 0 {
-		offsetX = 0
+	offsetX := p.placement.Get().pillOffsetX(width*p.scale, frameWidth, float64(p.scale))
+	pill := image.Rect(offsetX, TopMargin*p.scale,
+		offsetX+frameWidth, (TopMargin+PillHeight)*p.scale)
+	if pill != p.lastPill {
+		p.lastPill = pill
+		// Two slots alternate, so both need one full clear after a move.
+		p.resetFrames = 2
+	}
+	fullDamage := p.resetFrames > 0
+	if fullDamage {
+		clear(slot.data)
+		p.resetFrames--
 	}
 	blitBGRA(slot.data, width*p.scale, update.frame, offsetX)
 
@@ -374,16 +399,30 @@ func (p *waylandPresenter) apply(update waylandUpdate) {
 		slot.busy.Store(false)
 		return
 	}
-	_ = p.surface.DamageBuffer(
-		int32(offsetX),
-		int32(TopMargin*p.scale),
-		int32(LogicalWidth*p.scale),
-		int32(PillHeight*p.scale),
-	)
+	if fullDamage {
+		_ = p.surface.DamageBuffer(0, 0, int32(width*p.scale), int32(height*p.scale))
+	} else {
+		_ = p.surface.DamageBuffer(
+			int32(pill.Min.X), int32(pill.Min.Y),
+			int32(pill.Dx()), int32(pill.Dy()),
+		)
+	}
 	p.setInput(update.input, offsetX)
 	if err := p.surface.Commit(); err != nil {
 		slot.busy.Store(false)
 	}
+}
+
+// configureLayer applies a changed placement to the layer surface. The surface
+// stays anchored to both horizontal edges; only the vertical anchor and margin
+// change.
+func (p *waylandPresenter) configureLayer() {
+	if !p.placement.TakeDirty() {
+		return
+	}
+	anchor, top, bottom := p.placement.Get().layerAnchors()
+	_ = p.layer.SetAnchor(anchor)
+	_ = p.layer.SetMargin(int32(top), 0, int32(bottom), 0)
 }
 
 func (p *waylandPresenter) hideSurface() {

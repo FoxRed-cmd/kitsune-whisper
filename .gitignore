@@ -3,6 +3,7 @@
 
 ### Local config (copy kitsune.example.yaml) ###
 /kitsune.yaml
+/config/kitsune.yaml
 /.env
 
 ### Go ###
@@ -19,3 +20,10 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 .basedpyright/
+
+### Installer outputs ###
+/dist/
+/wizard.json
+/packaging/windows/.cache/
+/packaging/windows/app.ico
+/client/cmd/kitsune-client/rsrc_windows_*.syso

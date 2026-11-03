@@ -8,7 +8,12 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/version"
 )
 
 // HTTP is a Transcriber that POSTs an utterance to a Server's /transcribe.
@@ -17,26 +22,59 @@ type HTTP struct {
 	Client        *http.Client
 	Language      string
 	InitialPrompt string
-	// Refine and Summarize ask the Server to post-process the utterance. They
-	// are sent only when true, so the default wire behavior is unchanged.
-	Refine    bool
-	Summarize bool
-	// OnWarning, when non-nil, receives each warning from a successful response
-	// (a requested processing step that was skipped).
+	// Token is the Device token sent as "Authorization: Bearer". It is never
+	// logged, serialised, or included in an error.
+	Token string `json:"-"`
+	// Fingerprint is the pinned certificate SHA-256 for an HTTPS profile.
+	Fingerprint string
+	// ClientVersion enables an upgrade message when the Server is reachable
+	// but its release is incompatible. Empty disables the preflight.
+	ClientVersion string
+	// OnWarning, when non-nil, receives each warning from a successful response.
 	OnWarning func(string)
+
+	// versionOnce caches the /health preflight so a mismatch is reported once
+	// per built transcriber, before audio leaves the machine.
+	versionOnce sync.Once
+	versionErr  error
+}
+
+// NewHTTPWithTrust builds an HTTP transcriber for one Server profile. An HTTPS
+// profile must carry a pinned fingerprint: without it the Client refuses before
+// opening a connection, so no audio or token crosses the network.
+func NewHTTPWithTrust(baseURL, fingerprint, token, language, initialPrompt string) (*HTTP, error) {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid Server URL: %w", err)
+	}
+	transcriber := &HTTP{
+		BaseURL:       baseURL,
+		Client:        &http.Client{Timeout: 0},
+		Language:      language,
+		InitialPrompt: initialPrompt,
+		Token:         token,
+		Fingerprint:   fingerprint,
+	}
+	if parsed.Scheme == "https" {
+		client, err := trust.PinnedClient(fingerprint, 0)
+		if err != nil {
+			return nil, err
+		}
+		transcriber.Client = client
+	}
+	return transcriber, nil
 }
 
 // NewHTTP builds an HTTP transcriber. language and initialPrompt are sent only
-// when they are set to something other than the "unset" defaults; refine and
-// summarize are sent only when true.
-func NewHTTP(baseURL, language, initialPrompt string, refine, summarize bool) *HTTP {
+// when they are set to something other than the "unset" defaults. The
+// deprecated Refine and Summarize switches are never sent: the Client does not
+// expose text processing.
+func NewHTTP(baseURL, language, initialPrompt string) *HTTP {
 	return &HTTP{
 		BaseURL:       baseURL,
 		Client:        &http.Client{Timeout: 0},
 		Language:      language,
 		InitialPrompt: initialPrompt,
-		Refine:        refine,
-		Summarize:     summarize,
 	}
 }
 
@@ -50,6 +88,9 @@ func (h *HTTP) client() *http.Client {
 // Transcribe implements Transcriber. The audio is sent verbatim as the
 // multipart "audio" part; the Server is responsible for decoding it.
 func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, error) {
+	if err := h.checkCompatibility(ctx); err != nil {
+		return Transcription{}, err
+	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("audio", "utterance.wav")
@@ -69,16 +110,6 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 			return Transcription{}, fmt.Errorf("write initial_prompt: %w", err)
 		}
 	}
-	if h.Refine {
-		if err := writer.WriteField("refine", "true"); err != nil {
-			return Transcription{}, fmt.Errorf("write refine: %w", err)
-		}
-	}
-	if h.Summarize {
-		if err := writer.WriteField("summarize", "true"); err != nil {
-			return Transcription{}, fmt.Errorf("write summarize: %w", err)
-		}
-	}
 	if err := writer.Close(); err != nil {
 		return Transcription{}, fmt.Errorf("close multipart: %w", err)
 	}
@@ -89,6 +120,9 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 		return Transcription{}, fmt.Errorf("build request: %w", err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
+	if h.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+h.Token)
+	}
 
 	resp, err := h.client().Do(req)
 	if err != nil {
@@ -114,6 +148,44 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 		}
 	}
 	return transcription, nil
+}
+
+// checkCompatibility reads /health once and turns an incompatible Server into
+// a clear upgrade error before any audio is uploaded. An unreachable Server is
+// left to the transcription request, which reports the real connection error.
+func (h *HTTP) checkCompatibility(ctx context.Context) error {
+	if _, ok := version.Parse(h.ClientVersion); !ok {
+		return nil
+	}
+	h.versionOnce.Do(func() {
+		endpoint := strings.TrimRight(h.BaseURL, "/") + "/health"
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return
+		}
+		response, err := h.client().Do(request)
+		if err != nil {
+			return
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		if err != nil {
+			return
+		}
+		var health struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(data, &health) != nil || health.Version == "" {
+			return
+		}
+		if err := trust.CheckVersion(h.ClientVersion, health.Version); err != nil {
+			h.versionErr = err
+		}
+	})
+	return h.versionErr
 }
 
 func (h *HTTP) effectiveLanguage() string {

@@ -180,6 +180,22 @@ def test_transcribe_uses_decode_options() -> None:
     assert model.transcribe_kwargs["vad_filter"] is True
 
 
+def test_load_prefers_a_model_downloaded_into_the_model_directory(tmp_path: Any) -> None:
+    downloaded = tmp_path / "base"
+    downloaded.mkdir()
+    (downloaded / "model.bin").write_bytes(b"weights")
+    (downloaded / "config.json").write_text("{}", encoding="utf-8")
+    config = ServerConfig(model="base", device="cpu", download_root=str(tmp_path))
+    created: dict[str, Any] = {}
+
+    transcriber = WhisperTranscriber.load(
+        config, model_factory=factory_recording(created), cuda_device_count=0
+    )
+
+    assert created["name"] == str(downloaded)
+    assert transcriber.info.model == "base"
+
+
 def test_load_offline_incomplete_cache_fails_clearly(tmp_path: Any) -> None:
     config = ServerConfig(offline=True, download_root=str(tmp_path))
 
@@ -242,6 +258,31 @@ def test_ensure_cuda_libraries_prepends_path_on_windows(
     parts = os.environ["PATH"].split(";")
     assert parts[0] == str(tmp_path)
     assert "C:/original" in parts
+
+
+def test_ensure_cuda_libraries_preloads_linux_sonames(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    (tmp_path / "libcublasLt.so.12").write_text("", encoding="utf-8")
+    (tmp_path / "libcublas.so.12").write_text("", encoding="utf-8")
+    monkeypatch.setattr(engine, "_cuda_library_dirs", lambda: [tmp_path])
+    monkeypatch.setattr(engine.sys, "platform", "linux")
+    monkeypatch.setattr(engine.os, "pathsep", ":")
+    loaded: list[str] = []
+
+    def fake_cdll(path: str, mode: int = 0) -> Any:
+        loaded.append(path)
+
+    monkeypatch.setattr(engine.ctypes, "CDLL", fake_cdll, raising=False)
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+
+    engine.ensure_cuda_libraries("cuda")
+
+    assert loaded == [
+        str(tmp_path / "libcublasLt.so.12"),
+        str(tmp_path / "libcublas.so.12"),
+    ]
+    assert os.environ["LD_LIBRARY_PATH"] == str(tmp_path)
 
 
 def test_cuda_library_subdir_is_bin_on_windows_lib_elsewhere(

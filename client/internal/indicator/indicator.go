@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 )
 
 const (
@@ -80,6 +81,26 @@ type Options struct {
 	// OnWarning receives the single warning emitted when the indicator
 	// disables itself after a failure.
 	OnWarning func(string)
+	// Placement is where the pill appears. The zero value is top-centre.
+	Placement Placement
+	// Theme selects the palette matching the Settings window. The zero value
+	// is dark.
+	Theme theme.Theme
+}
+
+// Previewer shows the real Recording indicator while the user edits its
+// placement, without starting a Dictation cycle. *Indicator implements it.
+type Previewer interface {
+	// Preview shows (or moves) the preview at placement.
+	Preview(placement Placement)
+	// PreviewOff hides the preview.
+	PreviewOff()
+}
+
+// previewCommand is handled by the indicator goroutine.
+type previewCommand struct {
+	placement Placement
+	show      bool
 }
 
 // Indicator is a cycle.Feedback that renders the Recording indicator. Its
@@ -93,24 +114,34 @@ type Indicator struct {
 	onLog     func(string)
 	onWarning func(string)
 
-	cues   chan cycle.Cue
-	closeC chan struct{}
-	done   chan struct{}
+	placement     Placement
+	basePlacement Placement
+	theme         theme.Theme
+
+	cues     chan cycle.Cue
+	previews chan previewCommand
+	closeC   chan struct{}
+	done     chan struct{}
 
 	closeOnce sync.Once
 	// The fields below are owned by the run goroutine.
-	disabled   atomic.Bool
-	visible    bool
-	phase      Phase
-	alpha      float64
-	fading     bool
-	fadeStart  time.Time
-	holdUntil  time.Time
-	delivered  bool
-	levelVal   float64
-	noiseFloor float64
-	lastTick   time.Time
-	shownAt    time.Time
+	disabled  atomic.Bool
+	visible   bool
+	phase     Phase
+	alpha     float64
+	fading    bool
+	fadeStart time.Time
+	holdUntil time.Time
+	delivered bool
+	preview   bool
+	// pendingPreview remembers a preview requested while a real Dictation
+	// cycle owned the screen; it is shown when that cycle ends.
+	pendingPreview    Placement
+	hasPendingPreview bool
+	levelVal          float64
+	noiseFloor        float64
+	lastTick          time.Time
+	shownAt           time.Time
 }
 
 // New starts an Indicator. A nil Presenter yields an inert indicator, so callers
@@ -120,16 +151,25 @@ func New(opts Options) *Indicator {
 	if clock == nil {
 		clock = realClock{}
 	}
+	placement := opts.Placement.Normalized()
+	selectedTheme := opts.Theme
+	if selectedTheme == "" {
+		selectedTheme = theme.Dark
+	}
 	i := &Indicator{
-		presenter: opts.Presenter,
-		level:     opts.Level,
-		clock:     clock,
-		onClick:   opts.OnClick,
-		onLog:     opts.OnLog,
-		onWarning: opts.OnWarning,
-		cues:      make(chan cycle.Cue, 16),
-		closeC:    make(chan struct{}),
-		done:      make(chan struct{}),
+		presenter:     opts.Presenter,
+		level:         opts.Level,
+		clock:         clock,
+		onClick:       opts.OnClick,
+		onLog:         opts.OnLog,
+		onWarning:     opts.OnWarning,
+		placement:     placement,
+		basePlacement: placement,
+		theme:         selectedTheme,
+		cues:          make(chan cycle.Cue, 16),
+		previews:      make(chan previewCommand, 4),
+		closeC:        make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 	if i.presenter == nil {
 		i.disabled.Store(true)
@@ -142,8 +182,55 @@ func New(opts Options) *Indicator {
 	if i.onWarning == nil {
 		i.onWarning = func(string) {}
 	}
+	i.setPlacement(placement)
 	go i.run()
 	return i
+}
+
+// setPlacement updates the presenter before the first frame.
+func (i *Indicator) setPlacement(placement Placement) {
+	i.placement = placement.Normalized()
+	if configurable, ok := i.presenter.(interface{ SetPlacement(Placement) }); ok {
+		configurable.SetPlacement(i.placement)
+	}
+}
+
+// Preview implements Previewer. It never blocks the Settings window.
+func (i *Indicator) Preview(placement Placement) {
+	if i == nil || i.disabled.Load() {
+		return
+	}
+	i.sendPreview(previewCommand{placement: placement.Normalized(), show: true})
+}
+
+// PreviewOff implements Previewer.
+func (i *Indicator) PreviewOff() {
+	if i == nil || i.disabled.Load() {
+		return
+	}
+	i.sendPreview(previewCommand{show: false})
+}
+
+func (i *Indicator) sendPreview(command previewCommand) {
+	select {
+	case <-i.done:
+		return
+	default:
+	}
+	select {
+	case i.previews <- command:
+	default:
+		// Keep the newest preview position; a burst of offset edits must not
+		// leave the window behind the value the user sees.
+		select {
+		case <-i.previews:
+		default:
+		}
+		select {
+		case i.previews <- command:
+		default:
+		}
+	}
 }
 
 // Cue implements cycle.Feedback. It never blocks the Dictation cycle.
@@ -191,12 +278,16 @@ func (i *Indicator) run() {
 			if !i.disabled.Load() {
 				i.handleCue(cue, i.clock.Now())
 			}
+		case command := <-i.previews:
+			if !i.disabled.Load() {
+				i.handlePreview(command)
+			}
 		case <-tickC:
 			if !i.disabled.Load() {
 				i.tick(i.clock.Now())
 			}
 		case <-clicks:
-			if !i.disabled.Load() && i.visible && !i.fading && i.phase == PhaseRecording && i.onClick != nil {
+			if !i.disabled.Load() && !i.preview && i.visible && !i.fading && i.phase == PhaseRecording && i.onClick != nil {
 				click := i.onClick
 				go click()
 			}
@@ -227,6 +318,9 @@ func (i *Indicator) syncTicker(ticker Ticker, tickC <-chan time.Time) (Ticker, <
 }
 
 func (i *Indicator) handleCue(cue cycle.Cue, now time.Time) {
+	// A real Dictation cycle always wins over the Settings preview, and it
+	// must use the saved placement, not the unsaved one being previewed.
+	i.leavePreview()
 	switch cue {
 	case cycle.CueStart:
 		i.visible = true
@@ -297,6 +391,53 @@ func (i *Indicator) handleCue(cue cycle.Cue, now time.Time) {
 	}
 }
 
+// leavePreview stops a preview and restores the configured placement.
+func (i *Indicator) leavePreview() {
+	if !i.preview {
+		return
+	}
+	i.preview = false
+	i.setPlacement(i.basePlacement)
+}
+
+// handlePreview shows the pill on demand for the Settings window. It reuses
+// the real renderer and presenter, so the user sees exactly what a Dictation
+// cycle will draw.
+func (i *Indicator) handlePreview(command previewCommand) {
+	if !command.show {
+		i.hasPendingPreview = false
+		if i.preview {
+			// Previewing is not saving: put the real indicator back where the
+			// configuration says it belongs.
+			i.leavePreview()
+			i.hideNow()
+		}
+		return
+	}
+	// A preview never paints over a Dictation cycle that is already on screen;
+	// remember the latest position and show it once the cycle ends.
+	if i.visible && !i.preview {
+		i.pendingPreview = command.placement.Normalized()
+		i.hasPendingPreview = true
+		return
+	}
+	i.hasPendingPreview = false
+	i.preview = true
+	i.setPlacement(command.placement)
+	i.visible = true
+	i.phase = PhaseRecording
+	i.alpha = 1
+	i.fading = false
+	i.fadeStart = time.Time{}
+	i.holdUntil = time.Time{}
+	i.delivered = false
+	i.levelVal = 0.55
+	i.noiseFloor = 0
+	i.shownAt = i.clock.Now()
+	i.lastTick = i.shownAt
+	i.show(i.shownAt)
+}
+
 func (i *Indicator) beginFade(now time.Time) {
 	i.fading = true
 	i.fadeStart = now
@@ -313,7 +454,11 @@ func (i *Indicator) tick(now time.Time) {
 	}
 	i.lastTick = now
 
-	if i.phase == PhaseRecording && !i.fading && i.level != nil {
+	if i.preview {
+		// A gentle breathing meter tells the user this is the live preview,
+		// not a frozen screenshot.
+		i.levelVal = 0.45 + 0.2*math.Sin(now.Sub(i.shownAt).Seconds()*2.4)
+	} else if i.phase == PhaseRecording && !i.fading && i.level != nil {
 		target := i.levelTarget(i.level.InputLevel())
 		timeConstant := levelAttack
 		if target < i.levelVal {
@@ -354,6 +499,8 @@ func (i *Indicator) show(now time.Time) {
 	scale := i.presenter.Scale()
 	input := image.Rectangle{}
 	if i.phase == PhaseRecording && !i.fading && i.alpha > 0.5 {
+		// A preview also captures the button so a click cannot fall through to
+		// the application underneath; the run loop ignores it.
 		input = StopRegion(scale)
 	}
 	elapsed := now.Sub(i.shownAt)
@@ -363,6 +510,7 @@ func (i *Indicator) show(now time.Time) {
 		Alpha: i.alpha,
 		Time:  elapsed,
 		Scale: scale,
+		Theme: i.theme,
 	}), input)
 }
 
@@ -373,6 +521,11 @@ func (i *Indicator) hideNow() {
 	i.holdUntil = time.Time{}
 	if i.presenter != nil {
 		i.presenter.Hide()
+	}
+	if i.hasPendingPreview {
+		placement := i.pendingPreview
+		i.hasPendingPreview = false
+		i.handlePreview(previewCommand{placement: placement, show: true})
 	}
 }
 

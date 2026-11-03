@@ -12,7 +12,7 @@ func TestUnitFileBindsToGraphicalSession(t *testing.T) {
 		"PartOf=graphical-session.target",
 		"WantedBy=graphical-session.target",
 		"Restart=on-failure",
-		"ExecStart=/home/u/.local/bin/kitsune-client run",
+		"ExecStart=/home/u/.local/bin/kitsune-client gui --hidden",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("unit file missing %q:\n%s", want, got)
@@ -30,7 +30,7 @@ func TestUnitFilePinsAndQuotesConfig(t *testing.T) {
 		Binary: "/opt/kitsune client",
 		Config: "/home/u/my configs/kitsune.yaml",
 	})
-	want := `ExecStart="/opt/kitsune client" --config "/home/u/my configs/kitsune.yaml" run`
+	want := `ExecStart="/opt/kitsune client" --config "/home/u/my configs/kitsune.yaml" gui --hidden`
 	if !strings.Contains(got, want) {
 		t.Fatalf("ExecStart did not pin and quote paths, want %q:\n%s", want, got)
 	}
@@ -41,7 +41,7 @@ func TestDesktopEntryShape(t *testing.T) {
 	for _, want := range []string{
 		"[Desktop Entry]",
 		"Type=Application",
-		"Exec=/usr/bin/kitsune-client run",
+		"Exec=/usr/bin/kitsune-client gui --hidden",
 		"Terminal=false",
 	} {
 		if !strings.Contains(got, want) {
@@ -57,7 +57,7 @@ func TestTaskXMLIsLogonInteractiveLeastPrivilege(t *testing.T) {
 		"<LogonType>InteractiveToken</LogonType>",
 		"<RunLevel>LeastPrivilege</RunLevel>",
 		"<Command>C:\\Users\\u\\kitsune-client.exe</Command>",
-		"<Arguments>run</Arguments>",
+		"<Arguments>gui --hidden</Arguments>",
 		"<RestartOnFailure>",
 		"<UserId>DOMAIN\\user</UserId>",
 	} {
@@ -94,11 +94,11 @@ func TestRunCommandQuotesOnlyWhenNeeded(t *testing.T) {
 		Binary: `C:\Program Files\kitsune-client.exe`,
 		Config: `C:\cfg\kitsune.yaml`,
 	})
-	if spaced != `"C:\Program Files\kitsune-client.exe" --config C:\cfg\kitsune.yaml run` {
+	if spaced != `"C:\Program Files\kitsune-client.exe" --config C:\cfg\kitsune.yaml gui --hidden` {
 		t.Fatalf("run command = %q", spaced)
 	}
 	plain := runCommand(Options{Binary: `C:\kw\kitsune-client.exe`})
-	if plain != `C:\kw\kitsune-client.exe run` {
+	if plain != `C:\kw\kitsune-client.exe gui --hidden` {
 		t.Fatalf("run command = %q", plain)
 	}
 }

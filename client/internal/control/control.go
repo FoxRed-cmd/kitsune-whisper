@@ -30,7 +30,8 @@ const (
 	responseOK = "ok"
 )
 
-// Command is an External-trigger command name.
+// Command is a control command name. Triggers drive the Dictation cycle;
+// Settings asks the desktop shell to show the Settings window.
 type Command string
 
 const (
@@ -42,38 +43,111 @@ const (
 	Stop Command = "stop"
 	// Cancel discards the in-progress utterance.
 	Cancel Command = "cancel"
+	// Settings asks the running desktop shell to show the Settings window.
+	Settings Command = "settings"
 )
 
-// ParseCommand maps a wire command to the Trigger it produces.
-func ParseCommand(s string) (cycle.Trigger, error) {
-	switch Command(strings.ToLower(strings.TrimSpace(s))) {
-	case Toggle:
-		return cycle.Toggle, nil
-	case Start:
-		return cycle.Start, nil
-	case Stop:
-		return cycle.Stop, nil
-	case Cancel:
-		return cycle.Cancel, nil
+// Parse validates a wire command.
+func Parse(s string) (Command, error) {
+	command := Command(strings.ToLower(strings.TrimSpace(s)))
+	switch command {
+	case Toggle, Start, Stop, Cancel, Settings:
+		return command, nil
 	default:
-		return 0, fmt.Errorf("unknown command %q", strings.TrimSpace(s))
+		return "", fmt.Errorf("unknown command %q", strings.TrimSpace(s))
 	}
+}
+
+// Trigger maps a trigger command to the cycle Trigger it produces. Settings is
+// not a trigger and reports false.
+func (c Command) Trigger() (cycle.Trigger, bool) {
+	switch c {
+	case Toggle:
+		return cycle.Toggle, true
+	case Start:
+		return cycle.Start, true
+	case Stop:
+		return cycle.Stop, true
+	case Cancel:
+		return cycle.Cancel, true
+	default:
+		return 0, false
+	}
+}
+
+// ParseCommand maps a wire command to the Trigger it produces. It rejects
+// commands that are not Dictation triggers, including Settings.
+func ParseCommand(s string) (cycle.Trigger, error) {
+	command, err := Parse(s)
+	if err != nil {
+		return 0, err
+	}
+	trigger, ok := command.Trigger()
+	if !ok {
+		return 0, fmt.Errorf("command %q is not a dictation trigger", command)
+	}
+	return trigger, nil
 }
 
 // Deliver receives a Trigger produced by a control command.
 type Deliver func(cycle.Trigger)
 
-// Server accepts control connections and delivers their triggers.
+// Handler executes one command, returning an error to answer the caller with
+// "error: ...". It lets a command reach the desktop shell as well as the
+// Dictation cycle.
+type Handler func(Command) error
+
+// Server accepts control connections and delivers their commands.
 type Server struct {
-	ln net.Listener
+	ln      net.Listener
+	handler Handler
+	deliver Deliver
 }
 
-// NewServer wraps an already-bound listener.
+// NewServer wraps an already-bound listener for trigger-only delivery.
 func NewServer(ln net.Listener) *Server { return &Server{ln: ln} }
 
+// NewCommandServer wraps an already-bound listener whose commands are handled
+// by handler.
+func NewCommandServer(ln net.Listener, handler Handler) *Server {
+	return &Server{ln: ln, handler: handler}
+}
+
 // Serve accepts connections until ctx is canceled or the listener is closed,
-// delivering each valid command. It returns nil on a clean shutdown.
+// delivering each valid trigger. It returns nil on a clean shutdown.
 func (s *Server) Serve(ctx context.Context, deliver Deliver) error {
+	s.deliver = deliver
+	return s.serve(ctx, s.handleTrigger)
+}
+
+// ServeCommands accepts connections and passes every valid command to the
+// server's Handler.
+func (s *Server) ServeCommands(ctx context.Context) error {
+	if s.handler == nil {
+		return fmt.Errorf("control: command handler is required")
+	}
+	return s.serve(ctx, s.handleCommand)
+}
+
+func (s *Server) handleTrigger(conn net.Conn, command Command) {
+	trigger, ok := command.Trigger()
+	if !ok {
+		_, _ = fmt.Fprintf(conn, "error: command %q is not a dictation trigger\n", command)
+		return
+	}
+	s.deliver(trigger)
+	_, _ = fmt.Fprintln(conn, responseOK)
+}
+
+func (s *Server) handleCommand(conn net.Conn, command Command) {
+	if err := s.handler(command); err != nil {
+		_, _ = fmt.Fprintf(conn, "error: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintln(conn, responseOK)
+}
+
+func (s *Server) serve(ctx context.Context, handle func(net.Conn, Command)) error {
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
@@ -92,11 +166,11 @@ func (s *Server) Serve(ctx context.Context, deliver Deliver) error {
 			}
 			return fmt.Errorf("accept control connection: %w", err)
 		}
-		s.handle(conn, deliver)
+		s.handle(conn, handle)
 	}
 }
 
-func (s *Server) handle(conn net.Conn, deliver Deliver) {
+func (s *Server) handle(conn net.Conn, handle func(net.Conn, Command)) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(ioTimeout))
 
@@ -104,13 +178,12 @@ func (s *Server) handle(conn net.Conn, deliver Deliver) {
 	if err != nil && line == "" {
 		return
 	}
-	trigger, err := ParseCommand(line)
+	command, err := Parse(line)
 	if err != nil {
 		_, _ = fmt.Fprintf(conn, "error: %v\n", err)
 		return
 	}
-	deliver(trigger)
-	_, _ = fmt.Fprintln(conn, responseOK)
+	handle(conn, command)
 }
 
 // Listen binds a control socket at path, replacing a stale socket left by a

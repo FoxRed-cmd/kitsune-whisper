@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import shlex
+import tomllib
 from pathlib import Path
 from typing import Any
 
 import yaml
+from kitsune_server import __version__
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_PATH = REPO_ROOT / "compose.yaml"
 DOCKERFILE_PATH = REPO_ROOT / "server" / "Dockerfile"
+PYPROJECT_PATH = REPO_ROOT / "server" / "pyproject.toml"
+INSTALL_DOC_PATH = REPO_ROOT / "docs" / "install.md"
+BUNDLE_DOC_PATH = REPO_ROOT / "docs" / "server-bundle.md"
 WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-server-image.yml"
 
 LLAMA_ALIAS = "llama"
@@ -70,16 +75,34 @@ def test_gpu_profile_uses_cuda_runtime_and_nvidia_devices() -> None:
     assert _nvidia_devices(gpu) == [{"driver": "nvidia", "count": "all", "capabilities": ["gpu"]}]
 
 
-def test_both_profiles_mount_config_and_persist_models() -> None:
+def test_both_profiles_mount_a_writable_config_directory_and_persist_state() -> None:
+    """The Admin API writes with ``os.replace`` inside the config's directory.
+
+    A single-file bind mount is a mount point on another filesystem, so the
+    rename fails even without ``read_only``. The directory is the unit of
+    persistence here, and state/models live on named volumes.
+    """
+
     compose = _compose()
     for profile in ("cpu", "gpu"):
         mounts = _service_for_profile(profile)["volumes"]
-        config = next(mount for mount in mounts if mount["target"] == "/config/kitsune.yaml")
+        config = next(
+            mount for mount in mounts if isinstance(mount, dict) and mount["target"] == "/config"
+        )
         assert config["type"] == "bind"
-        assert config["source"] == "./kitsune.yaml"
-        assert config["read_only"] is True
+        assert config["source"] == "./config"
+        assert "read_only" not in config
+        assert config["bind"]["create_host_path"] is False
         assert "kitsune-models:/models" in mounts
+        assert "kitsune-state:/state" in mounts
     assert "kitsune-models" in compose["volumes"]
+    assert "kitsune-state" in compose["volumes"]
+
+
+def test_the_compose_config_directory_is_kept_in_git_but_not_the_secret_config() -> None:
+    assert (REPO_ROOT / "config" / ".gitkeep").is_file()
+    ignored = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "/config/kitsune.yaml" in ignored
 
 
 def _nvidia_devices(service: Any) -> Any:
@@ -141,6 +164,36 @@ def test_server_services_point_processing_at_the_sidecar() -> None:
         assert env["KITSUNE_SERVER_PROCESSING__BASE_URL"] == f"http://{LLAMA_ALIAS}:{LLAMA_PORT}"
 
 
+def test_compose_passes_the_config_path_and_state_home_to_docker_exec() -> None:
+    """``docker exec`` inherits the container environment, not the image CMD."""
+
+    for profile in ("cpu", "gpu"):
+        service = _service_for_profile(profile)
+        env = service["environment"]
+        assert env["KITSUNE_CONFIG"] == "/config/kitsune.yaml"
+        assert env["XDG_STATE_HOME"] == "/state"
+        assert env["KITSUNE_SERVER_TLS__CERT_FILE"] == "/state/tls/server.crt"
+        assert env["KITSUNE_SERVER_TLS__KEY_FILE"] == "/state/tls/server.key"
+        assert env["KITSUNE_SERVER_DEVICES_FILE"] == "/state/devices.json"
+
+
+def test_server_profiles_publish_a_parameterised_host_port_and_restart_policy() -> None:
+    for profile in ("cpu", "gpu"):
+        service = _service_for_profile(profile)
+        assert service["restart"] == "unless-stopped"
+        assert service["ports"] == ["${KITSUNE_HOST_PORT:-8765}:8765"]
+
+
+def test_server_profiles_require_auth_by_default() -> None:
+    text = DOCKERFILE_PATH.read_text(encoding="utf-8").lower()
+    assert "allow_anonymous=true" not in text
+    for profile in ("cpu", "gpu"):
+        env = _service_for_profile(profile)["environment"]
+        assert "KITSUNE_SERVER_ALLOW_ANONYMOUS" not in env
+    example = (REPO_ROOT / "kitsune.example.yaml").read_text(encoding="utf-8")
+    assert "allow_anonymous: false" in example
+
+
 def test_dockerfile_is_single_stage_and_carries_no_toolchain() -> None:
     text = DOCKERFILE_PATH.read_text(encoding="utf-8")
     from_lines = [line for line in text.splitlines() if line.strip().upper().startswith("FROM ")]
@@ -148,6 +201,40 @@ def test_dockerfile_is_single_stage_and_carries_no_toolchain() -> None:
     lowered = text.lower()
     for tool in ("apt-get", "build-essential", "cmake", "gcc", "g++", "llama-cpp-python"):
         assert tool not in lowered
+
+
+def test_container_listens_on_the_spec_port_and_exposes_only_when_asked() -> None:
+    text = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "KITSUNE_SERVER_EXPOSE_TO_NETWORK=true" in text
+    assert "KITSUNE_SERVER_PORT=8765" in text
+    assert "EXPOSE 8765" in text
+    assert "python -m kitsune_server.healthcheck" in text
+    healthcheck = (REPO_ROOT / "server" / "kitsune_server" / "healthcheck.py").read_text(
+        encoding="utf-8"
+    )
+    assert "https://127.0.0.1:{port}/health" in healthcheck
+    assert "http://127.0.0.1:{port}/health" in healthcheck
+    for profile in ("cpu", "gpu"):
+        assert _service_for_profile(profile)["ports"] == ["${KITSUNE_HOST_PORT:-8765}:8765"]
+
+
+def test_dockerfile_pins_config_and_state_for_exec_and_recreation() -> None:
+    """``docker exec`` inherits env, not ``CMD``; state must survive recreate."""
+
+    text = DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "KITSUNE_CONFIG=/config/kitsune.yaml" in text
+    assert "XDG_STATE_HOME=/state" in text
+    assert "KITSUNE_SERVER_TLS__CERT_FILE=/state/tls/server.crt" in text
+    assert "KITSUNE_SERVER_TLS__KEY_FILE=/state/tls/server.key" in text
+    assert "KITSUNE_SERVER_DEVICES_FILE=/state/devices.json" in text
+
+    volume = next(line for line in text.splitlines() if line.strip().startswith("VOLUME"))
+    assert "/models" in volume
+    assert "/state" in volume
+
+    cmd = next(line for line in text.splitlines() if line.startswith("CMD "))
+    assert cmd.strip() == 'CMD ["start"]'
+    assert "--config" not in cmd
 
 
 def test_dockerfile_is_parameterized_for_both_bases() -> None:
@@ -174,6 +261,155 @@ def test_publish_workflow_pushes_both_profiles_to_ghcr() -> None:
         if str(step.get("uses", "")).startswith("docker/build-push-action")
     ]
     assert pushes and pushes[0]["with"]["push"] is True
+
+
+def test_server_package_version_and_cli_entry_point_stay_in_sync() -> None:
+    project = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))["project"]
+    assert project["version"] == __version__
+    assert project["scripts"]["kitsune-server"] == "kitsune_server.cli:main"
+
+
+def test_the_repository_version_file_matches_the_server_package() -> None:
+    """VERSION is the release tag source of truth; release CI enforces it."""
+    import re
+
+    version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
+    assert version == __version__
+
+
+def test_native_bundle_documentation_covers_build_and_uninstall() -> None:
+    text = BUNDLE_DOC_PATH.read_text(encoding="utf-8")
+    assert "kitsune-server bundle build" in text
+    assert "kitsune-server uninstall" in text
+    assert "without a system Python" in text
+    assert "server-bundle.md" in INSTALL_DOC_PATH.read_text(encoding="utf-8")
+
+
+def test_docker_remains_a_supported_server_deployment() -> None:
+    # ADR 0007 keeps the image for a dedicated host; the bundle does not
+    # replace it.
+    assert COMPOSE_PATH.is_file()
+    assert "FROM ${BASE_IMAGE}" in DOCKERFILE_PATH.read_text(encoding="utf-8")
+    assert "kitsune_server.healthcheck" in DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+
+def test_docs_cover_the_docker_dedicated_host_flow() -> None:
+    install = INSTALL_DOC_PATH.read_text(encoding="utf-8").lower()
+    for needle in (
+        "config/kitsune.yaml",
+        "docker exec",
+        "kitsune-server pair",
+        "soft-stop",
+        "docker compose down",
+        "down -v",
+        "certificate fingerprint",
+        "kitsune-state",
+        "kitsune_host_port",
+    ):
+        assert needle in install, needle
+
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8").lower()
+    assert "config/kitsune.yaml" in readme
+    assert "kitsune-state" in readme
+    assert "docker compose down -v" in readme
+
+    bundle = BUNDLE_DOC_PATH.read_text(encoding="utf-8").lower()
+    assert "docker" in bundle
+    assert "/state" in bundle
+
+    configuration = (REPO_ROOT / "docs" / "configuration.md").read_text(encoding="utf-8")
+    assert "/state" in configuration
+    assert "KITSUNE_CONFIG" in configuration
+
+
+def test_docker_smoke_harness_is_opt_in_and_covers_the_contract() -> None:
+    script = REPO_ROOT / "scripts" / "docker_smoke.py"
+    wrapper = REPO_ROOT / "scripts" / "docker-smoke.sh"
+    source = script.read_text(encoding="utf-8")
+    # Compile without importing: the harness must stay syntactically valid even
+    # on a host with no Docker and no Server dependencies.
+    compile(source, str(script), "exec")
+    for needle in (
+        "docker",
+        "exec",
+        "pair",
+        "/pair",
+        "/transcribe",
+        "/admin/models",
+        "/admin/config",
+        "/admin/restart",
+        "/admin/stop",
+        "--keep",
+    ):
+        assert needle in source, needle
+    assert "docker_smoke.py" in wrapper.read_text(encoding="utf-8")
+    assert (REPO_ROOT / "docs" / "verification" / "docker-smoke.md").is_file()
+
+    project = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+    assert project["tool"]["pytest"]["ini_options"]["testpaths"] == ["tests"]
+
+
+def test_docker_smoke_workflow_is_opt_in_and_not_in_default_ci() -> None:
+    workflow_path = REPO_ROOT / ".github" / "workflows" / "docker-smoke.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    # PyYAML reads the bare key `on` as boolean True.
+    triggers = workflow.get("on", workflow.get(True))
+    assert "workflow_dispatch" in triggers
+    assert "schedule" in triggers
+    assert "pull_request" not in triggers
+
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "docker-smoke" not in ci
+
+
+def test_e2e_trust_harness_covers_the_release_surface() -> None:
+    script = REPO_ROOT / "scripts" / "e2e_trust.py"
+    source = script.read_text(encoding="utf-8")
+    compile(source, str(script), "exec")
+    for needle in (
+        "/pair/local",
+        "/pair",
+        "/admin/devices",
+        "/admin/stop",
+        "/admin/start",
+        "/admin/restart",
+        "auto_pair",
+        "--spool-on-error",
+        '"spool", "retry"',
+        '"spool", "delete"',
+        "RESTART_EXIT_CODE",
+        "wait_restart",
+        "--report",
+    ):
+        assert needle in source, needle
+    for wrapper in ("e2e-trust.sh", "e2e-trust.ps1"):
+        assert (REPO_ROOT / "scripts" / wrapper).is_file(), wrapper
+    assert "e2e_trust.py" in (REPO_ROOT / "scripts" / "e2e-trust.sh").read_text(encoding="utf-8")
+
+
+def test_documentation_covers_install_release_and_troubleshooting() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    docs = {
+        "security.md": ("Pairing code", "Revoke", "expose on", "Threat model"),
+        "troubleshooting.md": ("Client log", "401", "Certificate changed", "Spool"),
+        "models.md": ("Model catalog", "idle_unload_seconds", "CUDA", "download"),
+        "release.md": ("v1.0.0", "checksums.txt", "verify-version", "manual"),
+        "verification/manual-matrix.md": (
+            "GNOME on Wayland",
+            "Windows 11",
+            "NVIDIA GPU",
+            "Parent spec #65",
+        ),
+    }
+    for name, needles in docs.items():
+        path = REPO_ROOT / "docs" / name
+        assert path.is_file(), name
+        text = path.read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{name}: {needle}"
+        if name != "verification/manual-matrix.md":
+            assert f"docs/{name}" in readme, name
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:

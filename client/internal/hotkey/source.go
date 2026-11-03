@@ -12,7 +12,7 @@ import (
 type Options struct {
 	// Hotkey is the toggle / hold-to-talk spec, e.g. "Ctrl+Shift+Space".
 	Hotkey string
-	// CancelHotkey is the cancel spec, e.g. "Esc".
+	// CancelHotkey is the cancel spec, e.g. "Ctrl+Shift+Q".
 	CancelHotkey string
 	// Mode selects toggle or hold-to-talk behavior for the main hotkey.
 	Mode Mode

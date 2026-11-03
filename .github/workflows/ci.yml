@@ -64,4 +64,67 @@ jobs:
             | sh -s -- -b "$(go env GOPATH)/bin" v2.14.0
 
       - run: golangci-lint run --config ../.golangci.yml
+      - run: golangci-lint run --config ../.golangci.yml --build-tags "desktop purego"
       - run: go test ./...
+
+      - name: Build the desktop shell (purego, no GTK dev headers)
+        run: go build -tags "desktop purego" ./...
+
+  packaging-windows:
+    name: packaging (windows setup)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Compile the setup from placeholder artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Set-Content -LiteralPath dist\kitsune-client.exe -Value 'placeholder'
+          Set-Content -LiteralPath dist\kitsune-server_windows_amd64.tar.gz -Value 'placeholder'
+          ./packaging/windows/build-installer.ps1 `
+            -Client dist\kitsune-client.exe `
+            -ServerArtifact dist\kitsune-server_windows_amd64.tar.gz `
+            -Version dev -Output dist
+
+      - name: Parse the PowerShell entry points
+        shell: pwsh
+        run: |
+          foreach ($path in @('install.ps1', 'packaging/windows/setup.ps1', 'packaging/windows/build-installer.ps1')) {
+            $errors = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $path), [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) {
+              $errors | Format-List Message, Extent | Out-String | Write-Error
+              exit 1
+            }
+          }
+
+  packaging:
+    name: packaging (deb, rpm, appimage)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Install rpmbuild and appimagetool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y rpm
+          sudo curl -fsSL -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          sudo chmod +x /usr/local/bin/appimagetool
+
+      - run: uv sync --frozen
+      - run: uv run pytest tests/test_installer.py

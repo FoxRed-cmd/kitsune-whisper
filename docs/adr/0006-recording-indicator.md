@@ -21,16 +21,19 @@ The indicator is therefore built **in-process** as a `cycle.Feedback` adapter:
   (`CreateWindowExW` + `UpdateLayeredWindow`), X11 (`xgb`, depth-32 visual,
   override-redirect, `XShape` input region), and Wayland (`zwlr_layer_shell_v1`
   + `wl_shm`, generated binding on top of `neurlang/wayland`).
-- The presenter is chosen at startup from the session: layer-shell when the
-  protocol is advertised, otherwise the X11 presenter when `DISPLAY` is set,
-  otherwise nothing. `client.feedback.indicator: auto|layer_shell|x11|off` pins
-  it. Failure to create the window logs one warning and degrades to the old
-  silent behaviour; it never stops dictation.
+- The presenter is chosen at startup from the host: the Win32 window on Windows,
+  otherwise layer-shell when Wayland advertises the protocol, otherwise the X11
+  presenter when `DISPLAY` is set, otherwise nothing. On Windows the host OS is
+  decisive over stray display environment variables.
+  `client.feedback.indicator: auto|layer_shell|x11|off` pins it (the two Unix
+  backends are Linux-only). Failure to create the window logs one warning and
+  degrades to the old silent behaviour; it never stops dictation.
 - GNOME on Wayland is served by the **X11 presenter over XWayland**: Mutter
   places and stacks override-redirect windows itself (overlay layer, above
   fullscreen), so no GNOME-specific component is needed.
-- The Windows presenter is deferred until the Client is exercised on Windows;
-  the package builds with an inert presenter there.
+- The Windows presenter was added once the Client was exercised on Windows
+  (#42): a layered popup with per-pixel alpha, Per-Monitor V2 DPI, foreground
+  monitor tracking, and click-through outside the stop button.
 
 ## Considered options
 
@@ -73,4 +76,4 @@ The indicator is therefore built **in-process** as a `cycle.Feedback` adapter:
   focus-follows-mouse setups can redirect focus on hover.
 - The indicator is silent; Earcons stay independent and off by default.
 
-Implementation is tracked in #41; the deferred Windows presenter is #42.
+Implementation is tracked in #41; the Windows presenter landed in #42.

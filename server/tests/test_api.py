@@ -7,6 +7,7 @@ import time
 import pytest
 from conftest import make_client, make_wav
 from fastapi import FastAPI
+from kitsune_server import __version__
 from kitsune_server.app import create_app
 from kitsune_server.config import DecodeConfig, ProcessingConfig, ServerConfig
 from kitsune_server.processor import (
@@ -21,11 +22,21 @@ def build(
     config: ServerConfig | None = None,
     transcriber: FakeTranscriber | None = None,
     processor: FakeTextProcessor | DisabledTextProcessor | None = None,
+    *,
+    cuda_device_count: int = 0,
 ) -> tuple[FastAPI, FakeTranscriber]:
     config = config or ServerConfig(workers=1)
     transcriber = transcriber or FakeTranscriber()
     processor = processor or FakeTextProcessor()
-    return create_app(config, transcriber, processor), transcriber
+    return (
+        create_app(
+            config,
+            transcriber,
+            processor,
+            cuda_device_count=cuda_device_count,
+        ),
+        transcriber,
+    )
 
 
 def audio_part(
@@ -37,25 +48,51 @@ def audio_part(
     return {"audio": ("clip.wav", make_wav(seconds, rate=rate, channels=channels), "audio/wav")}
 
 
-async def test_health_shape() -> None:
+async def test_health_reports_liveness_and_version_only() -> None:
     app, _ = build()
-    async with make_client(app) as client:
+    async with make_client(app, token="") as client:
         response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "model": "fake",
-        "device": "cpu",
-        "compute_type": "int8",
-        "ready": True,
-        "processing": {"enabled": True, "refine": True, "summarize": True},
-    }
+    assert response.json() == {"status": "ok", "version": __version__}
 
 
-async def test_health_reports_disabled_processing() -> None:
+async def test_status_shape() -> None:
+    app, _ = build()
+    async with make_client(app) as client:
+        response = await client.get("/status")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["version"] == __version__
+    assert body["model"] == "fake"
+    assert body["device"] == "cpu"
+    assert body["compute_type"] == "int8"
+    assert body["ready"] is True
+    assert body["processing"] == {"enabled": True, "refine": True, "summarize": True}
+    assert body["gpu"] == {"available": False, "device_count": 0, "device": "cpu"}
+    assert body["tls_fingerprint"] == ""
+    assert body["auth"] == {"anonymous": False, "device": "Test client"}
+
+
+async def test_status_reports_gpu_availability() -> None:
+    transcriber = FakeTranscriber(info=EngineInfo("fake", "cuda", "float16"))
+    app, _ = build(transcriber=transcriber, cuda_device_count=2)
+    async with make_client(app) as client:
+        response = await client.get("/status")
+    assert response.json()["gpu"] == {"available": True, "device_count": 2, "device": "cuda"}
+
+
+async def test_status_reports_cpu_when_cuda_is_forced_off() -> None:
+    app, _ = build(ServerConfig(workers=1, device="cpu"), cuda_device_count=1)
+    async with make_client(app) as client:
+        response = await client.get("/status")
+    assert response.json()["gpu"] == {"available": True, "device_count": 1, "device": "cpu"}
+
+
+async def test_status_reports_disabled_processing() -> None:
     app, _ = build(processor=DisabledTextProcessor())
     async with make_client(app) as client:
-        response = await client.get("/health")
+        response = await client.get("/status")
     assert response.json()["processing"] == {
         "enabled": False,
         "refine": False,
@@ -473,7 +510,12 @@ class BlockingTranscriber:
 
 async def test_503_when_at_capacity() -> None:
     transcriber = BlockingTranscriber()
-    app = create_app(ServerConfig(workers=1), transcriber, DisabledTextProcessor())
+    app = create_app(
+        ServerConfig(workers=1),
+        transcriber,
+        DisabledTextProcessor(),
+        cuda_device_count=0,
+    )
     async with make_client(app) as client:
         first = asyncio.create_task(client.post("/transcribe", files=audio_part()))
         for _ in range(500):

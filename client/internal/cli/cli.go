@@ -9,12 +9,14 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,16 +26,35 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/desktop"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/earcon"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/gnome"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/hotkey"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/inject"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/instance"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/localserver"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/mic"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/notify"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/paths"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/restart"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/session"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/browser"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell/wails"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/startup"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/update"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
+	"gopkg.in/yaml.v3"
 )
 
 // Version is the Client build version. Release builds override it with
@@ -44,11 +65,19 @@ var Version = "dev"
 // commands that take the curated global flags on either side of the name.
 var subcommands = map[string]bool{
 	"run":                 true,
+	"gui":                 true,
+	"settings":            true,
 	"toggle":              true,
+	"cancel":              true,
 	"transcribe-file":     true,
 	"record":              true,
+	"spool":               true,
 	"install-autostart":   true,
 	"uninstall-autostart": true,
+	"install-desktop":     true,
+	"uninstall-desktop":   true,
+	"migrate-config":      true,
+	"reset-local-pairing": true,
 }
 
 // Run parses args and executes, returning a process exit code.
@@ -60,6 +89,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	device := fs.String("device", "", "audio input device override")
 	verbose := fs.Bool("verbose", false, "shorthand for log_level=debug, also echoed to stderr")
 	seconds := fs.Float64("seconds", 5, "record: capture length in seconds")
+	spoolOnError := fs.Bool(
+		"spool-on-error", false, "transcribe-file: save the audio to the Spool when transcription fails",
+	)
+	hidden := fs.Bool("hidden", false, "gui: start in the Tray without a window")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 	fs.Usage = func() {
 		fmt.Fprint(stderr, usage())
@@ -82,6 +115,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "kitsune-client %s\n", Version)
 		return 0
 	}
+	if *hidden && (len(rest) == 0 || rest[0] != "gui") {
+		fmt.Fprintln(stderr, "--hidden is only valid with the gui command")
+		return 2
+	}
 	// Autostart registration does not need the rest of the config; pinning an
 	// explicit --config only affects the command line written into the unit or
 	// task.
@@ -90,6 +127,18 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(rest) > 0 && rest[0] == "uninstall-autostart" {
 		return runAutostart(rest[1:], *configPath, false, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "install-desktop" {
+		return runDesktop(rest[1:], true, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "uninstall-desktop" {
+		return runDesktop(rest[1:], false, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "migrate-config" {
+		return runMigrateConfig(*configPath, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "reset-local-pairing" {
+		return runResetLocalPairing(*configPath, stdout, stderr)
 	}
 
 	overrides := map[string]any{}
@@ -100,7 +149,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		overrides["log_level"] = "debug"
 	}
 
-	cfg, err := config.Load(config.LoadOptions{CLIConfig: *configPath, CLIOverrides: overrides})
+	cfg, err := config.Load(config.LoadOptions{
+		CLIConfig:    *configPath,
+		CLIOverrides: overrides,
+		OnWarning: func(message string) {
+			fmt.Fprintf(stderr, "config warning: %s\n", message)
+		},
+	})
 	if err != nil {
 		fmt.Fprintf(stderr, "config error: %v\n", err)
 		return 1
@@ -122,12 +177,32 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	switch rest[0] {
 	case "run":
 		return runClient(cfg, *verbose, stderr)
+	case "gui":
+		return runGUI(rest[1:], *hidden, cfg, *verbose, *configPath, overrides, stderr)
+	case "settings":
+		return runSettings(rest[1:], cfg, *verbose, stderr)
 	case "transcribe-file":
-		return runTranscribeFile(rest[1:], cfg, *verbose, stdout, stderr)
+		return runTranscribeFile(rest[1:], cfg, serveOptions{
+			verbose:    *verbose,
+			configPath: *configPath,
+			overrides:  overrides,
+		}, *spoolOnError, stdout, stderr)
 	case "record":
-		return runRecord(rest[1:], *seconds, cfg, *verbose, stdout, stderr)
+		return runRecord(rest[1:], *seconds, cfg, serveOptions{
+			verbose:    *verbose,
+			configPath: *configPath,
+			overrides:  overrides,
+		}, stdout, stderr)
+	case "spool":
+		return runSpool(rest[1:], cfg, serveOptions{
+			verbose:    *verbose,
+			configPath: *configPath,
+			overrides:  overrides,
+		}, stdout, stderr)
 	case "toggle":
 		return runToggle(rest[1:], cfg, *verbose, stderr)
+	case "cancel":
+		return runCancel(rest[1:], cfg, *verbose, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", rest[0])
 		fmt.Fprint(stderr, usage())
@@ -135,13 +210,21 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, stdout, stderr io.Writer) int {
+func runTranscribeFile(
+	args []string,
+	cfg config.ClientConfig,
+	so serveOptions,
+	spoolOnError bool,
+	stdout, stderr io.Writer,
+) int {
 	if len(args) != 1 {
 		fmt.Fprintln(stderr, "usage: kitsune-client transcribe-file <path.wav>")
 		return 2
 	}
-	logger := newLogger(cfg, verbose, stderr)
+	logger := newLogger(cfg, so.verbose, stderr)
 	defer func() { _ = logger.Close() }()
+	bootstrap := prepareTrust(context.Background(), cfg, so, logger)
+	cfg = bootstrap.cfg
 
 	data, err := os.ReadFile(args[0])
 	if err != nil {
@@ -161,10 +244,17 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, std
 	)
 	defer cancel()
 
-	client := newTranscriber(cfg, logger)
+	client := newTranscriber(cfg, logger, bootstrap.manager)
 	transcription, err := client.Transcribe(ctx, data)
 	if err != nil {
 		logger.Error("transcribe failed: %v", err)
+		if spoolOnError {
+			if saveErr := newSpool(cfg, logger).Save(
+				cycle.Utterance{Audio: data, Duration: utteranceDuration},
+			); saveErr != nil {
+				logger.Error("cannot spool %s: %v", args[0], saveErr)
+			}
+		}
 		return 1
 	}
 	logger.Debug("transcription: language=%s duration=%.2fs", transcription.Language, transcription.Duration)
@@ -175,13 +265,15 @@ func runTranscribeFile(args []string, cfg config.ClientConfig, verbose bool, std
 // runRecord captures one Utterance from the configured microphone through the
 // Dictation cycle and prints the Transcription. It is the manual counterpart to
 // transcribe-file: a way to exercise real capture without the hotkeys.
-func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose bool, stdout, stderr io.Writer) int {
+func runRecord(args []string, seconds float64, cfg config.ClientConfig, so serveOptions, stdout, stderr io.Writer) int {
 	if len(args) != 0 || seconds <= 0 {
 		fmt.Fprintln(stderr, "usage: kitsune-client record [--seconds N]")
 		return 2
 	}
-	logger := newLogger(cfg, verbose, stderr)
+	logger := newLogger(cfg, so.verbose, stderr)
 	defer func() { _ = logger.Close() }()
+	bootstrap := prepareTrust(context.Background(), cfg, so, logger)
+	cfg = bootstrap.cfg
 
 	recorder, err := newRecorder(cfg, logger)
 	if err != nil {
@@ -195,7 +287,7 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose 
 	var runErr error
 	core := cycle.New(cycle.Options{
 		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg, logger),
+		Transcriber: newTranscriber(cfg, logger, bootstrap.manager),
 		Injector:    out,
 		Feedback:    newFeedback(cfg, logger, feedback),
 		Spool:       newSpool(cfg, logger),
@@ -244,129 +336,470 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, verbose 
 	return 0
 }
 
-// runClient is the interactive Client: it grabs the global hotkeys and drives
-// the Dictation cycle, injecting each Transcription into the focused field via
-// the clipboard plus a synthetic paste.
+const spoolUsage = "usage: kitsune-client spool [list | retry <id> | delete <id>]"
+
+// runSpool lists, retries, or deletes utterances saved by failed dictations.
+// The Settings window uses the same Spool package; this is the headless path
+// that lets a script recover speech when no desktop shell is running.
+func runSpool(
+	args []string,
+	cfg config.ClientConfig,
+	so serveOptions,
+	stdout, stderr io.Writer,
+) int {
+	logger := newLogger(cfg, so.verbose, stderr)
+	defer func() { _ = logger.Close() }()
+	store := newSpool(cfg, logger)
+
+	switch {
+	case len(args) == 0 || (len(args) == 1 && args[0] == "list"):
+		entries, err := store.Entries()
+		if err != nil {
+			logger.Error("cannot list the Spool: %v", err)
+			return 1
+		}
+		for _, entry := range entries {
+			saved := time.Unix(int64(entry.SavedAt), 0).UTC().Format(time.RFC3339)
+			fmt.Fprintf(stdout, "%s\t%.3fs\t%s\n", entry.ID, entry.Duration, saved)
+		}
+		return 0
+	case len(args) == 2 && args[0] == "retry":
+		bootstrap := prepareTrust(context.Background(), cfg, so, logger)
+		utterance, err := store.Load(args[1])
+		if err != nil {
+			logger.Error("cannot load %s: %v", args[1], err)
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(
+			context.Background(),
+			cycle.SelectTimeout(
+				asDuration(bootstrap.cfg.TimeoutSeconds),
+				utterance.Duration,
+			),
+		)
+		defer cancel()
+		transcriber := newTranscriber(bootstrap.cfg, logger, bootstrap.manager)
+		transcription, err := transcriber.Transcribe(ctx, utterance.Audio)
+		if err != nil {
+			logger.Error("spool retry failed: %v", err)
+			return 1
+		}
+		fmt.Fprintln(stdout, transcription.Text)
+		return 0
+	case len(args) == 2 && args[0] == "delete":
+		if err := store.Delete(args[1]); err != nil {
+			logger.Error("cannot delete %s: %v", args[1], err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "deleted %s\n", args[1])
+		return 0
+	default:
+		fmt.Fprintln(stderr, spoolUsage)
+		return 2
+	}
+}
+
+// runClient starts the headless Client. It takes the single-instance lock so a
+// second Client cannot grab the same hotkeys and microphone; a duplicate `run`
+// exits quietly because the user already has a Client.
 func runClient(cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	lock, code := acquireLock(false, false, stderr)
+	if lock == nil {
+		return code
+	}
+	defer func() { _ = lock.Release() }()
+	return serve(cfg, serveOptions{verbose: verbose}, lock, stderr)
+}
+
+// runGUI starts the desktop shell: the Settings window plus the Tray. A second
+// visible launch forwards the settings command to the running Client, while a
+// second hidden launch (autostart) exits quietly. When the build has no
+// desktop adapter or the window/Tray cannot be created, the runtime keeps
+// dictating headlessly.
+func runGUI(args []string, hidden bool, cfg config.ClientConfig, verbose bool, configPath string, overrides map[string]any, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client gui [--hidden]")
+		return 2
+	}
+	lock, code := acquireLock(true, hidden, stderr)
+	if lock == nil {
+		return code
+	}
+	defer func() { _ = lock.Release() }()
+	return serve(cfg, serveOptions{
+		verbose:    verbose,
+		gui:        true,
+		hidden:     hidden,
+		configPath: configPath,
+		overrides:  overrides,
+	}, lock, stderr)
+}
+
+// runSettings asks the running desktop shell to show the Settings window.
+func runSettings(args []string, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client settings")
+		return 2
+	}
 	logger := newLogger(cfg, verbose, stderr)
 	defer func() { _ = logger.Close() }()
 
-	mode, err := hotkey.ParseMode(cfg.Trigger)
-	if err != nil {
-		logger.Error("hotkey: %v", err)
-		return 1
-	}
-	source, err := hotkey.New(hotkey.Options{
-		Hotkey:       cfg.Hotkey,
-		CancelHotkey: cfg.CancelHotkey,
-		Mode:         mode,
-		Backend:      cfg.HotkeyBackend,
-		AppID:        hotkey.DefaultAppID,
-		Retry:        hotkey.RetryPolicy{Initial: 250 * time.Millisecond, Max: 5 * time.Second},
-		OnRetry: func(attempt int, err error) {
-			logger.Warning("hotkey: registration attempt %d failed: %v", attempt, err)
-		},
-		OnLog: func(message string) { logger.Info("%s", message) },
-	})
-	if err != nil {
-		logger.Error("hotkey: %v", err)
-		return 1
-	}
-
-	recorder, err := newRecorder(cfg, logger)
-	if err != nil {
-		logger.Error("capture init failed: %v", err)
-		return 1
-	}
-	defer func() { _ = recorder.Close() }()
-
-	injector, err := inject.New(inject.Options{
-		Paste:            cfg.Paste,
-		PasteShortcut:    cfg.PasteShortcut,
-		ClipboardRestore: cfg.ClipboardRestore,
-		WaylandTool:      cfg.WaylandTool,
-		OnLog:            func(message string) { logger.Debug("inject: %s", message) },
-	})
-	if err != nil {
-		logger.Error("injection init failed: %v", err)
-		return 1
-	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	triggers := make(chan cycle.Trigger)
-	// The Recording indicator exists only for the interactive client; record
-	// and transcribe-file stay quiet.
-	indic := newIndicator(cfg, logger, recorder, triggers)
-	if indic != nil {
-		defer indic.Close()
-	}
-	extraFeedback := []cycle.Feedback{}
-	if indic != nil {
-		extraFeedback = append(extraFeedback, indic)
-	}
-
-	core := cycle.New(cycle.Options{
-		Recorder:    recorder,
-		Transcriber: newTranscriber(cfg, logger),
-		Injector:    injector,
-		Feedback:    newFeedback(cfg, logger, extraFeedback...),
-		Spool:       newSpool(cfg, logger),
-		OnError:     func(err error) { logger.Error("dictation failed: %v", err) },
-		Limits:      cycleLimits(cfg),
-	})
-
-	runDone := make(chan struct{})
-	go func() {
-		defer close(runDone)
-		_ = core.Run(ctx, triggers)
-	}()
-
-	controlDone := startControl(ctx, logger, triggers)
-
-	fmt.Fprintf(stderr, "kitsune-client: %s trigger on %s, cancel on %s\n", cfg.Trigger, cfg.Hotkey, cfg.CancelHotkey)
-	err = source.Run(ctx, triggers)
-	stop()
-	if controlDone != nil {
-		<-controlDone
-	}
-	close(triggers)
-	<-runDone
-	if err != nil {
-		logger.Error("hotkey: %v", err)
+	if err := requestSettings(); err != nil {
+		logger.Error("settings: %v", err)
 		return 1
 	}
 	return 0
 }
 
-// startControl runs the External trigger's local control socket, feeding
-// commands into triggers until ctx ends. It is best-effort: a failure to bind
-// only disables the external trigger. The returned channel closes once the
-// server has stopped, so callers can close triggers without a send race.
-func startControl(ctx context.Context, logger *logging.Logger, triggers chan<- cycle.Trigger) <-chan struct{} {
-	path := paths.ControlSocket()
-	listener, err := control.Listen(path)
-	if err != nil {
-		logger.Warning("external trigger disabled: %v", err)
-		return nil
-	}
-	logger.Info("external trigger: listening on %s", path)
+// requestSettings asks the running Client to show its Settings window.
+func requestSettings() error {
+	return control.Send(paths.ControlSocket(), string(control.Settings))
+}
 
-	deliver := func(trigger cycle.Trigger) {
-		select {
-		case triggers <- trigger:
-		case <-ctx.Done():
+// acquireLock takes the single-instance lock or forwards a duplicate launch.
+// It returns a nil lock with the process exit code when another Client already
+// owns the session.
+func acquireLock(gui, hidden bool, stderr io.Writer) (*instance.Lock, int) {
+	lock, err := instance.Acquire(paths.InstanceLock())
+	if err == nil {
+		return lock, 0
+	}
+	if !errors.Is(err, instance.ErrAlreadyRunning) {
+		fmt.Fprintf(stderr, "kitsune-client: %v\n", err)
+		return nil, 1
+	}
+	if gui && !hidden {
+		if err := requestSettings(); err != nil {
+			fmt.Fprintf(stderr, "kitsune-client: already running; Settings window unavailable: %v\n", err)
+			return nil, 1
+		}
+		return nil, 0
+	}
+	fmt.Fprintln(stderr, "kitsune-client: already running")
+	return nil, 0
+}
+
+// serveOptions are the launch parameters that stay out of the configuration.
+type serveOptions struct {
+	verbose bool
+	gui     bool
+	hidden  bool
+	// configPath is the explicit --config path, so the settings store reads and
+	// writes the same file the Client loaded.
+	configPath string
+	// overrides are the curated CLI flags, so the settings store reports them
+	// as locked fields.
+	overrides map[string]any
+}
+
+// trustBootstrap is the Client's trust state for one process: the effective
+// configuration (with a newly paired pin folded in), the token manager, and
+// the settings store the pin was written through.
+type trustBootstrap struct {
+	cfg     config.ClientConfig
+	manager *trust.Manager
+	tokens  *trust.TokenStore
+	store   *settings.Store
+}
+
+// prepareTrust opens the settings and token stores and auto-pairs the active
+// Local Server profile when it has no token. A Server that is down must not
+// stop the Client from starting: the failure is logged and the Tray reports
+// the Server as unreachable.
+func prepareTrust(
+	ctx context.Context,
+	cfg config.ClientConfig,
+	so serveOptions,
+	logger *logging.Logger,
+) trustBootstrap {
+	store, err := settings.Open(settings.Options{
+		Path:         so.configPath,
+		CLIOverrides: so.overrides,
+	})
+	if err != nil {
+		logger.Warning("settings unavailable: %v", err)
+		store = nil
+	}
+	var pins trust.PinWriter
+	if store != nil {
+		pins = fingerprintWriter(store)
+	}
+	tokens := trust.NewTokenStore(paths.TokenDir())
+	manager := trust.NewManager(tokens, pins, logger)
+	pairCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ensured, err := manager.Ensure(pairCtx, cfg)
+	if err != nil {
+		logger.Warning("%v", err)
+	}
+	return trustBootstrap{cfg: ensured, manager: manager, tokens: tokens, store: store}
+}
+
+// fingerprintWriter persists a paired certificate fingerprint in the Server
+// profile. The settings store remains the only writer of the "client:" section.
+func fingerprintWriter(store *settings.Store) trust.PinWriter {
+	return func(profileID, fingerprint string) error {
+		current := store.Snapshot().Config
+		for i := range current.Servers {
+			if current.Servers[i].ID == profileID {
+				current.Servers[i].Fingerprint = fingerprint
+			}
+		}
+		servers, err := profilePatch(current.Servers)
+		if err != nil {
+			return err
+		}
+		_, err = store.Save(map[string]any{"servers": servers})
+		return err
+	}
+}
+
+// profilePatch renders Server profiles through the config schema, so a new
+// profile field cannot be silently dropped by a settings save.
+func profilePatch(profiles []config.ServerProfile) ([]any, error) {
+	raw, err := yaml.Marshal(profiles)
+	if err != nil {
+		return nil, fmt.Errorf("encode Server profiles: %w", err)
+	}
+	var servers []any
+	if err := yaml.Unmarshal(raw, &servers); err != nil {
+		return nil, fmt.Errorf("encode Server profiles: %w", err)
+	}
+	return servers, nil
+}
+
+// serverCheck builds the advisory health probe the Tray and Settings poll when
+// the desktop build has no Servers service. It never changes routing and never
+// surfaces the token, and it never writes trust state: pairing happens once in
+// prepareTrust at startup. A Local Server that starts after the Client is
+// therefore reported offline until the Client restarts; the trade-off is that
+// a health probe cannot mint a token or change a profile behind the user's
+// back. The Servers service path uses CheckHealth instead.
+func serverCheck(
+	cfg config.ClientConfig,
+	manager *trust.Manager,
+	store *settings.Store,
+) func(context.Context) trust.Status {
+	var mu sync.Mutex
+	current := cfg
+	return func(ctx context.Context) trust.Status {
+		mu.Lock()
+		defer mu.Unlock()
+		if store != nil {
+			current = store.Snapshot().Config
+		}
+		profile, ok := current.ActiveProfile()
+		if !ok {
+			return trust.Status{State: trust.StateUnknown}
+		}
+		token, err := manager.Token(profile.ID)
+		if err != nil && !errors.Is(err, trust.ErrNoToken) {
+			token = ""
+		}
+		status := trust.CheckServer(ctx, profile, token, 3*time.Second)
+		return trust.ApplyVersion(status, Version)
+	}
+}
+
+// desktopPort picks the embedded Settings window when the build and host have
+// a desktop toolkit, and the loopback browser page otherwise. The fallback is
+// what lets a host that declined installer elevation keep its settings: the
+// Client still dictates, and Settings open in the browser on demand.
+func desktopPort(desktop shell.Desktop, logger *logging.Logger) shell.Desktop {
+	if desktop != nil {
+		return desktop
+	}
+	logger.Warning("GTK/WebKitGTK is unavailable; Settings open in the browser")
+	return browser.New(browser.Options{Logger: logger})
+}
+
+// newSpoolService builds the Spool screen's service. The directory is read per
+// operation, so a live spool_dir change is followed without a restart.
+func newSpoolService(
+	store *settings.Store,
+	cfg config.ClientConfig,
+	rt *runtime.Runtime,
+) *shell.SpoolService {
+	dir := func() string {
+		if store != nil {
+			return store.Snapshot().Config.SpoolDir
+		}
+		return cfg.SpoolDir
+	}
+	return shell.NewSpoolService(shell.SpoolOptions{Dir: dir, Runtime: rt})
+}
+
+// newNotifier builds the best-effort desktop notifier. A failure is logged
+// once and never retried.
+func newNotifier(logger *logging.Logger) *notify.Notifier {
+	return notify.New(notify.Options{
+		OnLog: func(message string) { logger.Debug("%s", message) },
+	})
+}
+
+// shellNotifier adapts the notification sender to the shell's port.
+type shellNotifier struct {
+	send *notify.Notifier
+}
+
+func (n shellNotifier) Notify(notification shell.Notification) {
+	n.send.Notify(notification.Title, notification.Body)
+}
+
+// serve builds the real adapters, starts the runtime, and either waits
+// headlessly or hands control to the desktop shell.
+func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr io.Writer) int {
+	logger := newLogger(cfg, so.verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	bootstrap := prepareTrust(ctx, cfg, so, logger)
+	cfg = bootstrap.cfg
+	adapters, err := buildAdapters(cfg, logger, bootstrap.manager)
+	if err != nil {
+		logger.Error("%v", err)
+		return 1
+	}
+
+	var sh *shell.Shell
+	opts := runtime.Options{
+		Config:      cfg,
+		Hotkey:      adapters.Hotkey,
+		Recorder:    adapters.Recorder,
+		Transcriber: adapters.Transcriber,
+		Injector:    adapters.Injector,
+		Spool:       adapters.Spool,
+		Feedback:    adapters.Feedback,
+		Indicator:   adapters.Indicator,
+		// A settings change rebuilds the adapters through the same factory the
+		// initial launch used, so hot changes never need a process restart.
+		Rebuild: func(next config.ClientConfig) (runtime.Adapters, error) {
+			return buildAdapters(next, logger, bootstrap.manager)
+		},
+		ControlPath: paths.ControlSocket(),
+		Logger:      logger,
+	}
+	if so.gui {
+		opts.OnSettings = func() error {
+			if sh == nil {
+				return errors.New("the Settings window is still starting")
+			}
+			return sh.ShowSettings()
+		}
+		// A microphone level test holds the capture device, and a Dictation
+		// trigger would fail to open it. Release the test before the trigger
+		// reaches the cycle; the shell is built before the runtime starts, and
+		// the hook only runs once triggers flow.
+		opts.PrepareTrigger = func() {
+			if sh != nil {
+				sh.PrepareTrigger()
+			}
 		}
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if err := control.NewServer(listener).Serve(ctx, deliver); err != nil {
-			logger.Warning("external trigger: %v", err)
+	rt := runtime.New(opts)
+
+	if so.gui {
+		var settingsService shell.Settings
+		if service := newSettingsService(bootstrap.store, rt, logger); service != nil {
+			settingsService = service
 		}
-	}()
-	return done
+		server, _ := cfg.ActiveProfile()
+		var serverService shell.Servers
+		var healthCheck func(context.Context) trust.Status
+		if bootstrap.store != nil {
+			serverService = servers.New(servers.Options{
+				Store:         bootstrap.store,
+				Tokens:        bootstrap.tokens,
+				LocalServer:   localserver.Default(),
+				ClientVersion: Version,
+			})
+		} else {
+			// Without a profile service the shell still probes the active
+			// Server for the status card.
+			healthCheck = serverCheck(cfg, bootstrap.manager, nil)
+		}
+		// The Setup wizard keeps its resumable progress in a sibling
+		// wizard.json, never in the shared configuration file.
+		var wizardService *wizard.Service
+		if bootstrap.store != nil {
+			statePath := paths.WizardState(bootstrap.store.Snapshot().Path)
+			stateStore := wizard.NewFileStore(statePath)
+			stateStore.OnLog = func(message string) { logger.Warning("wizard: %s", message) }
+			wizardService = wizard.Open(stateStore, wizard.Options{
+				OnLog: func(message string) { logger.Warning("wizard: %s", message) },
+			})
+		}
+		clientLogPath := cfg.LogFile
+		if clientLogPath == "" {
+			clientLogPath = paths.LogFile()
+		}
+		sh = shell.New(shell.Options{
+			Runtime:        rt,
+			Desktop:        desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
+			Settings:       settingsService,
+			Servers:        serverService,
+			Wizard:         wizardService,
+			Spool:          newSpoolService(bootstrap.store, cfg, rt),
+			Startup:        startup.Default(so.configPath),
+			GnomeShortcuts: newGnomeShortcuts(),
+			LogPath:        clientLogPath,
+			ApplyConfig:    rt.Apply,
+			Send:           rt.Trigger,
+			// The appearance screen previews the real pill on every edit.
+			PreviewIndicator: func(anchor string, offsetX, offsetY int) error {
+				return rt.PreviewIndicator(indicator.Placement{
+					Anchor:  indicator.ParseAnchor(anchor),
+					OffsetX: offsetX,
+					OffsetY: offsetY,
+				})
+			},
+			HideIndicatorPreview: rt.HideIndicatorPreview,
+			Version:              Version,
+			Profile:              server.Name,
+			CheckServer:          healthCheck,
+			Updater:              update.New(update.Options{Current: Version}),
+			Notifier:             shellNotifier{send: newNotifier(logger)},
+			Logger:               logger,
+		})
+	}
+
+	if err := rt.Start(ctx); err != nil {
+		if closer, ok := adapters.Recorder.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+		logger.Error("%v", err)
+		return 1
+	}
+
+	if sh != nil {
+		err := sh.Run(ctx, so.hidden)
+		// Restart must release the single-instance lock before the new process
+		// tries to acquire it.
+		if releaseErr := lock.Release(); releaseErr != nil {
+			logger.Warning("%v", releaseErr)
+		}
+		if errors.Is(err, shell.ErrRestart) {
+			if restartErr := restart.Exec(); restartErr != nil {
+				logger.Error("%v", restartErr)
+				return 1
+			}
+			return 0
+		}
+		if err != nil {
+			logger.Error("%v", err)
+			return 1
+		}
+		return 0
+	}
+
+	fmt.Fprintf(stderr, "kitsune-client: %s trigger on %s, cancel on %s\n", cfg.Trigger, cfg.Hotkey, cfg.CancelHotkey)
+	if err := rt.Wait(); err != nil {
+		logger.Error("hotkey: %v", err)
+		return 1
+	}
+	return 0
 }
 
 // runToggle sends one toggle command to a running Client over the control
@@ -381,6 +814,23 @@ func runToggle(args []string, cfg config.ClientConfig, verbose bool, stderr io.W
 
 	if err := control.Send(paths.ControlSocket(), string(control.Toggle)); err != nil {
 		logger.Error("toggle: %v", err)
+		return 1
+	}
+	return 0
+}
+
+// runCancel sends one cancel command to a running Client over the control
+// socket. A GNOME custom keybinding uses it to discard the current utterance.
+func runCancel(args []string, cfg config.ClientConfig, verbose bool, stderr io.Writer) int {
+	if len(args) != 0 {
+		fmt.Fprintln(stderr, "usage: kitsune-client cancel")
+		return 2
+	}
+	logger := newLogger(cfg, verbose, stderr)
+	defer func() { _ = logger.Close() }()
+
+	if err := control.Send(paths.ControlSocket(), string(control.Cancel)); err != nil {
+		logger.Error("cancel: %v", err)
 		return 1
 	}
 	return 0
@@ -430,6 +880,142 @@ func runAutostart(args []string, configPath string, install bool, stdout, stderr
 	return 0
 }
 
+// runDesktop writes or removes the Linux application-menu entry and its icon.
+// The binary knows its own absolute path and the XDG data root, so the install
+// scripts stay thin.
+func runDesktop(args []string, install bool, stdout, stderr io.Writer) int {
+	action := "uninstall"
+	if install {
+		action = "install"
+	}
+	if len(args) != 0 {
+		fmt.Fprintf(stderr, "usage: kitsune-client %s-desktop\n", action)
+		return 2
+	}
+
+	env := desktop.Default(func(format string, a ...any) {
+		fmt.Fprintf(stderr, format+"\n", a...)
+	})
+	if install {
+		exe, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(stderr, "desktop: locate executable: %v\n", err)
+			return 1
+		}
+		env.Binary = exe
+	}
+	var err error
+	if install {
+		err = desktop.Install(env)
+	} else {
+		err = desktop.Uninstall(env)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "desktop: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "desktop %sed\n", action)
+	return 0
+}
+
+// runMigrateConfig adds the keys introduced by the desktop release to an
+// existing kitsune.yaml. The installer calls it after keeping the user's file;
+// a hand-edited configuration gets the same treatment.
+func runMigrateConfig(configPath string, stdout, stderr io.Writer) int {
+	path, exists := config.Locate(config.LoadOptions{CLIConfig: configPath})
+	if !exists {
+		fmt.Fprintln(stdout, "no kitsune.yaml found; nothing to migrate")
+		return 0
+	}
+	migration, err := config.MigrateFile(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "config: %v\n", err)
+		return 1
+	}
+	for _, warning := range migration.Warnings {
+		fmt.Fprintf(stderr, "config warning: %s\n", warning)
+	}
+	if !migration.Written {
+		fmt.Fprintf(stdout, "configuration is current: %s\n", migration.Path)
+		return 0
+	}
+	fmt.Fprintf(
+		stdout,
+		"migrated %s: added %s (backup %s)\n",
+		migration.Path,
+		strings.Join(migration.Added, ", "),
+		migration.BackupPath,
+	)
+	return 0
+}
+
+// runResetLocalPairing forgets the Local Server profile's pinned certificate
+// and Device token. The uninstaller calls it when it deletes Server data, so a
+// reinstall accepts the new certificate and pairs again instead of reporting a
+// stale fingerprint. It is also useful after a manual state-directory removal.
+func runResetLocalPairing(configPath string, stdout, stderr io.Writer) int {
+	return resetLocalPairing(
+		configPath, trust.NewTokenStore(paths.TokenDir()), stdout, stderr,
+	)
+}
+
+func resetLocalPairing(
+	configPath string, tokens *trust.TokenStore, stdout, stderr io.Writer,
+) int {
+	store, err := settings.Open(settings.Options{Path: configPath})
+	if err != nil {
+		fmt.Fprintf(stderr, "settings: %v\n", err)
+		return 1
+	}
+	cfg := store.Snapshot().Config
+	profile, found := localServerProfile(cfg.Servers)
+	if !found {
+		fmt.Fprintln(stdout, "no Local Server profile; nothing to reset")
+		return 0
+	}
+	if err := tokens.Delete(profile.ID); err != nil {
+		// The keychain may be locked or unavailable. Clearing the pin is
+		// enough: the next pairing overwrites the token anyway.
+		fmt.Fprintf(stderr, "warning: could not delete the Device token: %v\n", err)
+	}
+	profiles := append([]config.ServerProfile(nil), cfg.Servers...)
+	for i := range profiles {
+		if profiles[i].ID == profile.ID {
+			profiles[i].Fingerprint = ""
+		}
+	}
+	servers, err := profilePatch(profiles)
+	if err != nil {
+		fmt.Fprintf(stderr, "config: %v\n", err)
+		return 1
+	}
+	if _, err := store.Save(map[string]any{"servers": servers}); err != nil {
+		fmt.Fprintf(stderr, "config: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(
+		stdout,
+		"reset pairing for %s; it will pair again the next time it is used\n",
+		profile.Name,
+	)
+	return 0
+}
+
+// localServerProfile finds the profile the Client auto-pairs over loopback.
+func localServerProfile(profiles []config.ServerProfile) (config.ServerProfile, bool) {
+	for _, profile := range profiles {
+		if profile.ID == config.LocalServerID {
+			return profile, true
+		}
+	}
+	for _, profile := range profiles {
+		if profile.AutoPair {
+			return profile, true
+		}
+	}
+	return config.ServerProfile{}, false
+}
+
 // stdoutInjector is the record command's Injector: print the Transcription.
 type stdoutInjector struct {
 	out io.Writer
@@ -453,17 +1039,121 @@ func (f *cycleFeedback) Cue(cue cycle.Cue) {
 	}
 }
 
+// buildAdapters builds every adapter the runtime owns from a configuration.
+// The initial launch and every live Apply use the same factory, so a hot
+// change rebuilds exactly what a restart would.
+func buildAdapters(cfg config.ClientConfig, logger *logging.Logger, manager *trust.Manager) (runtime.Adapters, error) {
+	mode, err := hotkey.ParseMode(cfg.Trigger)
+	if err != nil {
+		return runtime.Adapters{}, fmt.Errorf("hotkey: %w", err)
+	}
+	source, err := hotkey.New(hotkey.Options{
+		Hotkey:       cfg.Hotkey,
+		CancelHotkey: cfg.CancelHotkey,
+		Mode:         mode,
+		Backend:      cfg.HotkeyBackend,
+		AppID:        hotkey.DefaultAppID,
+		Retry:        hotkey.RetryPolicy{Initial: 250 * time.Millisecond, Max: 5 * time.Second},
+		OnRetry: func(attempt int, err error) {
+			logger.Warning("hotkey: registration attempt %d failed: %v", attempt, err)
+		},
+		OnLog: func(message string) { logger.Info("%s", message) },
+	})
+	if err != nil {
+		return runtime.Adapters{}, fmt.Errorf("hotkey: %w", err)
+	}
+
+	recorder, err := newRecorder(cfg, logger)
+	if err != nil {
+		return runtime.Adapters{}, fmt.Errorf("capture init failed: %w", err)
+	}
+
+	injector, err := inject.New(inject.Options{
+		Paste:            cfg.Paste,
+		PasteShortcut:    cfg.PasteShortcut,
+		ClipboardRestore: cfg.ClipboardRestore,
+		WaylandTool:      cfg.WaylandTool,
+		OnLog:            func(message string) { logger.Debug("inject: %s", message) },
+	})
+	if err != nil {
+		_ = recorder.Close()
+		return runtime.Adapters{}, fmt.Errorf("injection init failed: %w", err)
+	}
+
+	// Apply the new level only once every adapter exists, so a failed rebuild
+	// leaves the running Client's logging untouched, like its adapters.
+	if level, err := logging.ParseLevel(cfg.LogLevel); err == nil {
+		logger.SetLevel(level)
+	}
+
+	return runtime.Adapters{
+		Hotkey:      source,
+		Recorder:    recorder,
+		Transcriber: newTranscriber(cfg, logger, manager),
+		Injector:    injector,
+		Spool:       newSpool(cfg, logger),
+		Feedback:    newFeedback(cfg, logger),
+		// The Recording indicator exists only for the interactive client;
+		// record and transcribe-file stay quiet. The runtime owns its lifetime.
+		Indicator: func(send func(cycle.Trigger)) cycle.Feedback {
+			if ind := newIndicator(cfg, logger, recorder, send); ind != nil {
+				return ind
+			}
+			return nil
+		},
+	}, nil
+}
+
+// newSettingsService builds the Dictation settings service the Settings window
+// edits. A settings store that cannot be opened disables the screens but keeps
+// dictation running.
+// newGnomeShortcuts wires the GNOME custom-keybinding manager in a GNOME
+// Wayland session. Elsewhere there is no offer, and the session's native
+// backend stays in charge.
+func newGnomeShortcuts() shell.GnomeShortcuts {
+	if !gnome.SupportedCurrent() {
+		return nil
+	}
+	command, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	return gnome.New(gnome.Options{Command: command})
+}
+
+// newSettingsService builds the Dictation settings service.
+func newSettingsService(store *settings.Store, rt *runtime.Runtime, logger *logging.Logger) *dictation.Service {
+	if store == nil {
+		return nil
+	}
+	return dictation.New(dictation.Options{
+		Store:   store,
+		Runtime: rt,
+		Devices: func() ([]mic.Device, error) {
+			return mic.ListDevices(func(message string) { logger.Debug("audio: %s", message) })
+		},
+		Recorders: func(device string) (dictation.Recorder, error) {
+			return mic.New(mic.Options{
+				Device: device,
+				OnLog:  func(message string) { logger.Debug("audio: %s", message) },
+			})
+		},
+		OnLog: func(message string) { logger.Warning("settings: %s", message) },
+	})
+}
+
 // newIndicator builds the Recording indicator for the interactive run command.
 // It returns nil when the indicator is off, unavailable, or failed to start;
-// the Client then keeps dictating silently.
-func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic.Recorder, triggers chan<- cycle.Trigger) *indicator.Indicator {
+// the Client then keeps dictating silently. send feeds the indicator's stop
+// button into the Dictation cycle.
+func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic.Recorder, send func(cycle.Trigger)) *indicator.Indicator {
 	if cfg.Feedback.Indicator == "off" {
 		return nil
 	}
 	current := session.Current()
 	presenter, err := indicator.Open(
 		cfg.Feedback.Indicator,
-		indicator.Environment{LayerShell: current.Wayland, X11: current.X11},
+		indicator.PlatformEnvironment(current.Wayland, current.X11),
 		indicator.PlatformFactories(),
 	)
 	if err != nil {
@@ -478,15 +1168,22 @@ func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic
 		Presenter: presenter,
 		Level:     recorder,
 		Clock:     nil,
-		OnClick: func() {
-			select {
-			case triggers <- cycle.Stop:
-			default:
-			}
-		},
+		Placement: indicatorPlacement(cfg),
+		Theme:     theme.Detect(),
+		OnClick:   func() { send(cycle.Stop) },
 		OnLog:     func(message string) { logger.Debug("%s", message) },
 		OnWarning: func(message string) { logger.Warning("%s", message) },
 	})
+}
+
+// indicatorPlacement maps the configured anchor and pixel offsets onto the
+// renderer's placement.
+func indicatorPlacement(cfg config.ClientConfig) indicator.Placement {
+	return indicator.Placement{
+		Anchor:  indicator.ParseAnchor(cfg.Feedback.IndicatorAnchor),
+		OffsetX: cfg.Feedback.IndicatorOffsetX,
+		OffsetY: cfg.Feedback.IndicatorOffsetY,
+	}
 }
 
 // newLogger builds the Client logger from the configured log_level/log_file,
@@ -569,13 +1266,93 @@ func newRecorder(cfg config.ClientConfig, logger *logging.Logger) (*mic.Recorder
 	})
 }
 
-// newTranscriber builds the HTTP adapter for the configured Server. Warnings
-// from a successful response (a requested processing step that was skipped) are
-// routed to the Client log.
-func newTranscriber(cfg config.ClientConfig, logger *logging.Logger) transcribe.Transcriber {
-	client := transcribe.NewHTTP(cfg.ServerURL, cfg.Language, cfg.InitialPrompt, cfg.Refine, cfg.Summarize)
-	client.OnWarning = func(warning string) { logger.Warning("transcribe: %s", warning) }
-	return client
+// newTranscriber builds the adapter for the active Server profile. It resolves
+// the Device token and pinned fingerprint on every utterance, so a Local Server
+// that pairs after startup starts working without restarting the Client, and a
+// profile without trust fails that utterance with the actionable trust error.
+func newTranscriber(
+	cfg config.ClientConfig,
+	logger *logging.Logger,
+	manager *trust.Manager,
+) transcribe.Transcriber {
+	profile, _ := cfg.ActiveProfile()
+	return &profileTranscriber{
+		profile:       profile,
+		language:      cfg.Language,
+		initialPrompt: cfg.InitialPrompt,
+		manager:       manager,
+		logger:        logger,
+	}
+}
+
+// profileTranscriber builds at most one HTTP adapter per credential state and
+// rebuilds it when the token or the pinned fingerprint changes.
+type profileTranscriber struct {
+	profile       config.ServerProfile
+	language      string
+	initialPrompt string
+	manager       *trust.Manager
+	logger        *logging.Logger
+
+	mu          sync.Mutex
+	client      *transcribe.HTTP
+	buildErr    error
+	token       string
+	fingerprint string
+	built       bool
+}
+
+func (p *profileTranscriber) Transcribe(ctx context.Context, audio []byte) (transcribe.Transcription, error) {
+	client, err := p.http()
+	if err != nil {
+		return transcribe.Transcription{}, err
+	}
+	p.logger.Debug("transcribe: profile %q, language %q", p.profile.Name, p.language)
+	return client.Transcribe(ctx, audio)
+}
+
+func (p *profileTranscriber) http() (*transcribe.HTTP, error) {
+	token := ""
+	if p.manager != nil {
+		stored, err := p.manager.Token(p.profile.ID)
+		switch {
+		case err == nil:
+			token = stored
+		case errors.Is(err, trust.ErrNoToken):
+			// Reported by the request as an unauthenticated Server.
+		default:
+			p.logger.Warning("transcribe: %v", err)
+		}
+	}
+	fingerprint := p.profile.Fingerprint
+	if p.manager != nil {
+		if pin := p.manager.Pin(p.profile.ID); pin != "" {
+			fingerprint = pin
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.built && token == p.token && fingerprint == p.fingerprint {
+		return p.client, p.buildErr
+	}
+	p.built = true
+	p.token = token
+	p.fingerprint = fingerprint
+	p.client, p.buildErr = transcribe.NewHTTPWithTrust(
+		p.profile.URL,
+		fingerprint,
+		token,
+		p.language,
+		p.initialPrompt,
+	)
+	if p.buildErr != nil {
+		p.logger.Warning("transcribe: profile %q is not trusted yet: %v", p.profile.Name, p.buildErr)
+		return nil, p.buildErr
+	}
+	p.client.ClientVersion = Version
+	p.client.OnWarning = func(warning string) { p.logger.Warning("transcribe: %s", warning) }
+	return p.client, nil
 }
 
 // cycleLimits maps the configured seconds bounds into cycle limits.
@@ -596,17 +1373,27 @@ func usage() string {
 
 Commands:
   run                          run the hotkey-driven dictation client (default)
+  gui [--hidden]               run the desktop shell with the Settings window and Tray
+  settings                     ask the running Client to open the Settings window
   toggle                       trigger the running client via its control socket
+  cancel                       discard the current utterance over the control socket
   transcribe-file <path.wav>   transcribe a WAV file and print the text
   record                       capture from the microphone and print the text
+  spool [list|retry|delete]    list, retry, or delete failed utterances
   install-autostart            register the client to launch at login
   uninstall-autostart          remove the login registration
+  install-desktop              add the application-menu entry and icon
+  uninstall-desktop            remove the application-menu entry and icon
+  migrate-config               add new keys to an existing kitsune.yaml
+  reset-local-pairing          forget the Local Server pin and Device token
 
 Flags:
   --config PATH     path to kitsune.yaml
   --check-config    print the effective config and exit
   --device NAME     audio input device override
   --seconds N       record: capture length in seconds (default 5)
+  --spool-on-error  transcribe-file: save the audio to the Spool on failure
+  --hidden          gui: start in the Tray without a window
   --verbose         shorthand for log_level=debug, also echoed to stderr
   --version         print the version and exit
 `

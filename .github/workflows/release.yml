@@ -1,0 +1,469 @@
+name: Release
+
+# Builds every Linux and Windows artifact from native runners (the Client uses
+# cgo, so no cross-compilation) and attaches them with checksums to the GitHub
+# Release. The Linux set is the contract install.sh relies on:
+#   kitsune-client_linux_amd64.tar.gz          GTK4/WebKitGTK 6.0
+#   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1
+#   kitsune-server_linux_amd64.tar.gz          native Server bundle
+#   kitsune-wayland_linux_amd64.tar.gz         ydotool/ydotoold/wtype
+#   kitsune-whisper_*_amd64.deb                Debian/Ubuntu package
+#   kitsune-whisper-*-1.x86_64.rpm             Fedora/RHEL package
+#   kitsune-whisper-*-x86_64.AppImage          portable AppImage
+#
+# The Windows set is the contract install.ps1 and the setup rely on:
+#   kitsune-client_windows_amd64.zip           Client, Tray, Settings window
+#   kitsune-server_windows_amd64.tar.gz        native Server bundle
+#   kitsune-whisper_windows_amd64_setup.exe    per-user Inno Setup installer
+#
+# The publish job also attaches install.sh (the Linux updater's verified asset)
+# and install.ps1 (the pinned Windows bootstrap), with checksums.txt covering
+# the whole release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  verify-version:
+    name: verify the release version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check VERSION, the package, and the tag agree
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" != "v$version" ]]; then
+            echo "release tag $tag does not match VERSION v$version" >&2
+            exit 1
+          fi
+          if ! grep -q "^version = \"$version\"$" server/pyproject.toml; then
+            echo "server/pyproject.toml does not declare version $version" >&2
+            exit 1
+          fi
+          if ! grep -q "__version__ = \"$version\"" server/kitsune_server/__init__.py; then
+            echo "server/kitsune_server/__init__.py does not declare version $version" >&2
+            exit 1
+          fi
+          if ! grep -A1 '^name = "kitsune-server"$' server/uv.lock \
+            | grep -q "^version = \"$version\"$"; then
+            echo "server/uv.lock does not declare kitsune-server $version" >&2
+            exit 1
+          fi
+          echo "releasing $tag"
+
+  client-linux:
+    name: client linux (GTK4 + GTK3)
+    runs-on: ubuntu-24.04
+    needs: verify-version
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Ensure build deps
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev
+
+      - name: Build both Linux clients
+        run: |
+          set -euo pipefail
+          scripts/build-linux-artifacts.sh \
+            --no-server --no-wayland --no-deb --no-rpm --no-appimage \
+            --output dist --version "${GITHUB_REF_NAME:-dev}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-client
+          path: |
+            dist/kitsune-client_linux_amd64.tar.gz
+            dist/kitsune-client_linux_amd64-legacy.tar.gz
+          if-no-files-found: error
+
+  client-windows:
+    name: client windows
+    runs-on: windows-latest
+    needs: verify-version
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Ensure a C compiler
+        shell: pwsh
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            choco install mingw --no-progress -y
+          }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          ./packaging/windows/build-client.ps1 -Version $version -Output dist/kitsune-client.exe
+          Copy-Item kitsune.example.yaml dist/
+          Compress-Archive -Path dist/kitsune-client.exe, dist/kitsune.example.yaml `
+            -DestinationPath "kitsune-client_windows_amd64.zip" -Force
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-client
+          path: kitsune-client_windows_amd64.zip
+          if-no-files-found: error
+
+  server-bundle:
+    name: server bundle
+    runs-on: ubuntu-24.04
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Resolve a standalone 3.11 runtime and the Server environment
+        run: |
+          set -euo pipefail
+          uv python install 3.11
+          uv venv --python 3.11 .bundle-venv
+          uv pip install --python .bundle-venv/bin/python ./server
+          echo "KITSUNE_SERVER_RUNTIME=$(dirname "$(dirname "$(uv python find 3.11)")")" >> "$GITHUB_ENV"
+          echo "KITSUNE_SERVER_SITE_PACKAGES=$(ls -d .bundle-venv/lib/python3.11/site-packages)" >> "$GITHUB_ENV"
+          echo "KITSUNE_SERVER_PYTHON=.bundle-venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Build the bundle
+        run: |
+          set -euo pipefail
+          scripts/build-linux-artifacts.sh \
+            --no-client --no-wayland --no-deb --no-rpm --no-appimage \
+            --output dist --version "${GITHUB_REF_NAME:-dev}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-bundle
+          path: dist/kitsune-server_linux_amd64.tar.gz
+          if-no-files-found: error
+
+  server-bundle-windows:
+    name: server bundle windows
+    runs-on: windows-latest
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Resolve a standalone 3.11 runtime and the Server environment
+        shell: pwsh
+        run: |
+          uv python install 3.11
+          $python = (uv python find 3.11).Trim()
+          $runtime = Split-Path -Parent $python
+          if (-not (Test-Path -LiteralPath (Join-Path $runtime "pythonw.exe"))) {
+            throw "the standalone runtime has no pythonw.exe, so the Server cannot start hidden"
+          }
+          uv venv --python 3.11 .bundle-venv
+          uv pip install --python .bundle-venv\Scripts\python.exe ./server
+          $sitePackages = (Resolve-Path -LiteralPath .bundle-venv\Lib\site-packages).Path
+          "KITSUNE_SERVER_RUNTIME=$runtime" >> $env:GITHUB_ENV
+          "KITSUNE_SERVER_SITE_PACKAGES=$sitePackages" >> $env:GITHUB_ENV
+
+      - name: Build the bundle
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          & .bundle-venv\Scripts\python.exe -m kitsune_server bundle build `
+            --output dist/kitsune-server_windows_amd64.tar.gz `
+            --runtime $env:KITSUNE_SERVER_RUNTIME `
+            --site-packages $env:KITSUNE_SERVER_SITE_PACKAGES `
+            --platform windows --arch amd64 --version $version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: server-bundle-windows
+          path: dist/kitsune-server_windows_amd64.tar.gz
+          if-no-files-found: error
+
+  windows-installer:
+    name: windows installer
+    runs-on: windows-latest
+    needs: [verify-version, client-windows, server-bundle-windows]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle-windows
+          path: dist
+
+      - name: Install Inno Setup 6
+        shell: pwsh
+        run: choco install innosetup --no-progress -y
+
+      - name: Unpack the Client
+        shell: pwsh
+        run: Expand-Archive -LiteralPath dist\kitsune-client_windows_amd64.zip -DestinationPath dist -Force
+
+      - name: Build the per-user setup
+        shell: pwsh
+        run: |
+          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
+          ./packaging/windows/build-installer.ps1 `
+            -Client dist/kitsune-client.exe `
+            -ServerArtifact dist/kitsune-server_windows_amd64.tar.gz `
+            -Version $version -Output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist/kitsune-whisper_windows_amd64_setup.exe
+          if-no-files-found: error
+
+  wayland-tools:
+    name: wayland helpers
+    runs-on: ubuntu-24.04
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build ydotool and wtype
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake meson ninja-build pkg-config \
+            libwayland-dev libxkbcommon-dev wayland-protocols
+          scripts/build-wayland-tools.sh --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist/kitsune-wayland_linux_amd64.tar.gz
+          if-no-files-found: error
+
+  deb:
+    name: debian package
+    runs-on: ubuntu-24.04
+    needs: [verify-version, client-linux, server-bundle, wayland-tools]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist
+
+      - name: Build the GTK4 and legacy packages
+        run: |
+          set -euo pipefail
+          tar -xzf dist/kitsune-client_linux_amd64.tar.gz -C dist
+          mkdir -p dist/legacy
+          tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
+          packaging/deb/build-deb.sh \
+            --client dist/kitsune-client \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+          packaging/deb/build-deb.sh \
+            --client dist/legacy/kitsune-client --legacy \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: dist/kitsune-whisper*.deb
+          if-no-files-found: error
+
+  rpm:
+    name: fedora package
+    runs-on: ubuntu-24.04
+    needs: [verify-version, client-linux, server-bundle, wayland-tools]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install rpmbuild
+        run: sudo apt-get update && sudo apt-get install -y rpm
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist
+
+      - name: Build the GTK4 and legacy packages
+        run: |
+          set -euo pipefail
+          tar -xzf dist/kitsune-client_linux_amd64.tar.gz -C dist
+          mkdir -p dist/legacy
+          tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
+          packaging/rpm/build-rpm.sh \
+            --client dist/kitsune-client \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+          packaging/rpm/build-rpm.sh \
+            --client dist/legacy/kitsune-client --legacy \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fedora-package
+          path: dist/kitsune-whisper*.rpm
+          if-no-files-found: error
+
+  appimage:
+    name: appimage
+    runs-on: ubuntu-24.04
+    needs: [verify-version, client-linux, server-bundle, wayland-tools]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-client
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-bundle
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: wayland-tools
+          path: dist
+
+      - name: Fetch appimagetool
+        run: |
+          set -euo pipefail
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+      - name: Build the GTK4 and legacy AppImages
+        env:
+          APPIMAGETOOL: ${{ github.workspace }}/appimagetool
+        run: |
+          set -euo pipefail
+          tar -xzf dist/kitsune-client_linux_amd64.tar.gz -C dist
+          mkdir -p dist/legacy
+          tar -xzf dist/kitsune-client_linux_amd64-legacy.tar.gz -C dist/legacy
+          packaging/appimage/build-appimage.sh \
+            --client dist/kitsune-client \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+          packaging/appimage/build-appimage.sh \
+            --client dist/legacy/kitsune-client --legacy \
+            --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
+            --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
+            --version "${GITHUB_REF_NAME:-dev}" --output dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage
+          path: dist/kitsune-whisper*.AppImage
+          if-no-files-found: error
+
+  release:
+    name: publish
+    runs-on: ubuntu-24.04
+    needs:
+      - verify-version
+      - client-linux
+      - client-windows
+      - server-bundle
+      - server-bundle-windows
+      - windows-installer
+      - wayland-tools
+      - deb
+      - rpm
+      - appimage
+    steps:
+      # install.sh and install.ps1 are checked out, not downloaded artifacts.
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          set -euo pipefail
+          # install.sh is the Linux updater's verified asset; install.ps1 is
+          # the pinned Windows bootstrap. Both download the rest of this
+          # release themselves.
+          cp install.sh dist/install.sh
+          cp install.ps1 dist/install.ps1
+          cd dist
+          rm -f checksums.txt
+          sha256sum kitsune-* install.sh install.ps1 > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/kitsune-client_linux_amd64.tar.gz
+            dist/kitsune-client_linux_amd64-legacy.tar.gz
+            dist/kitsune-client_windows_amd64.zip
+            dist/kitsune-server_linux_amd64.tar.gz
+            dist/kitsune-server_windows_amd64.tar.gz
+            dist/kitsune-wayland_linux_amd64.tar.gz
+            dist/kitsune-whisper_windows_amd64_setup.exe
+            dist/kitsune-whisper*_amd64.deb
+            dist/kitsune-whisper*.rpm
+            dist/kitsune-whisper*.AppImage
+            dist/install.sh
+            dist/install.ps1
+            dist/checksums.txt

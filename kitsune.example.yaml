@@ -1,15 +1,24 @@
 # kitsune-whisper configuration template.
 #
-# Copy this file to `kitsune.yaml` and edit it. The Docker Server mounts it at
-# /config/kitsune.yaml, and the Client will read the same file. Each process
-# reads only its own section, and unknown keys are a startup error, so keep
-# typos out.
+# Copy this file to `kitsune.yaml` and edit it. For the Docker Server copy it
+# to `config/kitsune.yaml` instead: compose mounts the `config/` directory
+# read-write at `/config` and the image sets KITSUNE_CONFIG=/config/kitsune.yaml.
+# The Client will read the same file. Each process reads only its own section,
+# and unknown keys are a startup error, so keep typos out.
 
 server:
-  host: 0.0.0.0
-  port: 8000
+  # The Server binds loopback by default. Set expose_to_network: true to accept
+  # Devices from the LAN; it then binds 0.0.0.0 (needs a restart). On a native
+  # install use `kitsune-server expose on --yes`, or the Server settings API.
+  #
+  # Migration: an explicit host: 0.0.0.0 (the old way to expose the Server)
+  # still works and logs a warning; prefer expose_to_network: true.
+  expose_to_network: false
+  host: 127.0.0.1
+  port: 8765
   # Model size (tiny/base/small/medium/large-v3) or a local CTranslate2 path.
-  # GPU is recommended; on CPU use base/tiny for lower latency.
+  # This is the active model. GPU is recommended; on CPU use base/tiny for
+  # lower latency.
   model: small
   # auto resolves CUDA when available, else CPU (see docs/adr/0003).
   device: auto
@@ -17,11 +26,30 @@ server:
   # 0 lets the server size its worker pool from the resolved device.
   workers: 0
   # The Docker image overrides this with KITSUNE_SERVER_DOWNLOAD_ROOT=/models,
-  # which lives on a named volume that persists between runs.
+  # which lives on the kitsune-models volume that persists between runs.
   download_root: ~/.cache/kitsune-whisper/models
+  # Model catalog metadata: "" uses the catalog bundled with the Server.
+  catalog_file: ""
   offline: false
   max_audio_seconds: 300
   max_upload_mb: 30
+  # Unload the model after this many idle seconds; 0 keeps it resident.
+  idle_unload_seconds: 600
+  # TLS is on by default. The Server generates a self-signed certificate on
+  # first start, keeps it in the state directory, and logs its SHA-256
+  # fingerprint; the Client pins that fingerprint when it pairs. Set
+  # enabled: false only for an explicit insecure-HTTP setup.
+  # cert_file/key_file are optional overrides and must be set together.
+  tls:
+    enabled: true
+    cert_file: null
+    key_file: null
+  # Device tokens are required unless an operator opts into anonymous access.
+  # The Server stores only token hashes; revoking a Device takes effect at once.
+  allow_anonymous: false
+  # Paired Device records: "" uses devices.json in the OS state directory.
+  # In Docker the image pins this to /state/devices.json on kitsune-state.
+  devices_file: ""
   log_level: info
   decode:
     task: transcribe
@@ -58,17 +86,35 @@ server:
     stage_timeout_seconds: 30
 
 client:
-  # The Client addresses the Server here; the top-level server: section above
-  # is the Server process's own config and is not read by the Client.
-  server_url: http://localhost:8000
+  # Server profiles: each profile is a named Server address, the certificate
+  # fingerprint pinned during pairing, and an auto-pair marker. Exactly one
+  # profile is active; the Client sends every Utterance there and never fails
+  # over on its own. A fresh configuration has the Local Server profile below.
+  # The top-level server: section is the Server process's own config and is not
+  # read by the Client.
+  servers:
+    - id: local
+      name: Local Server
+      url: https://localhost:8765
+      # SHA-256 fingerprint of the Server certificate; "" until pairing pins it.
+      # The Client fills it in from the TLS handshake during auto-pairing.
+      fingerprint: ""
+      auto_pair: true
+  active_server: local
+  # Deprecated: an existing client.server_url is migrated into an active
+  # profile on load. client.refine and client.summarize are accepted for one
+  # release, ignored with a warning, and never sent.
   hotkey: Ctrl+Shift+Space
-  # auto | portal | x11. auto uses the GlobalShortcuts portal on Wayland when
-  # available (GNOME >=48 / KDE Plasma >=5.27) and the external trigger
-  # (kitsune-client toggle) otherwise; on an X11 session it uses the X11 global
-  # grab. Set x11 explicitly to force the XWayland grab on Wayland.
+  # auto | portal | x11 | external. auto uses the GlobalShortcuts portal on
+  # Wayland when available (GNOME >=48 / KDE Plasma >=5.27) and the external
+  # trigger (kitsune-client toggle) otherwise; on an X11 session it uses the X11
+  # global grab. Set x11 explicitly to force the XWayland grab on Wayland, or
+  # external to rely only on a compositor keybinding. Settings offers to add
+  # GNOME custom keybindings, which use external.
   hotkey_backend: auto
-  cancel_hotkey: Esc
-  # toggle (press to start, press again to stop) or hold (push-to-talk).
+  cancel_hotkey: Ctrl+Shift+Q
+  # toggle (press to start, press again to stop). Push-to-talk was removed;
+  # an old hold value loads as toggle.
   trigger: toggle
   max_recording_seconds: 300
   # Recordings shorter than this are discarded as accidental taps.
@@ -78,11 +124,6 @@ client:
   # Sent per request only when set to something other than "auto".
   language: auto
   initial_prompt: ""
-  # Ask the Server to post-process each utterance (needs server.processing
-  # enabled). Sent per request only when true. When both are set, Refine runs
-  # first, then Summarize.
-  refine: false
-  summarize: false
   audio:
     # "" = system default input.
     device: ""
@@ -107,9 +148,18 @@ client:
     # pill that follows the live Input level while recording. auto uses a
     # wlr-layer-shell overlay on Wayland (Hyprland, Sway, KDE Plasma), then the
     # X11 window when DISPLAY is set (including GNOME through XWayland), then
-    # disables the indicator. An explicitly pinned backend never falls back;
-    # if it is unavailable the Client logs one warning and keeps dictating.
+    # the native layered window on Windows. An explicitly pinned backend never
+    # falls back; if it is unavailable the Client logs one warning and keeps
+    # dictating.
     indicator: auto
+    # Where the pill appears: top-left | top-center | top-right |
+    # bottom-left | bottom-center | bottom-right. The Settings window previews
+    # the real pill while you adjust it.
+    indicator_anchor: top-center
+    # Nudge the pill from its preset, in logical pixels. Positive X moves
+    # right, positive Y moves down.
+    indicator_offset_x: 0
+    indicator_offset_y: 0
   # "" = default cache path (~/.cache/kitsune-whisper/spool).
   spool_dir: ""
   log_level: info

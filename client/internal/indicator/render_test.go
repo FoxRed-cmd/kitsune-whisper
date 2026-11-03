@@ -5,7 +5,29 @@ import (
 	"testing"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/indicator"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 )
+
+func TestRenderUsesTheSelectedTheme(t *testing.T) {
+	light := indicator.Render(indicator.Frame{
+		Phase: indicator.PhaseRecording,
+		Alpha: 1,
+		Scale: 1,
+		Theme: theme.Light,
+	})
+	dark := indicator.Render(indicator.Frame{
+		Phase: indicator.PhaseRecording,
+		Alpha: 1,
+		Scale: 1,
+		Theme: theme.Dark,
+	})
+	if got := light.RGBAAt(10, 44); got.R < 200 || got.G < 200 || got.B < 200 {
+		t.Fatalf("light pill background = %+v, want a light card colour", got)
+	}
+	if got := dark.RGBAAt(10, 44); got.R > 80 || got.G > 80 || got.B > 80 {
+		t.Fatalf("dark pill background = %+v, want a dark card colour", got)
+	}
+}
 
 func TestRenderCornersTransparentAndPillOpaque(t *testing.T) {
 	img := indicator.Render(indicator.Frame{
@@ -140,7 +162,7 @@ func countAccent(img *image.RGBA, x0 int) int {
 	for y := 20; y <= 52; y++ {
 		for x := x0; x <= 90; x++ {
 			pixel := img.RGBAAt(x, y)
-			if pixel.G > 100 && int(pixel.G) > int(pixel.R)+30 {
+			if pixel.B > 100 && int(pixel.B) > int(pixel.R)+30 {
 				count++
 			}
 		}
@@ -153,7 +175,8 @@ func countRed(img *image.RGBA, region image.Rectangle) int {
 	for y := region.Min.Y; y < region.Max.Y; y++ {
 		for x := region.Min.X; x < region.Max.X; x++ {
 			pixel := img.RGBAAt(x, y)
-			if pixel.R > 180 && pixel.G < 120 && pixel.B < 120 {
+			if pixel.R > 180 && pixel.G < 160 && pixel.B > 100 &&
+				int(pixel.R) > int(pixel.G)+60 {
 				count++
 			}
 		}

@@ -3,9 +3,21 @@ name: kitsune-whisper
 # CPU runs anywhere; GPU needs the NVIDIA driver plus nvidia-container-toolkit
 # (Linux) or GPU support in WSL2 (Windows). See the README for prerequisites.
 #
-#   cp kitsune.example.yaml kitsune.yaml
+#   cp kitsune.example.yaml config/kitsune.yaml
 #   docker compose --profile cpu up -d
 #   docker compose --profile gpu up -d
+#
+# The host port is 8765 unless `.env` sets KITSUNE_HOST_PORT. The container
+# always listens on 8765; the healthcheck reads the same port.
+#
+# State lives on named volumes so a recreated container keeps its identity:
+#   kitsune-models  /models  Whisper model dirs and the llama.cpp GGUF
+#   kitsune-state   /state   TLS cert/key, Device and pairing stores,
+#                            soft-stop lifecycle flag, and the Server log
+# The configuration is a writable *directory* bind mount: the Admin API saves
+# settings with an atomic rename inside /config, which a single-file mount
+# cannot do. `docker compose down` keeps the volumes; `down -v` deletes them
+# (and every paired Device, so each Client must pair again).
 #
 # Optional bundled local LLM (Refine/Summarize), no build step: start the
 # Server together with the matching sidecar. Targeting both services starts
@@ -17,7 +29,7 @@ name: kitsune-whisper
 # The sidecar serves the default Qwen3 GGUF into the shared models volume. Tune
 # it from a `.env` file next to this one: LLM_MODEL_REPO, LLM_MODEL_FILE,
 # LLM_GPU_LAYERS, LLM_OFFLINE. Server-side Refine/Summarize also needs
-# `server.processing.enabled: true` in kitsune.yaml.
+# `server.processing.enabled: true` in config/kitsune.yaml.
 
 x-nvidia-gpu: &nvidia-gpu
   resources:
@@ -30,20 +42,31 @@ x-nvidia-gpu: &nvidia-gpu
 x-server: &server
   restart: unless-stopped
   ports:
-    - "8000:8000"
+    - "${KITSUNE_HOST_PORT:-8765}:8765"
   environment:
+    # docker exec does not inherit CMD, so pin the file here as well: `pair`
+    # then reads exactly what the running Server reads.
+    KITSUNE_CONFIG: /config/kitsune.yaml
     # Point Refine/Summarize at the bundled sidecar. Harmless when the `llm`
     # profile is off: processing stays disabled until kitsune.yaml enables it.
     KITSUNE_SERVER_PROCESSING__BASE_URL: http://llama:8080
+    # Keep the self-signed TLS identity, the Device allow-list, the pairing
+    # codes, the soft-stop flag, and the log on a volume, so a recreated
+    # container keeps the fingerprint, the paired Devices, and the Server's
+    # deliberate stopped state.
+    KITSUNE_SERVER_TLS__CERT_FILE: /state/tls/server.crt
+    KITSUNE_SERVER_TLS__KEY_FILE: /state/tls/server.key
+    KITSUNE_SERVER_DEVICES_FILE: /state/devices.json
+    XDG_STATE_HOME: /state
   volumes:
     - type: bind
-      source: ./kitsune.yaml
-      target: /config/kitsune.yaml
-      read_only: true
+      source: ./config
+      target: /config
       bind:
         create_host_path: false
         selinux: z
     - kitsune-models:/models
+    - kitsune-state:/state
 
 x-llama: &llama
   restart: unless-stopped
@@ -109,3 +132,4 @@ services:
 
 volumes:
   kitsune-models:
+  kitsune-state:

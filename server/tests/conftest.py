@@ -23,6 +23,18 @@ def _isolate_user_config(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(_config, "user_config_dir", lambda env=None: tmp_path / "user-config")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_user_state(tmp_path, monkeypatch) -> None:
+    """Keep lifecycle and log paths out of the developer's real state dir.
+
+    A native Server this developer soft-stopped leaves a ``lifecycle.json`` in
+    ``~/.local/state/kitsune-whisper`` that would otherwise make model-loading
+    tests start stopped.
+    """
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "user-state"))
+
+
 def make_wav(seconds: float = 0.5, rate: int = 16000, channels: int = 1) -> bytes:
     """Build a small PCM WAV in memory (no PyAV needed to author it)."""
     frames = bytearray()
@@ -40,8 +52,29 @@ def make_wav(seconds: float = 0.5, rate: int = 16000, channels: int = 1) -> byte
     return buffer.getvalue()
 
 
-def make_client(app: FastAPI) -> httpx.AsyncClient:
+def make_client(
+    app: FastAPI,
+    token: str | None = None,
+    *,
+    peer: tuple[str, int] = ("127.0.0.1", 1234),
+) -> httpx.AsyncClient:
+    """Build an ASGI client.
+
+    Unless a token is given explicitly, the client authenticates with a fresh
+    Device so tests about transcription keep exercising the real auth path
+    without repeating pairing in every test. Pass ``token=""`` for an
+    unauthenticated request.
+    """
+    headers: dict[str, str] = {}
+    if token is None:
+        config = getattr(app.state, "config", None)
+        if config is None or not config.allow_anonymous:
+            _, issued = app.state.devices.create("Test client", peer[0])
+            token = issued
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
+        transport=httpx.ASGITransport(app=app, client=peer),
         base_url="http://kitsune.test",
+        headers=headers,
     )

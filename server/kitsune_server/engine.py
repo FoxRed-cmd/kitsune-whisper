@@ -12,6 +12,7 @@ name it in the failure message.
 
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import logging
 import os
@@ -20,10 +21,10 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-import ctranslate2
 from faster_whisper import WhisperModel
 
 from .config import DecodeConfig, ServerConfig
+from .gpu import detect_cuda_devices, resolve_engine
 from .transcriber import AudioClip, EngineInfo, Transcription, resolve_workers
 
 logger = logging.getLogger("kitsune.server")
@@ -36,28 +37,6 @@ CUDA_EXTRA_HINT = (
 
 class EngineLoadError(Exception):
     """Raised when the faster-whisper engine cannot be constructed."""
-
-
-def detect_cuda_devices() -> int:
-    """Number of CUDA devices CTranslate2 can see (0 when none/CPU-only)."""
-    try:
-        return int(ctranslate2.get_cuda_device_count())
-    except Exception:  # detection must never take the server down
-        logger.debug("CUDA device detection failed", exc_info=True)
-        return 0
-
-
-def resolve_engine(config: ServerConfig, *, cuda_device_count: int) -> EngineInfo:
-    """Resolve ``auto`` device/compute_type to concrete values (ADR 0003)."""
-    device = config.device
-    if device == "auto":
-        device = "cuda" if cuda_device_count > 0 else "cpu"
-
-    compute_type = config.compute_type
-    if compute_type == "auto":
-        compute_type = "float16" if device == "cuda" else "int8"
-
-    return EngineInfo(model=config.model, device=device, compute_type=compute_type)
 
 
 def _cuda_library_subdir() -> str:
@@ -88,6 +67,26 @@ def _cuda_library_dirs() -> list[Path]:
     return dirs
 
 
+def _preload_cuda_libraries(dirs: Iterable[Path]) -> None:
+    """Register nvidia-wheel sonames so a later ``dlopen`` finds them.
+
+    glibc fixes its library search path at process start, so updating
+    ``LD_LIBRARY_PATH`` at runtime does not affect ``dlopen``. Loading each
+    library by absolute path with ``RTLD_GLOBAL`` registers its soname in the
+    global namespace, which is what CTranslate2's ``dlopen("libcublas.so.12")``
+    resolves against.
+    """
+    for directory in dirs:
+        for name in ("libcublasLt.so.12", "libcublas.so.12", "libcudnn.so.9"):
+            candidate = directory / name
+            if not candidate.is_file():
+                continue
+            try:
+                ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                logger.debug("could not preload %s", candidate)
+
+
 def ensure_cuda_libraries(device: str) -> None:
     """Make pip-installed NVIDIA runtime libraries loadable on ``device=cuda``."""
     if device != "cuda":
@@ -109,6 +108,7 @@ def ensure_cuda_libraries(device: str) -> None:
         prefix = os.pathsep.join(str(directory) for directory in dirs)
         existing = os.environ.get("LD_LIBRARY_PATH", "")
         os.environ["LD_LIBRARY_PATH"] = f"{prefix}{os.pathsep}{existing}" if existing else prefix
+        _preload_cuda_libraries(dirs)
 
 
 def _load_error(
@@ -160,9 +160,22 @@ class WhisperTranscriber:
         if config.offline:
             os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
+        # The Model catalog downloads into ``download_root/<name>``; prefer that
+        # directory over the Hugging Face cache so a model downloaded through the
+        # UI is used after a Server restart.
+        model_ref = config.model
+        local_model = Path(download_root) / config.model
+        if (
+            "/" not in config.model
+            and "\\" not in config.model
+            and (local_model / "model.bin").is_file()
+            and (local_model / "config.json").is_file()
+        ):
+            model_ref = str(local_model)
+
         try:
             model = model_factory(
-                config.model,
+                model_ref,
                 device=info.device,
                 compute_type=info.compute_type,
                 download_root=download_root,

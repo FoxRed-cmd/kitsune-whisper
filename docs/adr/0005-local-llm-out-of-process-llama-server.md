@@ -15,4 +15,4 @@ ADR 0004 loaded the Refine/Summarize LLM **in-process** via `llama-cpp-python`. 
 - The bundled sidecar lives behind the opt-in `llm` compose profile (`docker compose up -d server-cpu llama-cpu`, or `server-gpu llama-gpu`) on the official pure llama.cpp images; model repo/file, `-ngl` offload, and offline are sidecar flags, not Server config.
 - Qwen3's thinking mode is disabled by the sidecar's own flags (e.g. `--reasoning off`), so the Server sends no llama-specific fields and stays portable across providers.
 - The "never leaves the machine/LAN" guarantee (#27) is dropped: with an external `base_url` the text leaves the host. The default remains a local sidecar; privacy is the operator's choice via `base_url`.
-- Processing still degrades to the previous stage's text on any failure and never produces a `5xx`; `GET /health` reports `processing.enabled` from config only.
+- Processing still degrades to the previous stage's text on any failure and never produces a `5xx`; the authenticated `GET /status` reports `processing.enabled` from config only.

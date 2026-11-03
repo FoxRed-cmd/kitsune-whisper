@@ -2,10 +2,13 @@
 
 package indicator
 
-// PlatformFactories returns inert presenters on Windows: the native Win32
-// layered-window presenter is deferred (#42), so the Client keeps dictating
-// silently.
+// PlatformFactories returns the presenters available on Windows.
 func PlatformFactories() Factories {
-	unsupported := func() (Presenter, error) { return nil, ErrUnsupported }
-	return Factories{LayerShell: unsupported, X11: unsupported}
+	return Factories{Windows: NewWin32}
+}
+
+// PlatformEnvironment reports the host desktop. Windows is decisive: display
+// environment variables from a bundled X or Wayland server stay ignored.
+func PlatformEnvironment(_, _ bool) Environment {
+	return Environment{Windows: true}
 }

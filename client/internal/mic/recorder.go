@@ -46,6 +46,7 @@ type Options struct {
 type Recorder struct {
 	backend  Backend
 	selector string
+	onLog    func(string)
 
 	mu     sync.Mutex
 	stream Stream
@@ -74,7 +75,7 @@ func New(opts Options) (*Recorder, error) {
 		}
 		backend = native
 	}
-	return &Recorder{backend: backend, selector: opts.Device}, nil
+	return &Recorder{backend: backend, selector: opts.Device, onLog: opts.OnLog}, nil
 }
 
 // Close releases the audio backend, cancelling any in-progress capture.
@@ -102,6 +103,9 @@ func (r *Recorder) Start() error {
 	chosen, err := SelectDevice(r.selector, devices)
 	if err != nil {
 		return err
+	}
+	if r.onLog != nil {
+		r.onLog(fmt.Sprintf("capture: chose %q (index %d) from %s", chosen.Name, chosen.Index, deviceNames(devices)))
 	}
 	stream, err := r.backend.Open(chosen.Index, r.append)
 	if err != nil {

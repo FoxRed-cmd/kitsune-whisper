@@ -8,27 +8,69 @@ load no model.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
+import ipaddress
 import logging
 import threading
-from collections.abc import Callable, Mapping
+import time
+from collections import deque
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated, Any
 
 import anyio.to_thread
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from . import __version__
 from .audio import AudioDecodeError, decode_audio
-from .config import ServerConfig, format_errors
+from .config import ConfigError, ServerConfig, format_errors
+from .gpu import detect_cuda_devices, gpu_status
 from .languages import normalize_language
+from .lifecycle import Lifecycle
+from .models import ModelError, ModelManager, ModelStoppedError
+from .pairing import (
+    ExpiredPairingCodeError,
+    PairingCodeStore,
+    PairingRateLimitedError,
+    ReusedPairingCodeError,
+    WrongPairingCodeError,
+)
 from .processor import ProcessingError, TextProcessor
+from .redact import redact_config, redact_value, strip_redacted
+from .runtime import ModelRuntime, build_runtime
+from .store import (
+    GUARDED_CONFIG_FIELDS,
+    GUARDED_CONFIG_MESSAGES,
+    ConfigStore,
+)
 from .transcriber import Transcriber, resolve_workers
+from .trust import Certificate, DeviceStore
+from .trust import Device as TrustedDevice
 
 logger = logging.getLogger("kitsune.server")
+
+# Fields this Server can apply to the running process without a restart. A
+# model change goes through /admin/models/activate (#76); idle unload is applied
+# through the model manager when one is present. Everything else is reported as
+# restart-required so the UI never promises a live change that did not happen.
+_APPLIED_HOT_FIELDS = frozenset(
+    {
+        "server.log_level",
+        "server.max_audio_seconds",
+        "server.max_upload_mb",
+        "server.decode.language",
+        "server.decode.initial_prompt",
+    }
+)
+
+MAX_LOG_TAIL = 1000
 
 
 class ApiError(Exception):
@@ -88,20 +130,216 @@ class _StageOutcome:
     warning: str | None
 
 
+class LocalPairRequest(BaseModel):
+    """The body of the loopback auto-pair request."""
+
+    name: str = Field(default="Local client", min_length=1, max_length=128)
+
+
+class RemotePairRequest(BaseModel):
+    """The body of the one-time Pairing code exchange."""
+
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(default="Device", min_length=1, max_length=128)
+
+
+class ExposureRequest(BaseModel):
+    """The body of the LAN exposure switch."""
+
+    expose: bool
+    confirm: bool = False
+
+
+class DownloadRequest(BaseModel):
+    """The model to download or cancel."""
+
+    model: str = Field(min_length=1, max_length=128)
+
+
+class ActivateRequest(BaseModel):
+    """One activation target: a catalog model or a local CTranslate2 directory."""
+
+    model: str | None = Field(default=None, min_length=1, max_length=512)
+    path: str | None = Field(default=None, min_length=1, max_length=4096)
+
+    @model_validator(mode="after")
+    def _exactly_one_target(self) -> ActivateRequest:
+        if bool(self.model) == bool(self.path):
+            raise ValueError("send either a catalog model name or a local model directory")
+        return self
+
+
+class IdleUnloadRequest(BaseModel):
+    """Idle unload in seconds; ``0`` disables unloading."""
+
+    seconds: int = Field(ge=0)
+
+
+class ConfigPatchRequest(BaseModel):
+    """A partial ``server:``-shaped patch validated like startup."""
+
+    patch: dict[str, Any] = Field(default_factory=dict)
+
+
+def is_loopback_address(host: str | None) -> bool:
+    """Return True when the HTTP peer is on the loopback interface."""
+    if not host:
+        return False
+    candidate = host.strip()
+    # An IPv4-mapped IPv6 peer (::ffff:127.0.0.1) is still loopback.
+    if candidate.lower().startswith("::ffff:"):
+        candidate = candidate[7:]
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
+def _config_payload(store: ConfigStore) -> dict[str, Any]:
+    """The editable configuration with secrets masked and per-field metadata."""
+    config = store.effective()
+    document, redacted = redact_config(config)
+    fields: dict[str, Any] = {}
+    for path, state in store.states().items():
+        locked = state.locked
+        reason = state.reason
+        name = path.removeprefix("server.")
+        if name in GUARDED_CONFIG_FIELDS:
+            # The Settings form must not offer these two as ordinary text
+            # inputs: writing them through PATCH is refused as well. Keep a
+            # more specific environment/CLI reason when one already applies.
+            locked = True
+            if reason is None:
+                reason = GUARDED_CONFIG_MESSAGES[name]
+        fields[path] = {
+            "value": redact_value(path, state.value),
+            "source": state.source,
+            "locked": locked,
+            "reason": reason,
+            "mode": state.mode,
+        }
+    return {
+        "path": str(store.target_path),
+        "config": document,
+        "redacted": redacted,
+        "fields": fields,
+    }
+
+
+def _tail_lines(path: Path, limit: int) -> tuple[list[str], bool]:
+    """Read the last ``limit`` lines, reporting whether older lines exist."""
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        lines = deque((line.rstrip("\r\n") for line in handle), maxlen=limit + 1)
+    truncated = len(lines) > limit
+    if truncated:
+        lines.popleft()
+    return list(lines), truncated
+
+
+def _guarded_config_field(patch: Mapping[str, Any]) -> str | None:
+    """The first security-sensitive field a generic config patch tries to change.
+
+    LAN exposure and anonymous access are deliberately not ordinary settings:
+    they bypass the Device token boundary (ADR 0008), so they have a dedicated
+    route with its own confirmation. A generic PATCH must refuse them instead
+    of silently writing a weaker security posture.
+    """
+    for name in GUARDED_CONFIG_FIELDS:
+        if name in patch:
+            return name
+        nested = patch.get("server")
+        if isinstance(nested, Mapping) and name in nested:
+            return name
+    return None
+
+
+def _apply_hot_config(
+    current: ServerConfig, updated: ServerConfig, paths: list[str]
+) -> ServerConfig:
+    """Copy only the fields the running Server applies; leave the rest alone.
+
+    ``authenticate`` and the listener read ``app.state.config``, so assigning
+    the whole patched config would silently apply restart-required values
+    (for example ``allow_anonymous``). The running view keeps the old values
+    until an actual restart.
+    """
+    applied = current.model_copy(deep=True)
+    decode_updates: dict[str, Any] = {}
+    for path in paths:
+        if path == "server.log_level":
+            applied.log_level = updated.log_level
+        elif path == "server.max_audio_seconds":
+            applied.max_audio_seconds = updated.max_audio_seconds
+        elif path == "server.max_upload_mb":
+            applied.max_upload_mb = updated.max_upload_mb
+        elif path.startswith("server.decode."):
+            field = path.removeprefix("server.decode.")
+            decode_updates[field] = getattr(updated.decode, field)
+    if decode_updates:
+        applied.decode = updated.decode.model_copy(update=decode_updates)
+    return applied
+
+
 def create_app(
     config: ServerConfig,
-    transcriber: Transcriber,
+    transcriber: Transcriber | None,
     processor: TextProcessor,
+    *,
+    cuda_device_count: int | None = None,
+    devices: DeviceStore | None = None,
+    certificate: Certificate | None = None,
+    pairing_codes: PairingCodeStore | None = None,
+    config_store: ConfigStore | None = None,
+    models: ModelManager | None = None,
+    lifecycle: Lifecycle | None = None,
+    log_file: Path | None = None,
+    restart: Callable[[], None] | None = None,
+    shutdown: Callable[[], None] | None = None,
+    version: str = __version__,
 ) -> FastAPI:
-    """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``."""
+    """Build the ASGI app around a config, a ``Transcriber`` and a ``TextProcessor``.
+
+    ``cuda_device_count`` is the GPU detector's result. Production passes the
+    detected count; tests pass a fake so the API seam never probes CUDA.
+    ``devices`` is the Device store; ``None`` keeps an in-memory store for
+    tests and throwaway Servers. ``certificate`` supplies the fingerprint the
+    Client pins; it is absent when TLS is explicitly disabled.
+    ``pairing_codes`` holds the one-time Pairing codes; ``config_store`` is the
+    only writer of the Server YAML and backs the LAN exposure switch.
+
+    ``models`` is the one model owner when present: it supplies the loaded
+    Transcriber, the soft-stop flag, and the state every endpoint reports. The
+    positional ``transcriber`` may then be ``None``; production passes ``None``
+    while soft-stopped. Without ``models``, the fixed ``transcriber`` is wrapped
+    in :class:`FixedModelRuntime`, which keeps existing transcription tests
+    working; ``lifecycle`` optionally supplies that adapter's persisted flag.
+    ``log_file`` backs ``GET /admin/logs`` and ``restart`` is the supervised
+    self-exit action (tests inject a recorder, production exits with the restart
+    code). ``shutdown`` is the Local Server's hard stop: it exits without a
+    supervisor restart after clearing a persisted soft-stop.
+    """
     app = FastAPI(title="kitsune-whisper server", docs_url=None, redoc_url=None)
+    runtime: ModelRuntime = build_runtime(config, transcriber, models=models, soft_stop=lifecycle)
     app.state.config = config
-    app.state.transcriber = transcriber
     app.state.processor = processor
+    app.state.devices = devices if devices is not None else DeviceStore()
+    app.state.pairing_codes = pairing_codes if pairing_codes is not None else PairingCodeStore()
+    app.state.config_store = config_store
+    app.state.models = models
+    app.state.runtime = runtime
+    app.state.certificate = certificate
+    app.state.version = version
+    app.state.log_file = Path(log_file).expanduser() if log_file is not None else None
+    app.state.restart = restart
+    app.state.shutdown = shutdown
+    app.state.lifecycle = lifecycle
+    if cuda_device_count is None:
+        cuda_device_count = detect_cuda_devices()
+    app.state.cuda_device_count = cuda_device_count
     app.state.ready = True
-    app.state.semaphore = threading.Semaphore(
-        resolve_workers(config.workers, transcriber.info.device)
-    )
+    workers = resolve_workers(config.workers, runtime.info().device)
+    app.state.semaphore = threading.Semaphore(workers)
+    app.state.workers = workers
 
     @app.exception_handler(ApiError)
     async def _handle_api_error(_request: Any, exc: ApiError) -> JSONResponse:
@@ -160,24 +398,602 @@ def create_app(
             return _StageOutcome(text, False, f"{name} produced no usable text")
         return _StageOutcome(output, True, None)
 
+    async def authenticate(request: Request) -> TrustedDevice | None:
+        """Require a valid Device token unless the operator opted out.
+
+        The failure message never says whether a token is unknown or revoked:
+        the store cannot tell them apart, and neither should the response.
+        """
+        if app.state.config.allow_anonymous:
+            return None
+        header = request.headers.get("authorization")
+        unauthorized = {
+            "WWW-Authenticate": "Bearer",
+        }
+        if not header or not header.strip():
+            raise ApiError(
+                401,
+                "unauthorized",
+                "a Device token is required; pair this Client with the Server",
+                unauthorized,
+            )
+        parts = header.split(None, 1)
+        if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+            raise ApiError(
+                401,
+                "unauthorized",
+                "the Authorization header must be 'Bearer <Device token>'",
+                unauthorized,
+            )
+        address = request.client.host if request.client is not None else None
+        device = app.state.devices.verify(parts[1].strip(), address)
+        if device is None:
+            raise ApiError(
+                401,
+                "unauthorized",
+                "the Device token is invalid or has been revoked; pair this Client again",
+                unauthorized,
+            )
+        return device
+
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        info = transcriber.info
+        """Liveness and version only: reachable before pairing, no secrets."""
+        return {"status": "ok", "version": app.state.version}
+
+    @app.get("/status")
+    async def status(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Authenticated status for the Tray, Settings, and diagnostics."""
+        active_config = app.state.config
+        runtime = app.state.runtime
+        snapshot = runtime.snapshot()
+        info = runtime.info()
         capability = processor.info
+        gpu = gpu_status(active_config, cuda_device_count=app.state.cuda_device_count)
+        certificate = app.state.certificate
         return {
             "status": "ok",
-            "model": info.model,
+            "version": app.state.version,
+            **snapshot.as_dict(),
             "device": info.device,
             "compute_type": info.compute_type,
-            "ready": bool(app.state.ready),
+            "ready": bool(app.state.ready) and not snapshot.stopped,
+            "lifecycle": snapshot.lifecycle_dict(),
             "processing": {
                 "enabled": capability.enabled,
                 "refine": capability.refine,
                 "summarize": capability.summarize,
             },
+            "gpu": gpu.as_dict(),
+            "tls_fingerprint": certificate.fingerprint if certificate is not None else "",
+            "network": {
+                "expose_to_network": active_config.expose_to_network,
+                "bind_host": active_config.bind_host,
+                "port": active_config.port,
+            },
+            "auth": {
+                "anonymous": active_config.allow_anonymous,
+                "device": device.name if device else None,
+            },
         }
 
-    @app.post("/transcribe")
+    @app.post("/pair/local", status_code=201)
+    async def pair_local(
+        request: Request,
+        payload: LocalPairRequest | None = None,
+    ) -> dict[str, Any]:
+        """Issue a Device token to the Client on this machine, without a code.
+
+        Only a genuine loopback peer may use this endpoint. A Docker port
+        forward makes the peer address the bridge gateway, so Docker Servers
+        pair with a code instead (ADR 0008).
+        """
+        peer = request.client.host if request.client is not None else None
+        if not is_loopback_address(peer):
+            raise ApiError(
+                403,
+                "forbidden",
+                "local auto-pairing is available only from the loopback interface",
+            )
+        name = payload.name.strip() if payload is not None else "Local client"
+        device, token = app.state.devices.create(name, peer)
+        certificate = app.state.certificate
+        return {
+            "device": device.as_dict(),
+            "token": token,
+            "fingerprint": certificate.fingerprint if certificate is not None else "",
+            "version": app.state.version,
+        }
+
+    @app.post("/pair", status_code=201)
+    async def pair_remote(request: Request, payload: RemotePairRequest) -> dict[str, Any]:
+        """Redeem a one-time Pairing code for a Remote Device token.
+
+        The failures stay distinct so the Client can say whether the code was
+        wrong, expired, already used, or the peer is asking too often.
+        """
+        peer = request.client.host if request.client is not None else None
+        name = payload.name.strip() or "Device"
+        try:
+            app.state.pairing_codes.redeem(payload.code, peer)
+        except PairingRateLimitedError as exc:
+            raise ApiError(
+                429,
+                "pairing_rate_limited",
+                str(exc),
+                {"Retry-After": str(exc.retry_after)},
+            ) from exc
+        except ExpiredPairingCodeError as exc:
+            raise ApiError(410, "pairing_code_expired", str(exc)) from exc
+        except ReusedPairingCodeError as exc:
+            raise ApiError(409, "pairing_code_reused", str(exc)) from exc
+        except WrongPairingCodeError as exc:
+            raise ApiError(401, "pairing_code_wrong", str(exc)) from exc
+        device, token = app.state.devices.create(name, peer)
+        certificate = app.state.certificate
+        return {
+            "device": device.as_dict(),
+            "token": token,
+            "fingerprint": certificate.fingerprint if certificate is not None else "",
+            "version": app.state.version,
+        }
+
+    @app.post("/admin/pairing-code", status_code=201)
+    async def create_pairing_code(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Generate one Pairing code for a new Device.
+
+        Any trusted Device may ask, because every Device is already fully
+        trusted in v1 (ADR 0008). The local Settings window is the normal path.
+        """
+        del device  # authentication is the only requirement
+        code = app.state.pairing_codes.generate()
+        certificate = app.state.certificate
+        return {
+            "code": code.code,
+            "expires_at": code.expires_at,
+            "fingerprint": certificate.fingerprint if certificate is not None else "",
+        }
+
+    @app.get("/admin/devices")
+    async def list_devices(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """List trusted Devices with names, timestamps, and last addresses.
+
+        ``current`` marks the Device that made this request, so the Client can
+        identify its own entry without guessing from the peer address.
+        """
+        devices = []
+        for item in app.state.devices.list():
+            record = item.as_dict()
+            record["current"] = device is not None and item.id == device.id
+            devices.append(record)
+        return {"devices": devices}
+
+    @app.delete("/admin/devices/{device_id}", status_code=204)
+    async def revoke_device(
+        device_id: str,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> None:
+        """Revoke one Device; its next request is unauthorised."""
+        del device
+        if not app.state.devices.revoke(device_id):
+            raise ApiError(
+                404,
+                "not_found",
+                f"no Device has id {device_id!r}; list Devices and try again",
+            )
+
+    @app.post("/admin/exposure")
+    async def set_exposure(
+        payload: ExposureRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Turn LAN exposure on or off in the Server YAML.
+
+        A change never rebinds the running listener: the response reports that
+        a restart is required, so the Server owner sees the effect only after a
+        deliberate restart (ADR 0008 and the desktop spec).
+        """
+        del device
+        if payload.expose and not payload.confirm:
+            raise ApiError(
+                400,
+                "confirmation_required",
+                "exposing the Server to the LAN requires an explicit confirmation; "
+                "send confirm: true after warning the user",
+            )
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot write its configuration; change "
+                "server.expose_to_network in kitsune.yaml and restart the Server",
+            )
+        try:
+            result = store.patch({"expose_to_network": payload.expose})
+        except ConfigError as exc:
+            raise ApiError(400, "bad_request", str(exc)) from exc
+        return {
+            "expose_to_network": result.config.expose_to_network,
+            "bind_host": result.config.bind_host,
+            "changed": bool(result.changed),
+            "written": result.written,
+            "restart_required": list(result.restart_required),
+        }
+
+    @app.get("/admin/config")
+    async def read_config(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Read the effective Server configuration with secrets masked."""
+        del device
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot read its configuration; edit kitsune.yaml on the "
+                "Server host instead",
+            )
+        try:
+            payload = _config_payload(store)
+        except ConfigError as exc:
+            raise ApiError(409, "config_invalid", str(exc)) from exc
+        return payload
+
+    @app.patch("/admin/config")
+    async def patch_config(
+        payload: ConfigPatchRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Validate and atomically write a partial ``server:`` patch.
+
+        Validation is exactly startup's; nothing is written on failure. A
+        secret echoed back as the redaction placeholder is dropped, never
+        written over the real value. LAN exposure and anonymous access are
+        refused here: they bypass Device authentication and have their own
+        confirmed route or a host-side edit. Only hot fields this Server
+        actually applies are reported as ``hot_applied``; everything else needs
+        a restart. Model activation has its own endpoint (#76).
+        """
+        del device
+        store = app.state.config_store
+        if store is None:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                "this Server cannot write its configuration; edit kitsune.yaml on the "
+                "Server host instead",
+            )
+        guarded = _guarded_config_field(payload.patch)
+        if guarded is not None:
+            raise ApiError(400, "confirmation_required", GUARDED_CONFIG_MESSAGES[guarded])
+        changes = strip_redacted(payload.patch)
+        if not changes:
+            try:
+                payload_out = _config_payload(store)
+            except ConfigError as exc:
+                raise ApiError(409, "config_invalid", str(exc)) from exc
+            return {
+                **payload_out,
+                "changed": [],
+                "hot_applied": [],
+                "restart_required": [],
+                "written": False,
+            }
+        try:
+            result = store.patch(changes)
+        except ConfigError as exc:
+            raise ApiError(400, "bad_request", str(exc)) from exc
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "config_unavailable",
+                f"the Server configuration could not be written: {exc}",
+            ) from exc
+        if "server.log_level" in result.changed:
+            logging.getLogger("kitsune").setLevel(result.config.log_level.upper())
+        hot = [path for path in result.changed if path in _APPLIED_HOT_FIELDS]
+        manager = app.state.models
+        if "server.idle_unload_seconds" in result.changed and manager is not None:
+            # The model manager owns the idle timer; without one the setting
+            # is honestly restart-required rather than "applied".
+            manager.set_idle_unload_seconds(result.config.idle_unload_seconds)
+            hot.append("server.idle_unload_seconds")
+        restart_required = [path for path in result.changed if path not in hot]
+        app.state.config = _apply_hot_config(app.state.config, result.config, hot)
+        payload_out = _config_payload(store)
+        return {
+            **payload_out,
+            "changed": list(result.changed),
+            "hot_applied": hot,
+            "restart_required": restart_required,
+            "written": result.written,
+        }
+
+    @app.get("/admin/logs")
+    async def read_logs(
+        tail: Annotated[int, Query(ge=1, le=MAX_LOG_TAIL)] = 200,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Return the last ``tail`` lines of the Server log file."""
+        del device
+        log_file = app.state.log_file
+        if log_file is None:
+            raise ApiError(
+                503,
+                "log_unavailable",
+                "this Server is not writing a log file; run it as a supervised "
+                "background process or set --log-file",
+            )
+        try:
+            lines, truncated = _tail_lines(log_file, tail)
+        except OSError as exc:
+            raise ApiError(
+                503,
+                "log_unavailable",
+                f"the Server log {log_file} cannot be read: {exc}",
+            ) from exc
+        return {
+            "path": str(log_file),
+            "lines": lines,
+            "truncated": truncated,
+            "tail": tail,
+        }
+
+    @app.post("/admin/restart", status_code=202)
+    async def restart_server(
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Answer ``202``, then exit so the supervisor starts the Server again.
+
+        The envelope is the same lifecycle payload as stop/start so the Client
+        never has to replace cached state with an empty ``restarting`` reply.
+        """
+        del device
+        action = app.state.restart
+        if action is None:
+            raise ApiError(
+                503,
+                "restart_unavailable",
+                "this Server cannot restart itself; stop and start it on the Server host",
+            )
+        body = app.state.runtime.snapshot().as_dict()
+        body["restarting"] = True
+        background.add_task(action)
+        return body
+
+    @app.post("/admin/stop")
+    async def stop_server(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Soft-stop: unload the model, persist the state, keep the API alive."""
+        del device
+        runtime = app.state.runtime
+        await run_in_threadpool(runtime.stop)
+        logger.warning(
+            "Server soft-stopped: the model is unloaded and /transcribe returns 503 "
+            "until POST /admin/start"
+        )
+        return runtime.snapshot().as_dict()
+
+    @app.post("/admin/start")
+    async def start_server(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Clear a soft-stop and load the model again."""
+        del device
+        runtime = app.state.runtime
+        try:
+            await run_in_threadpool(runtime.start)
+        except ModelError as exc:
+            raise ApiError(503, "engine_load_failed", str(exc)) from exc
+        snapshot = runtime.snapshot()
+        logger.info("Server started: model %s is loaded", snapshot.model)
+        return snapshot.as_dict()
+
+    def _require_loopback(request: Request) -> None:
+        """Keep the hard lifecycle for Clients on this Server host."""
+        peer = request.client.host if request.client is not None else None
+        if not is_loopback_address(peer):
+            raise ApiError(
+                403,
+                "local_only",
+                "this action is available only to a Client on the Server host",
+            )
+
+    def _clear_soft_stop() -> None:
+        """Forget a soft-stop so the next process starts with its model loaded."""
+        lifecycle = app.state.lifecycle
+        if lifecycle is not None:
+            lifecycle.clear()
+
+    @app.post("/admin/hard-stop", status_code=202)
+    async def hard_stop_server(
+        request: Request,
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Hard-stop the Local Server: clear any soft-stop, then exit cleanly.
+
+        The Client on the Server host calls this instead of ``/admin/stop``; a
+        Remote Server keeps the soft-stop. Exiting with code zero leaves the
+        supervisor idle instead of restarting the process; clearing the flag
+        makes the next start load the model.
+        """
+        del device
+        _require_loopback(request)
+        action = app.state.shutdown
+        if action is None:
+            raise ApiError(
+                503,
+                "stop_unavailable",
+                "this Server cannot stop itself; stop it on the Server host",
+            )
+        _clear_soft_stop()
+        body = app.state.runtime.snapshot().as_dict()
+        background.add_task(action)
+        return body
+
+    @app.post("/admin/hard-restart", status_code=202)
+    async def hard_restart_server(
+        request: Request,
+        background: BackgroundTasks,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Restart the Local Server's process, clearing a persisted soft-stop."""
+        del device
+        _require_loopback(request)
+        action = app.state.restart
+        if action is None:
+            raise ApiError(
+                503,
+                "restart_unavailable",
+                "this Server cannot restart itself; stop and start it on the Server host",
+            )
+        _clear_soft_stop()
+        body = app.state.runtime.snapshot().as_dict()
+        body["restarting"] = True
+        background.add_task(action)
+        return body
+
+    def _require_models() -> ModelManager:
+        manager = app.state.models
+        if manager is None:
+            raise ApiError(
+                503,
+                "models_unavailable",
+                "model management is not available on this Server",
+            )
+        return manager
+
+    @contextlib.contextmanager
+    def _quiesce() -> Iterator[None]:
+        """Hold every capacity slot so in-flight requests finish and new ones 503."""
+        for _ in range(app.state.workers):
+            app.state.semaphore.acquire()
+        try:
+            yield
+        finally:
+            for _ in range(app.state.workers):
+                app.state.semaphore.release()
+
+    def _patch_server_config(changes: Mapping[str, Any]) -> str:
+        """Persist one model change; return why it could not be saved, or ""."""
+        store = app.state.config_store
+        if store is None:
+            return ""
+        try:
+            store.patch(changes)
+        except ConfigError as exc:
+            logger.warning("could not save %s: %s", ", ".join(changes), exc)
+            return str(exc)
+        return ""
+
+    def _model_response(warning: str = "") -> dict[str, Any]:
+        manager = _require_models()
+        manager.maybe_unload()
+        body = manager.view()
+        if warning:
+            body["warning"] = warning
+        return body
+
+    def _model_failure(exc: ModelError) -> ApiError:
+        status_code = 404 if exc.code == "unknown_model" else 409
+        return ApiError(status_code, exc.code, str(exc))
+
+    @app.get("/admin/models")
+    async def list_models(
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """The Model catalog, installation state, downloads, and idle setting."""
+        del device
+        return _model_response()
+
+    @app.post("/admin/models/download", status_code=202)
+    async def download_model(
+        payload: DownloadRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Queue one model download; one worker serialises every download."""
+        del device
+        manager = _require_models()
+        try:
+            manager.start_download(payload.model)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+        return _model_response()
+
+    @app.post("/admin/models/cancel")
+    async def cancel_download(
+        payload: DownloadRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Cancel a queued or running model download."""
+        del device
+        manager = _require_models()
+        try:
+            manager.cancel_download(payload.model)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+        return _model_response()
+
+    @app.post("/admin/models/activate")
+    async def activate_model(
+        payload: ActivateRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Quiesce requests, load the new model, swap it in, and roll back on failure."""
+        del device
+        manager = _require_models()
+        target = payload.path or payload.model or ""
+
+        def activate_blocking() -> None:
+            # Hold every capacity slot so in-flight requests finish and new
+            # ones get a clear 503 until the swap is complete.
+            with _quiesce():
+                manager.activate(target)
+
+        try:
+            await run_in_threadpool(activate_blocking)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+        warning = _patch_server_config({"model": manager.active_model})
+        return _model_response(warning)
+
+    @app.delete("/admin/models/{name}", status_code=204)
+    async def delete_model(
+        name: str,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> None:
+        """Delete a downloaded model; the active model is refused."""
+        del device
+        manager = _require_models()
+        try:
+            manager.delete(name)
+        except ModelError as exc:
+            raise _model_failure(exc) from exc
+
+    @app.post("/admin/models/idle-unload")
+    async def set_idle_unload(
+        payload: IdleUnloadRequest,
+        device: TrustedDevice | None = Depends(authenticate),  # noqa: B008
+    ) -> dict[str, Any]:
+        """Set the idle unload timeout; ``0`` keeps the model resident."""
+        del device
+        manager = _require_models()
+        manager.set_idle_unload_seconds(payload.seconds)
+        warning = _patch_server_config({"idle_unload_seconds": payload.seconds})
+        return _model_response(warning)
+
+    @app.post("/transcribe", dependencies=[Depends(authenticate)])
     async def transcribe(
         audio: Annotated[UploadFile, File()],
         language: Annotated[str | None, Form()] = None,
@@ -185,40 +1001,71 @@ def create_app(
         refine: Annotated[bool, Form()] = False,
         summarize: Annotated[bool, Form()] = False,
     ) -> dict[str, Any]:
+        runtime = app.state.runtime
+        if runtime.snapshot().stopped:
+            raise ApiError(
+                503,
+                "stopped",
+                "the Server is soft-stopped; start it through the Admin API",
+            )
+        active_config = app.state.config
         if not app.state.semaphore.acquire(blocking=False):
             raise ApiError(503, "unavailable", "server is busy", {"Retry-After": "1"})
         try:
-            max_bytes = int(config.max_upload_mb * 1024 * 1024)
+            try:
+                active = await run_in_threadpool(runtime.transcriber)
+            except ModelStoppedError as exc:
+                raise ApiError(503, "stopped", str(exc)) from exc
+            except ModelError as exc:
+                raise ApiError(503, "model_unavailable", str(exc)) from exc
+            max_bytes = int(active_config.max_upload_mb * 1024 * 1024)
             declared_size = getattr(audio, "size", None)
             if declared_size is not None and declared_size > max_bytes:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"upload exceeds {config.max_upload_mb:g} MB",
+                    f"upload exceeds {active_config.max_upload_mb:g} MB",
                 )
             data = await audio.read()
             if len(data) > max_bytes:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"upload exceeds {config.max_upload_mb:g} MB",
+                    f"upload exceeds {active_config.max_upload_mb:g} MB",
                 )
             try:
                 clip = await run_in_threadpool(decode_audio, data)
             except AudioDecodeError as exc:
                 raise ApiError(415, "unsupported_media", f"could not decode audio: {exc}") from exc
-            if clip.duration > config.max_audio_seconds:
+            if clip.duration > active_config.max_audio_seconds:
                 raise ApiError(
                     413,
                     "payload_too_large",
-                    f"audio exceeds {config.max_audio_seconds} s",
+                    f"audio exceeds {active_config.max_audio_seconds} s",
                 )
-            result = await run_in_threadpool(
-                transcriber.transcribe,
-                clip,
-                language=_effective_language(language, config),
-                initial_prompt=_effective_prompt(initial_prompt, config),
+            effective_language = _effective_language(language, active_config)
+            logger.info(
+                "transcribing %.2fs of audio (requested language=%s, effective=%s)",
+                clip.duration,
+                language or "auto",
+                effective_language or "auto",
             )
+            started = time.monotonic()
+            result = await run_in_threadpool(
+                active.transcribe,
+                clip,
+                language=effective_language,
+                initial_prompt=_effective_prompt(initial_prompt, active_config),
+            )
+            elapsed = time.monotonic() - started
+            logger.info(
+                "transcribed %.2fs of audio in %.2fs (language=%s, probability=%.2f)",
+                clip.duration,
+                elapsed,
+                result.language,
+                result.language_probability,
+            )
+            runtime.touch()
         finally:
             app.state.semaphore.release()
 
@@ -226,7 +1073,7 @@ def create_app(
         delivered = raw_text
         applied = {"refine": False, "summarize": False}
         warnings: list[str] = []
-        prompt_language = result.language if config.decode.task == "transcribe" else "en"
+        prompt_language = result.language if active_config.decode.task == "transcribe" else "en"
 
         # Fixed pipeline: Refine always precedes Summarize, each built on the
         # previous stage's delivered text.
@@ -244,6 +1091,7 @@ def create_app(
             if outcome.warning is not None:
                 warnings.append(outcome.warning)
 
+        logger.debug("recognized text (%d chars): %s", len(delivered), delivered)
         return {
             "text": delivered,
             "raw_text": raw_text,

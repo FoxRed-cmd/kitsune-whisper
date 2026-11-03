@@ -53,6 +53,17 @@ func TestWAVDurationStereo(t *testing.T) {
 	}
 }
 
+func TestWAVDurationHeaderFromAPrefix(t *testing.T) {
+	data := wav(16000, 1, 16, 24000)
+	d, err := audio.WAVDurationHeader(data[:64], int64(len(data)))
+	if err != nil {
+		t.Fatalf("duration: %v", err)
+	}
+	if d != 1500*time.Millisecond {
+		t.Fatalf("duration = %v, want 1.5s", d)
+	}
+}
+
 func TestNotWAV(t *testing.T) {
 	if _, err := audio.WAVDuration([]byte("this is not a wav file")); err == nil {
 		t.Fatal("expected error for non-WAV data")

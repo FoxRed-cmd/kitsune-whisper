@@ -37,6 +37,9 @@ if (-not $Client) {
 }
 
 if (-not $NoBuild) {
+    # The harness reads the Client's stdout, so this is the console build, not
+    # the GUI-subsystem executable that packaging/windows/build-client.ps1
+    # produces. The shipped Client is still built by that script.
     $env:CGO_ENABLED = '1'
     if (-not (Get-Command gcc -ErrorAction SilentlyContinue) -and (Get-Command zig -ErrorAction SilentlyContinue)) {
         $env:CC = 'zig cc'

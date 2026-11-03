@@ -21,8 +21,33 @@ func CacheDir() string {
 // SpoolDir is the default directory for Spooled utterances.
 func SpoolDir() string { return filepath.Join(CacheDir(), "spool") }
 
+// TokenDir is where the 0600 Device-token fallback lives when the OS keychain
+// is unavailable. It sits under the user config directory, not the cache, so a
+// cache clean does not silently force a new pairing.
+func TokenDir() string {
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = CacheDir()
+	}
+	return filepath.Join(base, "kitsune-whisper", "tokens")
+}
+
 // LogFile is the default path for the Client's log file.
 func LogFile() string { return filepath.Join(CacheDir(), "client.log") }
+
+// WizardState is where the first-run Setup wizard keeps its progress. It sits
+// next to the effective kitsune.yaml so a custom --config keeps its own state;
+// it is UI state, not configuration, and is never read by the Server.
+func WizardState(configPath string) string {
+	if configPath != "" {
+		return filepath.Join(filepath.Dir(configPath), "wizard.json")
+	}
+	base, err := os.UserConfigDir()
+	if err != nil || base == "" {
+		base = CacheDir()
+	}
+	return filepath.Join(base, "kitsune-whisper", "wizard.json")
+}
 
 // ControlSocket is the default path of the Client's local control socket, the
 // carrier of the External trigger. It prefers the per-session runtime
@@ -32,4 +57,13 @@ func ControlSocket() string {
 		return filepath.Join(dir, "kitsune-whisper.sock")
 	}
 	return filepath.Join(CacheDir(), "control.sock")
+}
+
+// InstanceLock is the default path of the Client's single-instance advisory
+// lock. Like the control socket it prefers the per-session runtime directory.
+func InstanceLock() string {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
+		return filepath.Join(dir, "kitsune-whisper.lock")
+	}
+	return filepath.Join(CacheDir(), "instance.lock")
 }

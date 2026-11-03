@@ -174,7 +174,7 @@ class Harness:
     def _start_docker(self, profile: str, port: int) -> ServerHandle:
         image = DOCKER_IMAGES[profile]
         name = f"kitsune-e2e-{uuid.uuid4().hex[:8]}"
-        config = self._write_server_config("cuda" if profile.endswith("gpu") else "cpu", 8000)
+        config = self._write_server_config("cuda" if profile.endswith("gpu") else "cpu", 8765)
         command = [
             "docker",
             "run",
@@ -183,7 +183,7 @@ class Harness:
             "--name",
             name,
             "-p",
-            f"{port}:8000",
+            f"{port}:8765",
             "-v",
             f"{config}:/config/kitsune.yaml:ro",
         ]
@@ -210,6 +210,7 @@ class Harness:
         config = self.workdir / "server.yaml"
         config.write_text(
             "server:\n"
+            "  expose_to_network: true\n"
             "  host: 0.0.0.0\n"
             f"  port: {port}\n"
             f"  model: {model}\n"
@@ -218,6 +219,14 @@ class Harness:
             "  workers: 1\n"
             f"  download_root: {cache}\n"
             "  offline: false\n"
+            # The live slice exercises decoding and latency, not the trust
+            # flow; keep it on plain HTTP with anonymous access so the harness
+            # does not need to pair. Do not copy this into a deployment.
+            # Authenticated Docker parity (pair, Admin API, restart, soft-stop,
+            # persistence) is scripts/docker_smoke.py.
+            "  tls:\n"
+            "    enabled: false\n"
+            "  allow_anonymous: true\n"
             "  log_level: info\n",
             encoding="utf-8",
         )
@@ -290,7 +299,7 @@ class Harness:
     def check_health(self, handle: ServerHandle) -> None:
         health = handle.health
         self.check(
-            "/health reports model/device/ready",
+            "/status reports model/device/ready (set KITSUNE_TOKEN for an external Server)",
             health.get("status") == "ok"
             and bool(health.get("model"))
             and bool(health.get("device"))
@@ -506,6 +515,9 @@ def post_audio(
         method="POST",
     )
     request.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    token = os.environ.get("KITSUNE_TOKEN", "")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
     started = time.perf_counter()
     with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:
         payload = json.loads(response.read())
@@ -532,10 +544,25 @@ def wait_for_health(base_url: str) -> dict[str, object]:
     while time.monotonic() < deadline:
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
-                return json.loads(response.read())
+                health = json.loads(response.read())
         except Exception as error:
             last_error = error
             time.sleep(1.0)
+            continue
+        # /health is liveness and version only. The richer status proves the
+        # model and device, and is anonymous in the generated config or
+        # reachable with KITSUNE_TOKEN for an external Server. A status that
+        # rejects the request leaves the minimal health payload in place.
+        try:
+            status_request = urllib.request.Request(base_url.rstrip("/") + "/status")
+            token = os.environ.get("KITSUNE_TOKEN", "")
+            if token:
+                status_request.add_header("Authorization", f"Bearer {token}")
+            with urllib.request.urlopen(status_request, timeout=5) as response:
+                health.update(json.loads(response.read()))
+        except Exception:
+            pass
+        return health
     raise SystemExit(f"Server at {base_url} never became healthy: {last_error}")
 
 
