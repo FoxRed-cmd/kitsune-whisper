@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/lanaddr"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
@@ -98,6 +99,11 @@ type View struct {
 	Profiles []Profile `json:"profiles"`
 	// ActiveID is the profile the Client routes Utterances to.
 	ActiveID string `json:"active_id"`
+	// ConnectAddress is host:port another machine on the LAN should use to
+	// reach the active Server. It is filled only when that Server runs on this
+	// computer and LAN exposure is on (or about to be applied); a Remote
+	// Server's address is not something the Client can discover.
+	ConnectAddress string `json:"connect_address,omitempty"`
 	// Devices are the Devices of ActiveID, refreshed on demand.
 	Devices []Device `json:"devices"`
 	// DevicesError is why the last Device refresh failed, or "".
@@ -168,6 +174,10 @@ type Options struct {
 	// Start, and Restart are hard actions on this machine. Nil keeps the Admin
 	// API's soft-stop for every profile.
 	LocalServer LocalServer
+	// LANAddress returns this computer's local-network address, or "" when it
+	// has none. Nil uses lanaddr.Address. Tests inject a fixed address so the
+	// rendered View never depends on the host's interfaces.
+	LANAddress func() string
 	// RestartSettle bounds how long a Local Server restart waits for the old
 	// process to release its port before the supervisor starts it. 0 uses
 	// 5 seconds.
@@ -185,6 +195,7 @@ type Service struct {
 	pairingCode    *PairingCode
 	pairingError   string
 	exposure       *ExposureResult
+	exposureFor    string
 	health         map[string]trust.Status
 	modelsFor      string
 	models         *ModelsView
@@ -211,6 +222,9 @@ func New(opts Options) *Service {
 	if opts.PairLocal == nil {
 		opts.PairLocal = trust.PairLocal
 	}
+	if opts.LANAddress == nil {
+		opts.LANAddress = lanaddr.Address
+	}
 	return &Service{opts: opts, health: map[string]trust.Status{}}
 }
 
@@ -223,11 +237,11 @@ func (s *Service) Config() config.ClientConfig {
 }
 
 // View returns the profiles, the active profile, and the last Device and code
-// results. It never performs network I/O; call LoadDevices or GenerateCode to
-// refresh.
+// results. It performs no Server I/O; call LoadDevices or GenerateCode to
+// refresh. Finding this computer's LAN address is a local OS lookup and is
+// done after the lock is released.
 func (s *Service) View() View {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	snapshot := s.opts.Store.Snapshot()
 	profiles := make([]Profile, 0, len(snapshot.Config.Servers))
 	for _, profile := range snapshot.Config.Servers {
@@ -262,6 +276,9 @@ func (s *Service) View() View {
 		view.Lifecycle = s.lifecycle
 		view.LifecycleError = s.lifecycleError
 	}
+	port := s.connectPortLocked(profiles, view.ActiveID)
+	s.mu.Unlock()
+	view.ConnectAddress = connectAddress(s.opts.LANAddress, port)
 	return view
 }
 
@@ -478,6 +495,7 @@ func (s *Service) SetExposure(
 	}
 	s.mu.Lock()
 	s.exposure = &result
+	s.exposureFor = profileID
 	s.mu.Unlock()
 	return result, nil
 }

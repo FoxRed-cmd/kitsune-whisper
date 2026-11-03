@@ -566,6 +566,61 @@ func TestCopyLogsIntentUsesTheRuntimeClipboard(t *testing.T) {
 	}
 }
 
+func TestCopyAddressIntentUsesTheRuntimeClipboard(t *testing.T) {
+	service := managementService()
+	service.mu.Lock()
+	service.view.ConnectAddress = "192.168.3.22:8765"
+	service.mu.Unlock()
+	sh, desktop, rt := newManagementShellWithRuntime(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentCopyAddress}); err != nil {
+		t.Fatalf("copy intent: %v", err)
+	}
+	rt.mu.Lock()
+	copied := append([]string(nil), rt.copied...)
+	rt.mu.Unlock()
+	if len(copied) != 1 || copied[0] != "192.168.3.22:8765" {
+		t.Fatalf("copied = %q, want the LAN connect address", copied)
+	}
+	messages, _ := window.lastMessages()
+	if len(messages.notices) != 1 || !strings.Contains(messages.notices[0], "192.168.3.22:8765") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestCopyAddressWithoutAnAddressReportsAFailure(t *testing.T) {
+	service := managementService()
+	sh, desktop, rt := newManagementShellWithRuntime(t, service, nil)
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentCopyAddress}); err != nil {
+		t.Fatalf("copy intent: %v", err)
+	}
+	rt.mu.Lock()
+	copied := append([]string(nil), rt.copied...)
+	rt.mu.Unlock()
+	if len(copied) != 0 {
+		t.Fatalf("copied = %q, want nothing", copied)
+	}
+	messages, _ := window.lastMessages()
+	if len(messages.failures) != 1 || !strings.Contains(messages.failures[0], "local-network") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
 func TestCopyDiagnosticsReportsAClipboardFailure(t *testing.T) {
 	service := managementService()
 	sh, desktop, rt := newManagementShellWithRuntime(t, service, nil)

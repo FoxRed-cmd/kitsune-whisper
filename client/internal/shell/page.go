@@ -283,6 +283,13 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 		out.WriteString(`<p class="help" data-exposure-listen="` + escape(address) + `">` +
 			escape(fmt.Sprintf(labels.ExposureListen, address)) + `</p>`)
 	}
+	if view.ConnectAddress != "" {
+		out.WriteString(`<div class="row" data-exposure-connect="` + escape(view.ConnectAddress) + `">`)
+		out.WriteString(`<span class="help">` +
+			escape(fmt.Sprintf(labels.ExposureConnect, view.ConnectAddress)) + `</span>`)
+		out.WriteString(`<button type="button" data-action="copy-address">` + escape(labels.CopyAddress) + `</button>`)
+		out.WriteString(`</div>`)
+	}
 	if live == nil {
 		if view.Exposure != nil {
 			state := labels.ExposureOffState
@@ -1830,6 +1837,8 @@ const pageHTML = `<!doctype html>
     } else if (action === "settings") {
       var pane = document.getElementById("settings-pane");
       if (pane) pane.scrollTop = 0;
+    } else if (action === "copy-address") {
+      sendIntent({ action: "copy-address" }, button);
     } else if (action === "exposure") {
       var expose = button.dataset.expose || "off";
       var exposureMessage = button.dataset.confirm || "";

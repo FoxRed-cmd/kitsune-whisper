@@ -138,6 +138,8 @@ type ServerLabels struct {
 	ExposureLiveOn   string            `json:"exposureLiveOn"`
 	ExposureLiveOff  string            `json:"exposureLiveOff"`
 	ExposureListen   string            `json:"exposureListen"`
+	ExposureConnect  string            `json:"exposureConnect"`
+	CopyAddress      string            `json:"copyAddress"`
 	ExposurePending  string            `json:"exposurePending"`
 
 	ManagementTitle string `json:"managementTitle"`
@@ -456,6 +458,8 @@ func (s *Shell) serverLabels() ServerLabels {
 		ExposureLiveOn:   catalog.T("server.exposureLiveOn"),
 		ExposureLiveOff:  catalog.T("server.exposureLiveOff"),
 		ExposureListen:   catalog.T("server.exposureListen"),
+		ExposureConnect:  catalog.T("server.exposureConnect"),
+		CopyAddress:      catalog.T("action.copyAddress"),
 		ExposurePending:  catalog.T("server.exposurePending"),
 
 		ManagementTitle: catalog.T("server.managementTitle"),
@@ -744,6 +748,7 @@ const (
 	IntentRevokeDevice       = "revoke-device"
 	IntentPairingCode        = "pairing-code"
 	IntentExposure           = "exposure"
+	IntentCopyAddress        = "copy-address"
 	IntentUseProfile         = "use-profile"
 	IntentRefreshServers     = "refresh-servers"
 	IntentSpoolRetry         = "spool-retry"
@@ -881,6 +886,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentExposure:
 		s.setExposure(intent.Value)
+		return nil
+	case IntentCopyAddress:
+		s.copyConnectAddress()
 		return nil
 	case IntentUseProfile:
 		s.useProfile(intent.ProfileID)
@@ -1106,6 +1114,26 @@ func (s *Shell) setExposure(value string) {
 		state = "on"
 	}
 	s.pushMessages([]string{s.catalog().T("notice.server.exposure", state)}, nil)
+}
+
+// copyConnectAddress puts the address other LAN machines should use on the
+// clipboard. The value is recomputed in Go from the Servers view, never taken
+// from the page.
+func (s *Shell) copyConnectAddress() {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	address := s.opts.Servers.View().ConnectAddress
+	if address == "" {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.noAddress")})
+		return
+	}
+	if err := s.opts.Runtime.Copy(address); err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.copyAddress", err.Error())})
+		return
+	}
+	s.pushMessages([]string{s.catalog().T("notice.server.copied", address)}, nil)
 }
 
 // useProfile makes one Server profile active, persists it, and applies the new

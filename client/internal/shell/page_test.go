@@ -165,6 +165,8 @@ func sampleView() shell.SettingsView {
 			ExposureLiveOn:   "Сервер сейчас доступен из локальной сети.",
 			ExposureLiveOff:  "Сервер сейчас доступен только на этом компьютере.",
 			ExposureListen:   "Адрес прослушивания: %s.",
+			ExposureConnect:  "Адрес подключения: %s.",
+			CopyAddress:      "Копировать адрес",
 			ExposurePending:  "Перезапустите сервер, чтобы применить изменение.",
 		},
 	}
@@ -661,6 +663,36 @@ func TestPageShowsTheLiveListenerAndAPendingRestart(t *testing.T) {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing %q", want)
 		}
+	}
+}
+
+func TestPageShowsTheLANConnectAddressWithACopyAction(t *testing.T) {
+	view := sampleView()
+	view.Servers.Profiles[0].Health.Network = &trust.NetworkStatus{
+		ExposeToNetwork: true, BindHost: "0.0.0.0", Port: 8765,
+	}
+	view.Servers.ConnectAddress = "192.168.3.22:8765"
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		`data-exposure-connect="192.168.3.22:8765"`,
+		"Адрес подключения: 192.168.3.22:8765.",
+		`data-action="copy-address"`,
+		"Копировать адрес",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestPageHidesTheConnectAddressWhenLANExposureIsOff(t *testing.T) {
+	view := sampleView()
+	view.Servers.Profiles[0].Health.Network = &trust.NetworkStatus{
+		BindHost: "127.0.0.1", Port: 8765,
+	}
+	page := shell.Page(shell.Snapshot{}, view)
+	if strings.Contains(page, `data-exposure-connect`) || strings.Contains(page, `data-action="copy-address"`) {
+		t.Fatal("a loopback-only Server still offers a LAN connect address")
 	}
 }
 
