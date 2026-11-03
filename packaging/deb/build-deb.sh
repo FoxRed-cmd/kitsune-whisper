@@ -363,6 +363,9 @@ EOF
 chmod 0755 "$stage/DEBIAN/prerm"
 
 mkdir -p "$OUTPUT_DIR"
+# The ar fallback below runs inside a temporary directory, so the output path
+# must be absolute for hosts without dpkg-deb (for example a Fedora build box).
+OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
 deb="$OUTPUT_DIR/${PACKAGE}_${VERSION}_${DEB_ARCH}.deb"
 
 if command -v dpkg-deb >/dev/null 2>&1; then
