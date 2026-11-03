@@ -336,6 +336,8 @@ func runRecord(args []string, seconds float64, cfg config.ClientConfig, so serve
 	return 0
 }
 
+const spoolUsage = "usage: kitsune-client spool [list | retry <id> | delete <id>]"
+
 // runSpool lists, retries, or deletes utterances saved by failed dictations.
 // The Settings window uses the same Spool package; this is the headless path
 // that lets a script recover speech when no desktop shell is running.
@@ -349,7 +351,8 @@ func runSpool(
 	defer func() { _ = logger.Close() }()
 	store := newSpool(cfg, logger)
 
-	if len(args) == 0 || (len(args) == 1 && args[0] == "list") {
+	switch {
+	case len(args) == 0 || (len(args) == 1 && args[0] == "list"):
 		entries, err := store.Entries()
 		if err != nil {
 			logger.Error("cannot list the Spool: %v", err)
@@ -360,14 +363,7 @@ func runSpool(
 			fmt.Fprintf(stdout, "%s\t%.3fs\t%s\n", entry.ID, entry.Duration, saved)
 		}
 		return 0
-	}
-
-	if len(args) != 2 {
-		fmt.Fprintln(stderr, "usage: kitsune-client spool [list | retry <id> | delete <id>]")
-		return 2
-	}
-	switch args[0] {
-	case "retry":
+	case len(args) == 2 && args[0] == "retry":
 		bootstrap := prepareTrust(context.Background(), cfg, so, logger)
 		utterance, err := store.Load(args[1])
 		if err != nil {
@@ -382,15 +378,15 @@ func runSpool(
 			),
 		)
 		defer cancel()
-		client := newTranscriber(bootstrap.cfg, logger, bootstrap.manager)
-		transcription, err := client.Transcribe(ctx, utterance.Audio)
+		transcriber := newTranscriber(bootstrap.cfg, logger, bootstrap.manager)
+		transcription, err := transcriber.Transcribe(ctx, utterance.Audio)
 		if err != nil {
 			logger.Error("spool retry failed: %v", err)
 			return 1
 		}
 		fmt.Fprintln(stdout, transcription.Text)
 		return 0
-	case "delete":
+	case len(args) == 2 && args[0] == "delete":
 		if err := store.Delete(args[1]); err != nil {
 			logger.Error("cannot delete %s: %v", args[1], err)
 			return 1
@@ -398,7 +394,7 @@ func runSpool(
 		fmt.Fprintf(stdout, "deleted %s\n", args[1])
 		return 0
 	default:
-		fmt.Fprintln(stderr, "usage: kitsune-client spool [list | retry <id> | delete <id>]")
+		fmt.Fprintln(stderr, spoolUsage)
 		return 2
 	}
 }

@@ -235,7 +235,6 @@ manual setup is still:
 | Config | `~/.config/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
 | Spool | `~/.cache/kitsune-whisper/spool` | `%LOCALAPPDATA%\kitsune-whisper\spool` |
-| Spool, headless | `kitsune-client spool list / retry / delete` | same command |
 | Models | `~/.cache/kitsune-whisper/models` | `server.download_root` |
 | Client log | `~/.cache/kitsune-whisper/client.log` | `%LOCALAPPDATA%\kitsune-whisper\client.log` |
 | Server state | `~/.local/state/kitsune-whisper` (TLS, Devices, pairing, log, soft-stop) | `%LOCALAPPDATA%\kitsune-whisper` |
@@ -282,6 +281,7 @@ Handy subcommands:
 kitsune-client settings             # open Settings on the running Client
 kitsune-client record --seconds 5   # capture once and print the text
 kitsune-client transcribe-file f.wav  # transcribe an existing WAV
+kitsune-client spool list           # utterances saved by failed dictations
 kitsune-client toggle               # external trigger (Wayland compositor bind)
 ```
 

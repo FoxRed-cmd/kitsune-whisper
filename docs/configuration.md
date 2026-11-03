@@ -73,9 +73,10 @@ patch difference is compatible. A local `dev` build or an unreadable version
 skips the check. A mismatch is reported as an upgrade error, not as an
 authentication failure.
 
-The release version lives in the root [`VERSION`](../VERSION) file and in
-`server/pyproject.toml` / `server/kitsune_server/__init__.py`; release CI
-refuses a tag that disagrees. See [release.md](release.md).
+The release version lives in the root [`VERSION`](../VERSION) file, in
+`server/pyproject.toml` / `server/kitsune_server/__init__.py`, and in the
+checked-in `server/uv.lock`; release CI refuses a tag that disagrees. See
+[release.md](release.md).
 
 ## `server:` section
 

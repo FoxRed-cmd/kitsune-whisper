@@ -589,20 +589,21 @@ class Harness:
             failed_config, "transcribe-file", "--spool-on-error", str(self.speech)
         )
         listed = self.run_client(failed_config, "spool", "list")
-        entry = listed.stdout.split()[0] if listed.stdout.strip() else ""
+        first_line = listed.stdout.splitlines()[0] if listed.stdout.strip() else ""
+        entry = first_line.split("\t", 1)[0]
         self.check(
             "a failed utterance is written to the Spool",
-            failed.returncode != 0 and bool(entry),
+            failed.returncode != 0 and entry.startswith("utterance-"),
             f"exit={failed.returncode} entry={entry!r}",
         )
 
         recovered_config = self.client_config("spool", [bad, good], good["id"])
         recovered = self.run_client(recovered_config, "spool", "retry", entry) if entry else None
+        recovered_text = recovered.stdout.strip() if recovered is not None else ""
         self.check(
             "the Spooled utterance is recovered through the real Client",
-            recovered is not None and recovered.returncode == 0 and bool(recovered.stdout.strip()),
-            f"exit={getattr(recovered, 'returncode', None)} "
-            f"stdout={recovered.stdout.strip()[:120]!r}",
+            recovered is not None and recovered.returncode == 0 and bool(recovered_text),
+            f"exit={getattr(recovered, 'returncode', None)} stdout={recovered_text[:120]!r}",
         )
 
         deleted = self.run_client(recovered_config, "spool", "delete", entry) if entry else None

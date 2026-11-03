@@ -131,9 +131,10 @@ otherwise errors with an actionable message.
 
 ## Verification and troubleshooting
 
-The 1.0.0 release candidate passed the automated slices on Fedora 44 / GNOME
-Wayland (2026-11-03): `e2e_live.py` 8/8 and `e2e_trust.py` 20/20 with a CPU
-model. The manual GNOME Wayland rows in
+The 1.0.0 release candidate passed the automated slices on Fedora 44 with GNOME
+Wayland as the host session (2026-11-03): `e2e_live.py` 8/8 and `e2e_trust.py`
+20/20 with a CPU model. Those harnesses exercise the Server/Client contracts,
+not the portal hotkey or injection path. The manual GNOME Wayland rows in
 [`verification/manual-matrix.md`](verification/manual-matrix.md) are still a
 release gate: a real focused editor and terminal must confirm the portal
 hotkey, `ydotool` injection, clipboard restoration, and the Recording
