@@ -52,29 +52,94 @@ function Get-LogTail {
     return ($script:LogLines.GetRange($start, $script:LogLines.Count - $start) -join [Environment]::NewLine)
 }
 
+function ConvertTo-Argument {
+    # Quote one argument for ProcessStartInfo.Arguments, following the
+    # CommandLineToArgvW rules: backslashes before a quote are doubled and the
+    # quote is escaped, trailing backslashes are doubled.
+    param([string]$Value)
+
+    if ($Value -ne '' -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+    $quoted = '"'
+    $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') {
+            $slashes++
+            continue
+        }
+        if ($character -eq '"') {
+            $quoted += ('\' * ($slashes * 2 + 1)) + '"'
+        }
+        else {
+            $quoted += ('\' * $slashes) + $character
+        }
+        $slashes = 0
+    }
+    $quoted += ('\' * ($slashes * 2)) + '"'
+    return $quoted
+}
+
 function Invoke-Native {
     param(
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$Arguments = @()
     )
     Write-Log ("run: {0} {1}" -f $FilePath, ($Arguments -join ' '))
-    # Windows PowerShell turns a native command's stderr into a terminating
-    # error when 2>&1 runs under ErrorActionPreference=Stop. The helper's own
-    # progress lines (Client autostart, for one) go to stderr, so the install
-    # would report failure even though the command succeeded.
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+
+    # A .cmd launcher is a console program, so the call operator both waits for
+    # it and sets $LASTEXITCODE. PowerShell turns a native command's stderr into
+    # a terminating error when 2>&1 runs under ErrorActionPreference=Stop, and
+    # the launcher's progress lines go to stderr, so relax it for the call.
+    if ($FilePath -match '(?i)\.(cmd|bat)$') {
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $output = & $FilePath @Arguments 2>&1
+            $code = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previous
+        }
+        foreach ($line in @($output)) {
+            Write-Log ([string]$line)
+        }
+        return $code
+    }
+
+    # Windows PowerShell does not wait for a GUI-subsystem executable such as
+    # the Client, and $LASTEXITCODE stays unset (a StrictMode error) or stale.
+    # Start the process directly and read both pipes concurrently, so neither
+    # buffer can fill up and deadlock the child.
+    $info = New-Object System.Diagnostics.ProcessStartInfo
+    $info.FileName = $FilePath
+    $info.Arguments = (@($Arguments | ForEach-Object { ConvertTo-Argument $_ }) -join ' ')
+    $info.UseShellExecute = $false
+    $info.CreateNoWindow = $true
+    $info.RedirectStandardOutput = $true
+    $info.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $info
     try {
-        $output = & $FilePath @Arguments 2>&1
-        $code = $LASTEXITCODE
+        if (-not $process.Start()) {
+            throw "could not start $FilePath"
+        }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        foreach ($stream in @($stdout.Result, $stderr.Result)) {
+            foreach ($line in ($stream -split "`r?`n")) {
+                if ($line -ne '') {
+                    Write-Log $line
+                }
+            }
+        }
+        return $process.ExitCode
     }
     finally {
-        $ErrorActionPreference = $previous
+        $process.Dispose()
     }
-    foreach ($line in @($output)) {
-        Write-Log ([string]$line)
-    }
-    return $code
 }
 
 function Initialize-Config {

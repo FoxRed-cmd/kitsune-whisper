@@ -154,6 +154,21 @@ def test_helper_does_not_treat_native_stderr_as_a_failure() -> None:
     assert "finally" in helper
 
 
+def test_helper_waits_for_a_gui_client_before_reading_its_exit_code() -> None:
+    # Windows PowerShell does not wait for a GUI-subsystem executable, so the
+    # call operator returned immediately and left $LASTEXITCODE unset, which is
+    # a StrictMode error in Invoke-ConfigMigration. The helper starts the
+    # process explicitly and drains both pipes before asking for the exit code.
+    helper = read(SETUP_HELPER)
+    invoke = helper.split("function Invoke-Native", 1)[1].split("function Initialize-Config", 1)[0]
+    assert "System.Diagnostics.ProcessStartInfo" in invoke
+    assert "ReadToEndAsync" in invoke
+    assert "WaitForExit" in invoke
+    # A .cmd launcher is still run through the call operator, which sets
+    # $LASTEXITCODE itself.
+    assert "$LASTEXITCODE" in invoke
+
+
 def test_uninstall_removes_tasks_and_binaries_but_keeps_user_data_by_default() -> None:
     script = read(INNO_SCRIPT)
     helper = read(SETUP_HELPER).lower()
