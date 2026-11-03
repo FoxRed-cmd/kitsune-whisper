@@ -361,6 +361,17 @@ function Remove-Models {
     }
 }
 
+function Reset-LocalPairing {
+    $client = Join-Path $AppDir 'bin\kitsune-client.exe'
+    if (-not (Test-Path -LiteralPath $client) -or -not (Test-Path -LiteralPath $ConfigPath)) {
+        return
+    }
+    $code = Invoke-Native $client @('reset-local-pairing', '--config', $ConfigPath)
+    if ($code -ne 0) {
+        Write-Log "warning: the Local Server pairing could not be reset; re-pair it after reinstall"
+    }
+}
+
 function Remove-ServerData {
     $state = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
     foreach ($name in @('tls', 'devices.json', 'server.log', 'lifecycle.json')) {
@@ -464,6 +475,7 @@ function Uninstall-Kitsune {
             Remove-Models
         }
         if ($RemoveServerData) {
+            Reset-LocalPairing
             Remove-ServerData
         }
         Write-Log 'keeping configuration, Spool, wizard progress, and Device tokens unless /PURGE=1 was passed'

@@ -337,6 +337,86 @@ func TestAddRemoteRefusesAnIncompatibleServer(t *testing.T) {
 	}
 }
 
+func saveProfiles(t *testing.T, store *settings.Store, active string, profiles ...config.ServerProfile) {
+	t.Helper()
+	items := make([]any, 0, len(profiles))
+	for _, profile := range profiles {
+		items = append(items, map[string]any{
+			"id":          profile.ID,
+			"name":        profile.Name,
+			"url":         profile.URL,
+			"fingerprint": profile.Fingerprint,
+			"auto_pair":   profile.AutoPair,
+		})
+	}
+	patch := map[string]any{"servers": items, "active_server": active}
+	for _, profile := range profiles {
+		if profile.ID == active {
+			patch["server_url"] = profile.URL
+		}
+	}
+	if _, err := store.Save(patch); err != nil {
+		t.Fatalf("save profiles: %v", err)
+	}
+}
+
+func TestRepairRemoteReplacesAChangedPinAndKeepsTheActiveProfile(t *testing.T) {
+	fake := newFakeServer(t)
+	service, store, tokens := newService(t)
+	remote, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("add remote: %v", err)
+	}
+
+	changed := config.ServerProfile{
+		ID: remote.ID, Name: remote.Name, URL: remote.URL,
+		Fingerprint: strings.Repeat("00", 32),
+	}
+	local := config.ServerProfile{
+		ID: "local", Name: "Local Server", URL: config.LocalServerURL, AutoPair: true,
+	}
+	saveProfiles(t, store, "local", changed, local)
+	if err := tokens.Save(remote.ID, "ktn_stale"); err != nil {
+		t.Fatalf("save stale token: %v", err)
+	}
+
+	repaired, err := service.RepairRemote(context.Background(), remote.ID, "abcd-2345", "Laptop")
+	if err != nil {
+		t.Fatalf("repair remote: %v", err)
+	}
+	if repaired.Fingerprint != fake.fingerprint {
+		t.Fatalf("fingerprint = %q, want %q", repaired.Fingerprint, fake.fingerprint)
+	}
+	if repaired.Active {
+		t.Fatalf("repairing a stored profile changed routing: %+v", repaired)
+	}
+	if token, err := tokens.Load(remote.ID); err != nil || token != fake.token {
+		t.Fatalf("token = %q, %v", token, err)
+	}
+	if len(fake.names) != 2 || fake.names[1] != "Laptop" {
+		t.Fatalf("Device names = %v", fake.names)
+	}
+	if active := store.Snapshot().Config.ActiveServer; active != "local" {
+		t.Fatalf("active = %q, want local", active)
+	}
+}
+
+func TestRepairRemoteRejectsALocalProfile(t *testing.T) {
+	fake := newFakeServer(t)
+	service, store, _ := newService(t)
+	local := config.ServerProfile{
+		ID: "local", Name: "Local Server", URL: config.LocalServerURL, AutoPair: true,
+	}
+	saveProfiles(t, store, "local", local)
+
+	if _, err := service.RepairRemote(context.Background(), "local", "ABCD2345", "Desktop"); err == nil {
+		t.Fatal("RepairRemote accepted the Local Server profile")
+	}
+	if len(fake.names) != 0 {
+		t.Fatalf("the fake Server was contacted: %v", fake.names)
+	}
+}
+
 func TestAddRemotePairsPinsAndActivatesTheProfile(t *testing.T) {
 	fake := newFakeServer(t)
 	service, store, tokens := newService(t)
@@ -371,6 +451,64 @@ func TestAddRemotePairsPinsAndActivatesTheProfile(t *testing.T) {
 	}
 	if strings.Contains(string(raw), fake.token) {
 		t.Fatalf("the Device token reached the configuration: %s", raw)
+	}
+}
+
+func TestRemoveProfileFallsBackToLocalAndForgetsTheToken(t *testing.T) {
+	fake := newFakeServer(t)
+	service, store, tokens := newService(t)
+	remote, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("add remote: %v", err)
+	}
+
+	removed, err := service.RemoveProfile(remote.ID)
+	if err != nil {
+		t.Fatalf("remove profile: %v", err)
+	}
+	if removed.ID != remote.ID || removed.Name != remote.Name {
+		t.Fatalf("removed profile = %+v", removed)
+	}
+	cfg := store.Snapshot().Config
+	if len(cfg.Servers) != 1 || cfg.Servers[0].ID != config.LocalServerID {
+		t.Fatalf("profiles = %+v", cfg.Servers)
+	}
+	if cfg.ActiveServer != config.LocalServerID {
+		t.Fatalf("active = %q, want local", cfg.ActiveServer)
+	}
+	if _, err := tokens.Load(remote.ID); !errors.Is(err, trust.ErrNoToken) {
+		t.Fatalf("the removed profile kept a token: %v", err)
+	}
+}
+
+func TestRemoveProfileRefusesTheLastProfile(t *testing.T) {
+	service, store, _ := newService(t)
+	local := store.Snapshot().Config.Servers[0]
+
+	if _, err := service.RemoveProfile(local.ID); err == nil {
+		t.Fatal("RemoveProfile removed the last profile")
+	}
+	if profiles := store.Snapshot().Config.Servers; len(profiles) != 1 {
+		t.Fatalf("profiles = %+v", profiles)
+	}
+}
+
+func TestRemoveProfileKeepsAnotherActiveProfile(t *testing.T) {
+	fake := newFakeServer(t)
+	service, store, _ := newService(t)
+	remote, err := service.AddRemote(context.Background(), fake.URL, "ABCD2345", "Desktop")
+	if err != nil {
+		t.Fatalf("add remote: %v", err)
+	}
+	if _, err := service.SetActive(config.LocalServerID); err != nil {
+		t.Fatalf("select local: %v", err)
+	}
+
+	if _, err := service.RemoveProfile(remote.ID); err != nil {
+		t.Fatalf("remove profile: %v", err)
+	}
+	if active := store.Snapshot().Config.ActiveServer; active != config.LocalServerID {
+		t.Fatalf("active = %q, want local", active)
 	}
 }
 

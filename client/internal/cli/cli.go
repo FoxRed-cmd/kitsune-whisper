@@ -76,6 +76,7 @@ var subcommands = map[string]bool{
 	"install-desktop":     true,
 	"uninstall-desktop":   true,
 	"migrate-config":      true,
+	"reset-local-pairing": true,
 }
 
 // Run parses args and executes, returning a process exit code.
@@ -131,6 +132,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(rest) > 0 && rest[0] == "migrate-config" {
 		return runMigrateConfig(*configPath, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "reset-local-pairing" {
+		return runResetLocalPairing(*configPath, stdout, stderr)
 	}
 
 	overrides := map[string]any{}
@@ -859,6 +863,73 @@ func runMigrateConfig(configPath string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// runResetLocalPairing forgets the Local Server profile's pinned certificate
+// and Device token. The uninstaller calls it when it deletes Server data, so a
+// reinstall accepts the new certificate and pairs again instead of reporting a
+// stale fingerprint. It is also useful after a manual state-directory removal.
+func runResetLocalPairing(configPath string, stdout, stderr io.Writer) int {
+	return resetLocalPairing(
+		configPath, trust.NewTokenStore(paths.TokenDir()), stdout, stderr,
+	)
+}
+
+func resetLocalPairing(
+	configPath string, tokens *trust.TokenStore, stdout, stderr io.Writer,
+) int {
+	store, err := settings.Open(settings.Options{Path: configPath})
+	if err != nil {
+		fmt.Fprintf(stderr, "settings: %v\n", err)
+		return 1
+	}
+	cfg := store.Snapshot().Config
+	profile, found := localServerProfile(cfg.Servers)
+	if !found {
+		fmt.Fprintln(stdout, "no Local Server profile; nothing to reset")
+		return 0
+	}
+	if err := tokens.Delete(profile.ID); err != nil {
+		// The keychain may be locked or unavailable. Clearing the pin is
+		// enough: the next pairing overwrites the token anyway.
+		fmt.Fprintf(stderr, "warning: could not delete the Device token: %v\n", err)
+	}
+	profiles := append([]config.ServerProfile(nil), cfg.Servers...)
+	for i := range profiles {
+		if profiles[i].ID == profile.ID {
+			profiles[i].Fingerprint = ""
+		}
+	}
+	servers, err := profilePatch(profiles)
+	if err != nil {
+		fmt.Fprintf(stderr, "config: %v\n", err)
+		return 1
+	}
+	if _, err := store.Save(map[string]any{"servers": servers}); err != nil {
+		fmt.Fprintf(stderr, "config: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(
+		stdout,
+		"reset pairing for %s; it will pair again the next time it is used\n",
+		profile.Name,
+	)
+	return 0
+}
+
+// localServerProfile finds the profile the Client auto-pairs over loopback.
+func localServerProfile(profiles []config.ServerProfile) (config.ServerProfile, bool) {
+	for _, profile := range profiles {
+		if profile.ID == config.LocalServerID {
+			return profile, true
+		}
+	}
+	for _, profile := range profiles {
+		if profile.AutoPair {
+			return profile, true
+		}
+	}
+	return config.ServerProfile{}, false
+}
+
 // stdoutInjector is the record command's Injector: print the Transcription.
 type stdoutInjector struct {
 	out io.Writer
@@ -1227,6 +1298,7 @@ Commands:
   install-desktop              add the application-menu entry and icon
   uninstall-desktop            remove the application-menu entry and icon
   migrate-config               add new keys to an existing kitsune.yaml
+  reset-local-pairing          forget the Local Server pin and Device token
 
 Flags:
   --config PATH     path to kitsune.yaml

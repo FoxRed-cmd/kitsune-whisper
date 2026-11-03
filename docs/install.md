@@ -451,6 +451,18 @@ certificates, Devices, Spool, logs, wizard progress, WebView storage, and, with
 `-Purge` removes config, Setup progress, Spool, logs, certificates, Devices, and
 the default model cache.
 
+Removing Server data without a purge also forgets the Local Server profile's
+certificate pin and Device token (the Client runs its
+`reset-local-pairing` command before it is removed). The next install therefore
+pairs with the newly generated certificate automatically instead of reporting
+that the certificate changed. Remote Server profiles are left untouched.
+
+If a Server certificate changes outside the uninstaller — for example after a
+manually deleted state directory — **Settings → Servers and Devices** shows a
+**Pair again** action on the affected profile. For the Local Server it replaces
+the old pin in one click; for a Remote Server it asks for a fresh Pairing code
+and then pins the certificate presented in that connection.
+
 ## Server
 
 The Server has two deployments. The **native per-user bundle** needs neither

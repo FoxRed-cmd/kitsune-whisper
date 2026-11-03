@@ -217,6 +217,14 @@ enter the Server address and the code, and press **Pair**. The Client pins the
 certificate, stores the Device token in the keychain, and makes the new profile
 active.
 
+Each profile has a **Remove profile** action. Removing a profile forgets its
+Device token on this computer and switches to the Local Server if the removed
+profile was active; the last remaining profile cannot be removed. Revoke the
+Device on the Server separately if you want to invalidate its token there.
+When a certificate changes, the affected profile shows **Pair again**: the
+Local Server re-pairs in one click after a confirmation, while a Remote Server
+asks for a fresh Pairing code and then replaces the old pin.
+
 The same screen lists trusted Devices with their last-seen time and revokes
 one. The Local Client's own Device is marked **This Device** and has no Revoke
 button while the Local Server profile is active: its auto-pairing has no code

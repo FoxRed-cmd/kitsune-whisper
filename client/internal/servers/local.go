@@ -19,9 +19,45 @@ import (
 // the user retry once the Server runs. The service lock is not held across the
 // pairing request, so the Settings window never blocks on a slow Server.
 func (s *Service) EnsureLocal(ctx context.Context, address string) (Profile, error) {
+	return s.ensureLocal(ctx, address, "", false)
+}
+
+// RepairLocal pairs the Local Server profile again, replacing its pinned
+// certificate and Device token. It is the explicit recovery action for a
+// Server whose data directory was removed or whose certificate changed: the
+// old pin is not sent as a constraint, because the user already asked to trust
+// the certificate the loopback Server presents now. The profile stays active
+// only when it already was; repairing a stored profile never switches away
+// from a Remote Server behind the user's back.
+func (s *Service) RepairLocal(ctx context.Context, profileID string) (Profile, error) {
+	if strings.TrimSpace(profileID) == "" {
+		return Profile{}, fmt.Errorf("servers: a Local Server profile id is required")
+	}
+	return s.ensureLocal(ctx, "", profileID, true)
+}
+
+func (s *Service) ensureLocal(
+	ctx context.Context, address, profileID string, repair bool,
+) (Profile, error) {
 	s.mu.Lock()
 	snapshot := s.opts.Store.Snapshot()
-	existing, found := findLocalProfile(snapshot.Config.Servers)
+	var existing config.ServerProfile
+	var found bool
+	if repair {
+		existing, found = findProfileByID(snapshot.Config.Servers, profileID)
+		if !found {
+			s.mu.Unlock()
+			return Profile{}, fmt.Errorf("servers: no profile has id %q", profileID)
+		}
+		if existing.ID != config.LocalServerID && !existing.AutoPair {
+			s.mu.Unlock()
+			return Profile{}, fmt.Errorf(
+				"servers: only the Local Server profile can auto-pair over loopback",
+			)
+		}
+	} else {
+		existing, found = findLocalProfile(snapshot.Config.Servers)
+	}
 	raw := strings.TrimSpace(address)
 	if raw == "" {
 		if found && existing.URL != "" {
@@ -57,27 +93,36 @@ func (s *Service) EnsureLocal(ctx context.Context, address string) (Profile, err
 	profile.AutoPair = true
 	// A health poll calls this repeatedly for an already paired Local Server.
 	// Skip the config write when nothing would change, so the shared
-	// kitsune.yaml is not rewritten every 30 seconds.
+	// kitsune.yaml is not rewritten every 30 seconds. Selecting an inactive
+	// profile is still a change; a repair never selects one.
+	activate := !repair && snapshot.Config.ActiveServer != profile.ID
 	unchanged := found && strings.TrimSpace(existing.URL) == normalized &&
-		strings.TrimSpace(existing.Name) != "" && existing.AutoPair
+		strings.TrimSpace(existing.Name) != "" && existing.AutoPair && !activate
 	var saved Profile
 	if unchanged {
 		saved = s.profileByIDLocked(profile.ID)
 	} else {
 		profiles := replaceProfile(snapshot.Config.Servers, profile)
-		if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile)); err != nil {
+		if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile, !repair)); err != nil {
 			s.mu.Unlock()
 			return Profile{}, err
 		}
 		saved = s.profileByIDLocked(profile.ID)
 	}
 	s.mu.Unlock()
-	if s.paired(profile) {
+	if !repair && s.paired(profile) {
 		return saved, nil
 	}
 
+	// A repair deliberately ignores the stored pin: the pairing endpoint is
+	// loopback-only, and the user asked to accept the certificate presented
+	// now. Every other path still verifies the pin before sending anything.
+	pinned := profile.Fingerprint
+	if repair {
+		pinned = ""
+	}
 	oldToken, oldErr := s.opts.Tokens.Load(profile.ID)
-	paired, err := s.opts.PairLocal(ctx, profile.URL, "Local client", profile.Fingerprint)
+	paired, err := s.opts.PairLocal(ctx, profile.URL, "Local client", pinned)
 	if err != nil {
 		return saved, err
 	}
@@ -91,7 +136,7 @@ func (s *Service) EnsureLocal(ctx context.Context, address string) (Profile, err
 	// Re-read the profile list after the network call so a concurrent pairing
 	// or selection is not overwritten.
 	profiles := replaceProfile(s.opts.Store.Snapshot().Config.Servers, profile)
-	if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile)); err != nil {
+	if _, err := s.opts.Store.Save(localProfilePatch(profiles, profile, !repair)); err != nil {
 		// Leave the previous credential in place if the pin could not be
 		// written, so a temporary disk error does not remove existing trust.
 		if oldErr == nil {
@@ -101,16 +146,23 @@ func (s *Service) EnsureLocal(ctx context.Context, address string) (Profile, err
 		}
 		return saved, err
 	}
+	delete(s.health, profile.ID)
 	s.pairingError = ""
 	return s.profileByIDLocked(profile.ID), nil
 }
 
-func localProfilePatch(profiles []config.ServerProfile, profile config.ServerProfile) map[string]any {
-	return map[string]any{
-		"servers":       profilePatches(profiles),
-		"active_server": profile.ID,
-		"server_url":    profile.URL,
+// localProfilePatch renders a Local Server profile save. activate also selects
+// the profile and keeps the deprecated single-Server alias in step; a repair
+// leaves both alone so it never changes routing.
+func localProfilePatch(
+	profiles []config.ServerProfile, profile config.ServerProfile, activate bool,
+) map[string]any {
+	patch := map[string]any{"servers": profilePatches(profiles)}
+	if activate {
+		patch["active_server"] = profile.ID
+		patch["server_url"] = profile.URL
 	}
+	return patch
 }
 
 // paired reports whether a profile has usable credentials: a token, plus a
@@ -134,6 +186,15 @@ func findLocalProfile(profiles []config.ServerProfile) (config.ServerProfile, bo
 	}
 	for _, profile := range profiles {
 		if profile.AutoPair {
+			return profile, true
+		}
+	}
+	return config.ServerProfile{}, false
+}
+
+func findProfileByID(profiles []config.ServerProfile, id string) (config.ServerProfile, bool) {
+	for _, profile := range profiles {
+		if profile.ID == id {
 			return profile, true
 		}
 	}

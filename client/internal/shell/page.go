@@ -250,6 +250,24 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 				out.WriteString(`<button type="button" data-action="use-profile" data-profile-id="` +
 					escape(profile.ID) + `">` + escape(labels.Use) + `</button>`)
 			}
+			if serverProfileNeedsRepair(profile.Health.State) {
+				confirm := ""
+				if profile.AutoPair {
+					// A Local Server re-pairs without a code, so the click is
+					// the only confirmation before the new certificate is
+					// pinned. A Remote Server still needs a fresh Pairing code.
+					confirm = labels.RepairConfirm
+				}
+				out.WriteString(`<button type="button" data-action="repair-profile" data-profile-id="` +
+					escape(profile.ID) + `" data-profile-url="` + escape(profile.URL) +
+					`" data-profile-local="` + boolText(profile.AutoPair) +
+					`" data-confirm="` + escape(confirm) + `">` + escape(labels.Repair) + `</button>`)
+			}
+			if len(view.Profiles) > 1 {
+				out.WriteString(`<button type="button" data-action="remove-profile" data-profile-id="` +
+					escape(profile.ID) + `" data-confirm="` + escape(labels.RemoveConfirm) +
+					`">` + escape(labels.RemoveProfile) + `</button>`)
+			}
 			out.WriteString(`</div>`)
 		}
 	}
@@ -1002,6 +1020,24 @@ func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
 	out.WriteString(`<pre class="diagnostics copy-source" id="diagnostics-copy" hidden>` + escape(view.CopyText) + `</pre>`)
 	out.WriteString(`</section>`)
 	return out.String()
+}
+
+// serverProfileNeedsRepair reports whether a profile is reachable but has no
+// usable credential, so the page offers an explicit pairing again action.
+func serverProfileNeedsRepair(state trust.ServerState) bool {
+	switch state {
+	case trust.StateMismatch, trust.StateUnpinned, trust.StateUnauthenticated:
+		return true
+	default:
+		return false
+	}
+}
+
+func boolText(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func valueOr(value, fallback string) string {
@@ -1816,17 +1852,34 @@ const pageHTML = `<!doctype html>
     parts.push(name);
     return parts.join("+");
   }
+  var repairProfile = { id: "", url: "" };
+  function prepareRemoteRepair(button) {
+    repairProfile.id = button.dataset.profileId || "";
+    repairProfile.url = button.dataset.profileUrl || "";
+    var address = document.getElementById("server-address");
+    if (address) address.value = repairProfile.url;
+    var code = document.getElementById("server-code");
+    if (code) {
+      code.value = "";
+      code.focus();
+    }
+  }
   function pairRemote(button) {
     function value(id) {
       var el = document.getElementById(id);
       return el ? el.value : "";
     }
-    sendIntent({
+    var address = value("server-address");
+    var intent = {
       action: "pair-remote",
-      address: value("server-address"),
+      address: address,
       code: value("server-code"),
       name: value("server-name")
-    }, button);
+    };
+    if (repairProfile.id && repairProfile.url === address) {
+      intent.profile_id = repairProfile.id;
+    }
+    sendIntent(intent, button);
   }
   function wizardValue(id) {
     var el = document.getElementById(id);
@@ -1875,6 +1928,18 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "stop-mic" }, button);
     } else if (action === "pair-remote") {
       pairRemote(button);
+    } else if (action === "repair-profile") {
+      if (button.dataset.profileLocal === "true") {
+        var repairMessage = button.dataset.confirm || "";
+        if (repairMessage && window.confirm && !window.confirm(repairMessage)) return;
+        sendIntent({ action: "repair-local", profile_id: button.dataset.profileId || "" }, button);
+      } else {
+        prepareRemoteRepair(button);
+      }
+    } else if (action === "remove-profile") {
+      var removeMessage = button.dataset.confirm || "";
+      if (removeMessage && window.confirm && !window.confirm(removeMessage)) return;
+      sendIntent({ action: "remove-profile", profile_id: button.dataset.profileId || "" }, button);
     } else if (action === "refresh-devices") {
       sendIntent({ action: "refresh-devices" }, button);
     } else if (action === "revoke-device") {

@@ -320,6 +320,88 @@ func (s *Service) SetActive(profileID string) (Profile, error) {
 	return s.profileByIDLocked(profileID), nil
 }
 
+// RemoveProfile deletes one Server profile and forgets its Device token. The
+// last profile cannot be removed, because the Client configuration always
+// routes an Utterance to exactly one profile. Removing the active profile
+// selects the Local Server when one remains, otherwise the first profile in
+// order; that explicit switch is the only case where routing changes without
+// the user choosing a replacement.
+func (s *Service) RemoveProfile(profileID string) (Profile, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := s.opts.Store.Snapshot()
+	profiles := snapshot.Config.Servers
+	kept := make([]config.ServerProfile, 0, len(profiles))
+	var removed config.ServerProfile
+	found := false
+	for _, profile := range profiles {
+		if profile.ID == profileID {
+			removed, found = profile, true
+			continue
+		}
+		kept = append(kept, profile)
+	}
+	if !found {
+		return Profile{}, fmt.Errorf("servers: no profile has id %q", profileID)
+	}
+	if len(kept) == 0 {
+		return Profile{}, fmt.Errorf("servers: the last Server profile cannot be removed")
+	}
+	active := snapshot.Config.ActiveServer
+	if active == profileID {
+		active = kept[0].ID
+		for _, profile := range kept {
+			if profile.ID == config.LocalServerID || profile.AutoPair {
+				active = profile.ID
+				break
+			}
+		}
+	}
+	patch := map[string]any{
+		"servers":       profilePatches(kept),
+		"active_server": active,
+	}
+	// A locked legacy alias is left for the environment or command line to
+	// decide, exactly like SetActive.
+	if field, ok := snapshot.Field("client.server_url"); !ok || !field.Locked {
+		for _, profile := range kept {
+			if profile.ID == active {
+				patch["server_url"] = profile.URL
+				break
+			}
+		}
+	}
+	if _, err := s.opts.Store.Save(patch); err != nil {
+		return Profile{}, err
+	}
+	// The configuration is already gone; a keychain that refuses the delete
+	// must not make the profile reappear. The next pair overwrites the token.
+	_ = s.opts.Tokens.Delete(profileID)
+	delete(s.health, profileID)
+	if s.devicesFor == profileID {
+		s.devicesFor, s.devices, s.devicesError = "", nil, ""
+	}
+	if s.modelsFor == profileID {
+		s.modelsFor, s.models, s.modelsError = "", nil, ""
+	}
+	if s.configFor == profileID {
+		s.configFor, s.config, s.configError = "", nil, ""
+	}
+	if s.logsFor == profileID {
+		s.logsFor, s.logs, s.logsError = "", nil, ""
+	}
+	if s.lifecycleFor == profileID {
+		s.lifecycleFor, s.lifecycle, s.lifecycleError = "", nil, ""
+	}
+	if s.exposureFor == profileID {
+		s.exposureFor, s.exposure = "", nil
+	}
+	if s.pairingCode != nil {
+		s.pairingCode = nil
+	}
+	return profileView(s.opts.Store.Snapshot().Config, removed), nil
+}
+
 // CheckHealth probes one profile and caches the result for View. The token is
 // advisory here: a profile without one reports "not paired" after /health
 // answers, and the check never changes routing.
@@ -384,12 +466,54 @@ func (s *Service) AddRemote(ctx context.Context, address, code, name string) (Pr
 	if ok {
 		profile = existing
 	}
+	return s.pairRemoteProfile(ctx, profile, code, name, true, false)
+}
+
+// RepairRemote pairs an existing Remote Server profile again with a fresh
+// Pairing code. The caller is an explicit "pair again" action, so the stored
+// certificate pin is not used as a preflight constraint: a Server whose
+// certificate changed would otherwise be impossible to restore. The pairing
+// response's fingerprint must still match the certificate presented in the
+// same TLS connection, and the profile's active state is left as it was.
+func (s *Service) RepairRemote(ctx context.Context, profileID, code, name string) (Profile, error) {
+	if strings.TrimSpace(code) == "" {
+		return Profile{}, trust.ErrPairingCodeRequired
+	}
+	s.mu.Lock()
+	snapshot := s.opts.Store.Snapshot()
+	s.mu.Unlock()
+	profile, found := findProfileByID(snapshot.Config.Servers, profileID)
+	if !found {
+		return Profile{}, fmt.Errorf("servers: no profile has id %q", profileID)
+	}
+	if profile.ID == config.LocalServerID || profile.AutoPair {
+		return Profile{}, fmt.Errorf(
+			"servers: the Local Server profile pairs without a code; repair it directly",
+		)
+	}
+	return s.pairRemoteProfile(ctx, profile, code, name, false, true)
+}
+
+// pairRemoteProfile redeems a Pairing code, stores the new token and pin, and
+// saves the profile. allowRepin is set only by RepairRemote and skips the
+// old-pin preflight; activate is set only by AddRemote so repairing a stored
+// profile never changes routing.
+func (s *Service) pairRemoteProfile(
+	ctx context.Context,
+	profile config.ServerProfile,
+	code, name string,
+	activate, allowRepin bool,
+) (Profile, error) {
 	deviceName := strings.TrimSpace(name)
 	if deviceName == "" {
 		deviceName = localDeviceName()
 	}
+	pinned := profile.Fingerprint
+	if allowRepin {
+		pinned = ""
+	}
 
-	paired, err := trust.PairRemote(ctx, profile.URL, code, deviceName, profile.Fingerprint)
+	paired, err := trust.PairRemote(ctx, profile.URL, code, deviceName, pinned)
 	if err != nil {
 		return Profile{}, err
 	}
@@ -407,14 +531,19 @@ func (s *Service) AddRemote(ctx context.Context, address, code, name string) (Pr
 	}
 	profile.Fingerprint = paired.Fingerprint
 
-	profiles := replaceProfile(snapshot.Config.Servers, profile)
-	patch := map[string]any{
-		"servers":       profilePatches(profiles),
-		"active_server": profile.ID,
-		"server_url":    profile.URL,
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// Re-read the profile list after the network call so a concurrent pairing
+	// or selection is not overwritten.
+	current := s.opts.Store.Snapshot().Config
+	profiles := replaceProfile(current.Servers, profile)
+	patch := map[string]any{"servers": profilePatches(profiles)}
+	if activate {
+		patch["active_server"] = profile.ID
+		patch["server_url"] = profile.URL
+	} else if current.ActiveServer == profile.ID {
+		patch["server_url"] = profile.URL
+	}
 	if _, err := s.opts.Store.Save(patch); err != nil {
 		// Leave the previous credential in place if the config could not be
 		// written, so a temporary disk error does not remove the trust the
@@ -426,6 +555,7 @@ func (s *Service) AddRemote(ctx context.Context, address, code, name string) (Pr
 		}
 		return Profile{}, err
 	}
+	delete(s.health, profile.ID)
 	s.pairingError = ""
 	return s.profileByIDLocked(profile.ID), nil
 }

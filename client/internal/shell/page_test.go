@@ -109,7 +109,7 @@ func sampleView() shell.SettingsView {
 		Servers: servers.View{
 			Profiles: []servers.Profile{
 				{
-					ID: "local", Name: "Local Server", URL: "https://localhost:8765", Active: true,
+					ID: "local", Name: "Local Server", URL: "https://localhost:8765", AutoPair: true, Active: true,
 					Health: trust.Status{State: trust.StateOnline},
 				},
 				{
@@ -142,6 +142,10 @@ func sampleView() shell.SettingsView {
 			Name:             "Имя устройства",
 			NameHelp:         "Имя в списке устройств.",
 			Pair:             "Сопрячь",
+			Repair:           "Сопрячь заново",
+			RepairConfirm:    "Доверять новому сертификату?",
+			RemoveProfile:    "Удалить профиль",
+			RemoveConfirm:    "Удалить этот профиль?",
 			Devices:          "Устройства",
 			DevicesFor:       "Устройства активного профиля.",
 			Refresh:          "Обновить устройства",
@@ -777,6 +781,7 @@ func TestPageRendersProfileHealthAndTheSwitchAction(t *testing.T) {
 		"Выбрать",
 		`data-action="refresh-servers"`,
 		`data-action="use-profile"`,
+		`data-action="remove-profile"`,
 		`data-profile-id="remote-desktop"`,
 	} {
 		if !strings.Contains(page, want) {
@@ -784,8 +789,36 @@ func TestPageRendersProfileHealthAndTheSwitchAction(t *testing.T) {
 		}
 	}
 	// The active profile is marked and is not offered a redundant switch.
-	if strings.Contains(page, `data-profile-id="local"`) {
+	// Other profile actions (Remove profile) still name the active profile.
+	if strings.Contains(page, `data-action="use-profile" data-profile-id="local"`) {
 		t.Error("the active profile still renders a switch button")
+	}
+}
+
+func TestPageOffersRepairOnlyForAChangedOrUnpairedCertificate(t *testing.T) {
+	view := sampleView()
+	view.Servers.Profiles[1].Health = trust.Status{State: trust.StateMismatch, Error: "certificate changed"}
+	page := shell.Page(shell.Snapshot{}, view)
+	if !strings.Contains(page, `data-action="repair-profile" data-profile-id="remote-desktop"`) {
+		t.Fatal("a changed Remote certificate has no Pair again action")
+	}
+	if !strings.Contains(page, `data-profile-local="false"`) {
+		t.Fatal("a Remote profile was rendered as the Local Server")
+	}
+
+	view.Servers.Profiles[0].Health = trust.Status{State: trust.StateMismatch}
+	page = shell.Page(shell.Snapshot{}, view)
+	if !strings.Contains(page, `data-profile-local="true"`) {
+		t.Fatal("the Local Server did not get the one-click repair path")
+	}
+	if !strings.Contains(page, "Доверять новому сертификату?") {
+		t.Fatal("the Local Server repair has no confirmation")
+	}
+
+	view.Servers.Profiles[1].Health = trust.Status{State: trust.StateOffline}
+	page = shell.Page(shell.Snapshot{}, view)
+	if strings.Contains(page, `data-action="repair-profile" data-profile-id="remote-desktop"`) {
+		t.Fatal("an unreachable Server was offered a repair action")
 	}
 }
 

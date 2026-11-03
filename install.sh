@@ -563,6 +563,16 @@ forget_keyring_tokens() {
   done <<< "$users"
 }
 
+# reset_local_pairing forgets the Local Server certificate pin and Device
+# token. Removing Server data creates a new certificate, and the kept Client
+# configuration would otherwise pin the old fingerprint and report "certificate
+# changed" after reinstall.
+reset_local_pairing() {
+  [[ -x "$BIN_DIR/kitsune-client" ]] || return 0
+  "$BIN_DIR/kitsune-client" reset-local-pairing >/dev/null 2>&1 \
+    || warn "could not reset the Local Server pairing; re-pair it after reinstall"
+}
+
 ask_what_to_delete() {
   if [[ "$PURGE" == 1 ]]; then
     return 0
@@ -602,6 +612,9 @@ uninstall_all() {
     systemctl --user disable --now kitsune-client.service >/dev/null 2>&1 || true
   fi
 
+  if [[ "$REMOVE_SERVER_DATA" == 1 && "$PURGE" == 0 ]]; then
+    reset_local_pairing
+  fi
   rm -f "$WAYLAND_UNIT" "$CLIENT_DROPIN" "$BIN_DIR/kitsune-client" "$SERVER_LAUNCHER" "$DESKTOP_FILE"
   rm -f "$MENU_FILE" "$ICON_SVG" "$ICON_PNG"
   rm -f "$SYSTEMD_DIR/kitsune-server.service"

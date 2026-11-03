@@ -62,10 +62,15 @@ type Servers interface {
 	View() servers.View
 	Config() config.ClientConfig
 	AddRemote(ctx context.Context, address, code, name string) (servers.Profile, error)
+	RepairRemote(ctx context.Context, profileID, code, name string) (servers.Profile, error)
 	// EnsureLocal creates or selects the Local Server profile and auto-pairs
 	// it over loopback when it has no token.
 	EnsureLocal(ctx context.Context, address string) (servers.Profile, error)
+	// RepairLocal pairs the Local Server profile again after its certificate
+	// or Device token changed.
+	RepairLocal(ctx context.Context, profileID string) (servers.Profile, error)
 	SetActive(profileID string) (servers.Profile, error)
+	RemoveProfile(profileID string) (servers.Profile, error)
 	CheckHealth(ctx context.Context, profileID string) trust.Status
 	LoadDevices(ctx context.Context, profileID string) ([]servers.Device, error)
 	RevokeDevice(ctx context.Context, profileID, deviceID string) error
@@ -114,6 +119,10 @@ type ServerLabels struct {
 	Name             string            `json:"name"`
 	NameHelp         string            `json:"nameHelp"`
 	Pair             string            `json:"pair"`
+	Repair           string            `json:"repair"`
+	RepairConfirm    string            `json:"repairConfirm"`
+	RemoveProfile    string            `json:"removeProfile"`
+	RemoveConfirm    string            `json:"removeConfirm"`
 	Devices          string            `json:"devices"`
 	DevicesFor       string            `json:"devicesFor"`
 	Refresh          string            `json:"refresh"`
@@ -437,6 +446,10 @@ func (s *Shell) serverLabels() ServerLabels {
 		Name:             catalog.T("server.name"),
 		NameHelp:         catalog.T("help.server.name"),
 		Pair:             catalog.T("action.pair"),
+		Repair:           catalog.T("action.repair"),
+		RepairConfirm:    catalog.T("server.repairConfirm"),
+		RemoveProfile:    catalog.T("action.removeProfile"),
+		RemoveConfirm:    catalog.T("server.removeConfirm"),
 		Devices:          catalog.T("server.devices"),
 		DevicesFor:       catalog.T("server.devicesFor"),
 		Refresh:          catalog.T("action.refreshDevices"),
@@ -703,13 +716,15 @@ type Intent struct {
 	Value string `json:"value,omitempty"`
 	// Device is the microphone selector for ActionTestMic.
 	Device string `json:"device,omitempty"`
-	// Address, Code, and Name carry a Remote pairing request.
+	// Address, Code, and Name carry a Remote pairing request. ProfileID is set
+	// when the request re-pairs an existing Remote Server profile instead of
+	// adding one.
 	Address string `json:"address,omitempty"`
 	Code    string `json:"code,omitempty"`
 	Name    string `json:"name,omitempty"`
 	// DeviceID selects the Device to revoke.
 	DeviceID string `json:"device_id,omitempty"`
-	// ProfileID selects the Server profile to switch to.
+	// ProfileID selects the Server profile to switch to or repair.
 	ProfileID string `json:"profile_id,omitempty"`
 	// EntryID selects one saved Utterance on the Spool screen.
 	EntryID string `json:"entry_id,omitempty"`
@@ -749,6 +764,8 @@ const (
 	IntentStopMic            = "stop-mic"
 	IntentRestart            = "restart"
 	IntentPairRemote         = "pair-remote"
+	IntentRepairLocal        = "repair-local"
+	IntentRemoveProfile      = "remove-profile"
 	IntentRefreshDevices     = "refresh-devices"
 	IntentRevokeDevice       = "revoke-device"
 	IntentPairingCode        = "pairing-code"
@@ -882,6 +899,12 @@ func (s *Shell) HandleIntent(payload []byte) error {
 	case IntentPairRemote:
 		s.pairRemote(intent)
 		return nil
+	case IntentRepairLocal:
+		s.repairLocal(intent.ProfileID)
+		return nil
+	case IntentRemoveProfile:
+		s.removeProfile(intent.ProfileID)
+		return nil
 	case IntentRefreshDevices:
 		s.refreshDevices()
 		return nil
@@ -1008,15 +1031,30 @@ func (s *Shell) pairRemote(intent Intent) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	profile, err := s.opts.Servers.AddRemote(ctx, intent.Address, intent.Code, intent.Name)
+	repair := strings.TrimSpace(intent.ProfileID) != ""
+	var profile servers.Profile
+	var err error
+	if repair {
+		profile, err = s.opts.Servers.RepairRemote(ctx, intent.ProfileID, intent.Code, intent.Name)
+	} else {
+		profile, err = s.opts.Servers.AddRemote(ctx, intent.Address, intent.Code, intent.Name)
+	}
 	if err != nil {
 		// Only the message changes: rebuilding the form here would drop the
 		// address and code the user just typed. Nothing was saved, so the
 		// rendered form is still current.
-		s.pushMessages(nil, []string{s.catalog().T("error.server.pair", err.Error())})
+		key := "error.server.pair"
+		if repair {
+			key = "error.server.repair"
+		}
+		s.pushMessages(nil, []string{s.catalog().T(key, err.Error())})
 		return
 	}
-	notices := []string{s.catalog().T("notice.server.paired", profile.Name)}
+	noticeKey := "notice.server.paired"
+	if repair {
+		noticeKey = "notice.server.repaired"
+	}
+	notices := []string{s.catalog().T(noticeKey, profile.Name)}
 	failures := []string{}
 	if s.opts.ApplyConfig != nil {
 		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
@@ -1026,6 +1064,64 @@ func (s *Shell) pairRemote(intent Intent) {
 	s.resetDevices()
 	s.pushSettings()
 	s.pushMessages(notices, failures)
+	s.update(s.opts.Runtime.Status())
+	go s.checkServer(context.Background())
+}
+
+// repairLocal pairs the Local Server profile again after its data directory
+// was removed or its certificate changed. The profile is already active in the
+// usual case; the repair never selects it if it is not.
+func (s *Shell) repairLocal(profileID string) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	profile, err := s.opts.Servers.RepairLocal(ctx, profileID)
+	if err != nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.repair", err.Error())})
+		return
+	}
+	failures := []string{}
+	if s.opts.ApplyConfig != nil {
+		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
+			failures = append(failures, s.catalog().T("error.server.apply", err.Error()))
+		}
+	}
+	s.resetDevices()
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.server.repaired", profile.Name)}, failures)
+	s.update(s.opts.Runtime.Status())
+	go s.checkServer(context.Background())
+}
+
+// removeProfile deletes one Server profile, applies the resulting routing, and
+// refreshes the page. The service refuses to remove the last profile; the page
+// also hides the action when only one remains.
+func (s *Shell) removeProfile(profileID string) {
+	if s.opts.Servers == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.server.unavailable")})
+		return
+	}
+	if strings.TrimSpace(profileID) == "" {
+		return
+	}
+	profile, err := s.opts.Servers.RemoveProfile(profileID)
+	if err != nil {
+		s.pushSettings()
+		s.pushMessages(nil, []string{s.catalog().T("error.server.remove", err.Error())})
+		return
+	}
+	failures := []string{}
+	if s.opts.ApplyConfig != nil {
+		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
+			failures = append(failures, s.catalog().T("error.server.apply", err.Error()))
+		}
+	}
+	s.resetDevices()
+	s.pushSettings()
+	s.pushMessages([]string{s.catalog().T("notice.server.removed", profile.Name)}, failures)
 	s.update(s.opts.Runtime.Status())
 	go s.checkServer(context.Background())
 }

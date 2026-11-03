@@ -24,6 +24,8 @@ type fakeServers struct {
 
 	addCalls     []string
 	ensureCalls  []string
+	repairCalls  []string
+	removeCalls  []string
 	devicesCalls []string
 	revokeCalls  []string
 	codeCalls    []string
@@ -104,6 +106,24 @@ func (f *fakeServers) AddRemote(_ context.Context, address, code, name string) (
 	return profile, err
 }
 
+func (f *fakeServers) RepairRemote(_ context.Context, profileID, code, name string) (servers.Profile, error) {
+	f.mu.Lock()
+	f.addCalls = append(f.addCalls, profileID+"|"+code+"|"+name)
+	err, profile := f.pairErr, f.profile
+	f.mu.Unlock()
+	return profile, err
+}
+
+func (f *fakeServers) RepairLocal(_ context.Context, profileID string) (servers.Profile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.repairCalls = append(f.repairCalls, profileID)
+	if f.ensureErr != nil {
+		return f.profile, f.ensureErr
+	}
+	return f.profile, nil
+}
+
 func (f *fakeServers) EnsureLocal(_ context.Context, address string) (servers.Profile, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -153,6 +173,34 @@ func (f *fakeServers) SetActive(profileID string) (servers.Profile, error) {
 		}
 	}
 	return f.profile, nil
+}
+
+func (f *fakeServers) RemoveProfile(profileID string) (servers.Profile, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removeCalls = append(f.removeCalls, profileID)
+	kept := make([]servers.Profile, 0, len(f.view.Profiles))
+	var removed servers.Profile
+	found := false
+	for _, profile := range f.view.Profiles {
+		if profile.ID == profileID {
+			removed, found = profile, true
+			continue
+		}
+		kept = append(kept, profile)
+	}
+	if !found {
+		return servers.Profile{}, errors.New("no such profile")
+	}
+	if len(kept) == 0 {
+		return servers.Profile{}, errors.New("the last Server profile cannot be removed")
+	}
+	f.view.Profiles = kept
+	if f.view.ActiveID == profileID {
+		f.view.ActiveID = kept[0].ID
+	}
+	f.cfg.ActiveServer = f.view.ActiveID
+	return removed, nil
 }
 
 func (f *fakeServers) CheckHealth(_ context.Context, profileID string) trust.Status {
@@ -416,6 +464,43 @@ func TestUseProfileFailureKeepsTheActiveProfileAndAppliesNothing(t *testing.T) {
 	}
 	messages, _ := window.lastMessages()
 	if len(messages.failures) != 1 || !strings.Contains(messages.failures[0], "locked") {
+		t.Fatalf("messages = %+v", messages)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestRemoveProfileIntentDeletesAndAppliesTheNewRouting(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	var applied config.ClientConfig
+	sh := newServersShell(t, rt, desktop, settings, service, func(cfg config.ClientConfig) error {
+		applied = cfg
+		return nil
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRemoveProfile, ProfileID: "remote-desktop"}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if len(service.removeCalls) != 1 || service.removeCalls[0] != "remote-desktop" {
+		t.Fatalf("remove calls = %v", service.removeCalls)
+	}
+	if applied.ActiveServer != "local" {
+		t.Fatalf("applied config = %+v", applied)
+	}
+	view, ok := window.lastSettings()
+	if !ok || len(view.Servers.Profiles) != 1 || view.Servers.ActiveID != "local" {
+		t.Fatalf("pushed view = %+v", view)
+	}
+	messages, _ := window.lastMessages()
+	if len(messages.notices) != 1 || !strings.Contains(messages.notices[0], "Desktop") {
 		t.Fatalf("messages = %+v", messages)
 	}
 

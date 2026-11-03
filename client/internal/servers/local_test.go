@@ -18,14 +18,16 @@ import (
 type fakeLocalPair struct {
 	calls       int
 	urls        []string
+	pins        []string
 	fingerprint string
 	token       string
 	err         error
 }
 
-func (f *fakeLocalPair) pair(_ context.Context, url, name, _ string) (trust.Pairing, error) {
+func (f *fakeLocalPair) pair(_ context.Context, url, name, pinned string) (trust.Pairing, error) {
 	f.calls++
 	f.urls = append(f.urls, url+"|"+name)
+	f.pins = append(f.pins, pinned)
 	if f.err != nil {
 		return trust.Pairing{}, f.err
 	}
@@ -108,6 +110,100 @@ func TestEnsureLocalReusesAnExistingPairedProfile(t *testing.T) {
 	}
 	if pair.calls != 1 {
 		t.Fatalf("a paired profile was paired again: %d calls", pair.calls)
+	}
+}
+
+func TestRepairLocalReplacesThePinAndToken(t *testing.T) {
+	pair := &fakeLocalPair{token: "ktn_old", fingerprint: "sha256:old"}
+	service, store, tokens := newLocalService(t, pair)
+	profile, err := service.EnsureLocal(context.Background(), "")
+	if err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+
+	pair.token = "ktn_new"
+	pair.fingerprint = "sha256:new"
+	repaired, err := service.RepairLocal(context.Background(), profile.ID)
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if pair.calls != 2 {
+		t.Fatalf("pair calls = %d, want 2", pair.calls)
+	}
+	if pair.pins[1] != "" {
+		t.Fatalf("repair sent the old pin %q", pair.pins[1])
+	}
+	if repaired.Fingerprint != "sha256:new" || !repaired.Active {
+		t.Fatalf("repaired profile = %+v", repaired)
+	}
+	if token, err := tokens.Load(config.LocalServerID); err != nil || token != "ktn_new" {
+		t.Fatalf("token = %q, %v", token, err)
+	}
+	if store.Snapshot().Config.ActiveServer != config.LocalServerID {
+		t.Fatalf("repair changed the active profile: %q", store.Snapshot().Config.ActiveServer)
+	}
+}
+
+func TestRepairLocalDoesNotSwitchAwayFromARemoteServer(t *testing.T) {
+	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:old"}
+	service, store, _ := newLocalService(t, pair)
+	profile, err := service.EnsureLocal(context.Background(), "")
+	if err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+	local := store.Snapshot().Config.Servers[0]
+	remote := config.ServerProfile{
+		ID: "remote", Name: "Desktop", URL: "https://desktop.local:8765",
+	}
+	saveProfiles(t, store, remote.ID, local, remote)
+
+	pair.fingerprint = "sha256:new"
+	if _, err := service.RepairLocal(context.Background(), profile.ID); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if active := store.Snapshot().Config.ActiveServer; active != remote.ID {
+		t.Fatalf("repair switched the active profile to %q", active)
+	}
+}
+
+func TestRepairLocalKeepsTheOldCredentialsWhenPairingFails(t *testing.T) {
+	pair := &fakeLocalPair{token: "ktn_old", fingerprint: "sha256:old"}
+	service, store, tokens := newLocalService(t, pair)
+	profile, err := service.EnsureLocal(context.Background(), "")
+	if err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+
+	pair.err = errors.New("connection refused")
+	if _, err := service.RepairLocal(context.Background(), profile.ID); err == nil {
+		t.Fatal("a repair failure was hidden")
+	}
+	if token, err := tokens.Load(config.LocalServerID); err != nil || token != "ktn_old" {
+		t.Fatalf("token = %q, %v", token, err)
+	}
+	for _, candidate := range store.Snapshot().Config.Servers {
+		if candidate.ID == config.LocalServerID && candidate.Fingerprint != "sha256:old" {
+			t.Fatalf("fingerprint = %q, want the old pin", candidate.Fingerprint)
+		}
+	}
+}
+
+func TestRepairLocalRejectsANonLocalProfile(t *testing.T) {
+	pair := &fakeLocalPair{}
+	service, store, _ := newLocalService(t, pair)
+	profiles := []any{map[string]any{
+		"id": "remote", "name": "Remote", "url": "https://desktop.local:8765",
+		"fingerprint": "", "auto_pair": false,
+	}}
+	if _, err := store.Save(map[string]any{"servers": profiles, "active_server": "remote"}); err != nil {
+		t.Fatalf("save profiles: %v", err)
+	}
+
+	if _, err := service.RepairLocal(context.Background(), "remote"); err == nil {
+		t.Fatal("RepairLocal accepted a Remote Server profile")
+	}
+	if pair.calls != 0 {
+		t.Fatalf("pair calls = %d, want 0", pair.calls)
 	}
 }
 
