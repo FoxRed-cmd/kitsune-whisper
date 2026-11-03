@@ -22,7 +22,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="dist"
-VERSION="${KITSUNE_VERSION:-$(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo 0.1.0)}"
+# VERSION is the single source of truth for local builds; release CI passes the
+# tag explicitly. git describe remains a fallback for an older checkout.
+VERSION="${KITSUNE_VERSION:-$(cat "$REPO_ROOT/VERSION" 2>/dev/null || git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo 0.1.0)}"
 GO="${GO:-go}"
 CC_VALUE="${CC:-}"
 NO_CLIENT=0

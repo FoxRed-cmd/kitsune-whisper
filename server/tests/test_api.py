@@ -7,6 +7,7 @@ import time
 import pytest
 from conftest import make_client, make_wav
 from fastapi import FastAPI
+from kitsune_server import __version__
 from kitsune_server.app import create_app
 from kitsune_server.config import DecodeConfig, ProcessingConfig, ServerConfig
 from kitsune_server.processor import (
@@ -52,7 +53,7 @@ async def test_health_reports_liveness_and_version_only() -> None:
     async with make_client(app, token="") as client:
         response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.1.0"}
+    assert response.json() == {"status": "ok", "version": __version__}
 
 
 async def test_status_shape() -> None:
@@ -62,7 +63,7 @@ async def test_status_shape() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["version"] == "0.1.0"
+    assert body["version"] == __version__
     assert body["model"] == "fake"
     assert body["device"] == "cpu"
     assert body["compute_type"] == "int8"

@@ -166,7 +166,7 @@ resources generated from the SVG brand asset:
 
 ```powershell
 $env:CC = 'zig cc'   # or a gcc on PATH
-./packaging/windows/build-client.ps1 -Version v0.2.0
+./packaging/windows/build-client.ps1 -Version v1.0.0
 ```
 
 `dist\kitsune-client.exe` is then a GUI executable: double-clicking it does not
@@ -740,3 +740,14 @@ can confirm the GPU is actually in use.
 
 For GPU prerequisites, see [GPU prerequisites](../README.md#gpu-prerequisites).
 For the full config surface, see [Configuration](configuration.md).
+
+## Troubleshooting and security
+
+- [`troubleshooting.md`](troubleshooting.md) — installer, Tray, hotkey,
+  injection, 401/revoked, certificate changed, 503 stopped, model, update, and
+  Docker failures, with the log locations and diagnostic commands.
+- [`security.md`](security.md) — TLS pinning, Device tokens, Pairing codes,
+  revocation, and the LAN-exposure checklist.
+- [`models.md`](models.md) — catalog, download/activate/delete, idle unload, and
+  CUDA.
+- [`release.md`](release.md) — the 1.0.0 artifacts and the release checklist.

@@ -4,7 +4,7 @@
 #   packaging/rpm/build-rpm.sh --client dist/kitsune-client \
 #     --server-artifact dist/kitsune-server_linux_amd64.tar.gz \
 #     --wayland-artifact dist/kitsune-wayland_linux_amd64.tar.gz \
-#     --version v0.4.1 --output dist
+#     --version v1.0.0 --output dist
 #   packaging/rpm/build-rpm.sh --legacy ...   # GTK3/WebKit2GTK 4.1 variant
 #
 # The package mirrors the .deb payload: the Client, the native Server bundle,
@@ -94,7 +94,7 @@ if [[ -n "$WAYLAND_ARTIFACT" ]]; then
 fi
 
 if [[ -z "$VERSION" ]]; then
-  VERSION="$(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo 0.1.0)"
+  VERSION="$(cat "$REPO_ROOT/VERSION" 2>/dev/null || git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo 0.1.0)"
 fi
 VERSION="${VERSION#v}"
 [[ -n "$VERSION" ]] || VERSION="0.1.0"

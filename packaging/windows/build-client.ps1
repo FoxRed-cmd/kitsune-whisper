@@ -18,7 +18,7 @@ files are removed afterwards.
 Set CC when no gcc is on PATH (for example, `$env:CC = 'zig cc'`).
 
 .EXAMPLE
-./packaging/windows/build-client.ps1 -Version v0.2.0
+./packaging/windows/build-client.ps1 -Version v1.0.0
 #>
 [CmdletBinding()]
 param(

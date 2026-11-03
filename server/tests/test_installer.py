@@ -568,6 +568,7 @@ def test_release_workflow_publishes_every_artifact() -> None:
     workflow_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
     assert set(workflow["jobs"]) == {
+        "verify-version",
         "client-linux",
         "client-windows",
         "server-bundle",
@@ -592,6 +593,7 @@ def test_release_workflow_publishes_every_artifact() -> None:
         "kitsune-whisper*.rpm",
         "kitsune-whisper*.AppImage",
         "install.sh",
+        "install.ps1",
         "checksums.txt",
     ):
         assert asset in text, asset
@@ -600,6 +602,11 @@ def test_release_workflow_publishes_every_artifact() -> None:
     assert "packaging/rpm/build-rpm.sh" in text
     assert "packaging/appimage/build-appimage.sh" in text
     assert "sha256sum" in text
+
+    # The tag must match the single version file before anything is published.
+    assert "verify-version" in text
+    assert '[[ "$tag" != "v$version" ]]' in text
+    assert "server/pyproject.toml" in text
 
 
 def test_the_wayland_builder_exposes_all_three_helpers() -> None:

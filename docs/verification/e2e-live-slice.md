@@ -2,10 +2,20 @@
 
 Verification that a real Server and the real Client run the complete Dictation
 cycle, plus the silence and error paths. The automated half is
-[`scripts/e2e_live.py`](../scripts/e2e_live.py) (driven by `scripts/e2e-live.ps1`
-on Windows and `scripts/e2e-live.sh` on Linux); the desktop half (global hotkey,
-microphone, injection into a GUI editor and a terminal) is a manual checklist at
-the bottom, because it cannot be observed from an automated session.
+[`scripts/e2e_live.py`](../../scripts/e2e_live.py) (driven by
+`scripts/e2e-live.ps1` on Windows and `scripts/e2e-live.sh` on Linux); the
+desktop half (global hotkey, microphone, injection into a GUI editor and a
+terminal) is a manual checklist at the bottom, because it cannot be observed
+from an automated session.
+
+The authenticated desktop slice from issue #83 is a separate harness:
+[`scripts/e2e_trust.py`](../../scripts/e2e_trust.py), driven by
+`scripts/e2e-trust.sh` / `scripts/e2e-trust.ps1`. It starts a TLS-enabled,
+token-protected Server and covers local auto-pairing, a remote Pairing code,
+Device revocation and re-pairing, the manual Server switch, soft-stop/start, a
+supervised restart (including a persisted soft-stop), an unreachable Server, and
+Spool recovery. The release matrix lives in
+[manual-matrix.md](manual-matrix.md).
 
 ## What the harness covers
 
@@ -37,6 +47,10 @@ speech WAV (Windows SAPI / espeak-ng, or `--speech <file>`), and checks:
 
 # Against an already-running Server
 ./scripts/e2e-live.ps1 -Profile external -ServerUrl http://192.168.1.10:8765
+
+# Authenticated trust and lifecycle slice (Linux / Windows)
+./scripts/e2e-trust.sh --model small --report e2e-trust.md
+./scripts/e2e-trust.ps1 -Model small -Report e2e-trust.md
 ```
 
 Profiles: `local-cpu` (default), `local-gpu`, `docker-cpu`, `docker-gpu`,
@@ -75,6 +89,12 @@ model `small`, 9.10 s SAPI speech WAV, 2026-10-05.
 | --- | --- | --- | --- | --- |
 | `local-cpu` | `cpu` / `int8` | 2.1–2.7 s | 0.23–0.30× | 9/9 |
 | `local-gpu` | `cuda` / `float16` | 0.32 s | 0.03–0.04× | 9/9 |
+
+1.0.0 release check (2026-11-03): Fedora 44, GNOME Wayland, CPU-only, model
+`tiny`. All 8 live checks and all 18 authenticated trust checks passed; the
+speech round trip took 1.21 s for 5.92 s of audio (0.21× realtime). The
+authenticated harness is [`e2e_trust.py`](../../scripts/e2e_trust.py); see
+[manual-matrix.md](manual-matrix.md).
 
 Sanity check against the prototype (#8), which measured `small` at ≈0.6–0.7× on
 CPU and ≈0.02–0.2× on GPU:

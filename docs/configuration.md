@@ -378,5 +378,7 @@ transcription injects nothing and leaves the clipboard untouched.
 ## See also
 
 - [Install, upgrade, and uninstall](install.md)
+- [Security, trust, and pairing](security.md)
+- [Models](models.md)
 - [Recommended hardware](install.md#recommended-hardware)
 - [Wayland support and known limitations](wayland.md)

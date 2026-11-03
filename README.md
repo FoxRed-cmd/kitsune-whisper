@@ -414,7 +414,13 @@ docker compose --profile gpu build
 
 - [`docs/install.md`](docs/install.md) — install, paths, autostart, upgrade/uninstall, hardware.
 - [`docs/configuration.md`](docs/configuration.md) — the full `kitsune.yaml` reference.
+- [`docs/security.md`](docs/security.md) — TLS, Device tokens, pairing, revocation, LAN exposure.
+- [`docs/models.md`](docs/models.md) — model catalog, download/activate/delete, idle unload, CUDA.
+- [`docs/troubleshooting.md`](docs/troubleshooting.md) — diagnostics, logs, common failures.
+- [`docs/release.md`](docs/release.md) — versioning, artifacts, checksums, release checklist.
+- [`docs/verification/e2e-live-slice.md`](docs/verification/e2e-live-slice.md) — the automated live slices.
 - [`docs/verification/docker-smoke.md`](docs/verification/docker-smoke.md) — real-container parity smoke.
+- [`docs/verification/manual-matrix.md`](docs/verification/manual-matrix.md) — GNOME Wayland, Windows, and CUDA matrix.
 - [`docs/wayland.md`](docs/wayland.md) — Wayland support matrix and known limitations.
 - [`docs/adr/`](docs/adr/) — architecture decisions; [`GLOSSARY.md`](GLOSSARY.md) — domain terms.
 
@@ -433,18 +439,26 @@ docker compose --profile gpu build
 
 `scripts/e2e-live.ps1` (Windows) and `scripts/e2e-live.sh` (Linux) bring up a real
 Server and run the live slice — speech round trip, latency, silence, and error
-paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). See
-`docs/verification/e2e-live-slice.md` for the automated checks and the manual
-hotkey/capture/injection checklist. The Linux installer's one-sudo, `uaccess`,
+paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). The authenticated
+slice, `scripts/e2e-trust.sh` / `.ps1`, adds local and remote pairing, Device
+revocation, manual Server switch, soft-stop/start, supervised restart, and Spool
+recovery. See `docs/verification/e2e-live-slice.md` and
+`docs/verification/manual-matrix.md`. The Linux installer's one-sudo, `uaccess`,
 bundled-helper, and full-cycle checks are recorded in
 [`docs/verification/linux-installer.md`](docs/verification/linux-installer.md).
 
 ### Releases
 
+The current release line is **1.0.0**. The root [`VERSION`](VERSION),
+`server/pyproject.toml`, and `server/kitsune_server/__init__.py` carry the same
+version, and release CI refuses a tag that does not match.
+
 Tagging `v*` runs `.github/workflows/release.yml`: it builds the GTK4 and GTK3
-Clients, the native Server bundle, the bundled Wayland helpers, and both `.deb`
-packages on native runners, then attaches them with `checksums.txt` to the
+Clients, the native Server bundle, the bundled Wayland helpers, the Windows
+setup, both `.deb` and `.rpm` packages, and both AppImages on native runners,
+then attaches them with `install.sh`, `install.ps1`, and `checksums.txt` to the
 GitHub Release. `publish-server-image.yml` publishes the Server images to GHCR.
+See [`docs/release.md`](docs/release.md) for the checklist.
 
 ## License
 

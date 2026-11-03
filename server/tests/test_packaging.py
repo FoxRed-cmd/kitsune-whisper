@@ -269,6 +269,15 @@ def test_server_package_version_and_cli_entry_point_stay_in_sync() -> None:
     assert project["scripts"]["kitsune-server"] == "kitsune_server.cli:main"
 
 
+def test_the_repository_version_file_matches_the_server_package() -> None:
+    """VERSION is the release tag source of truth; release CI enforces it."""
+    import re
+
+    version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version), version
+    assert version == __version__
+
+
 def test_native_bundle_documentation_covers_build_and_uninstall() -> None:
     text = BUNDLE_DOC_PATH.read_text(encoding="utf-8")
     assert "kitsune-server bundle build" in text
@@ -349,6 +358,53 @@ def test_docker_smoke_workflow_is_opt_in_and_not_in_default_ci() -> None:
     assert "workflow_dispatch" in triggers
     assert "schedule" in triggers
     assert "pull_request" not in triggers
+
+
+def test_e2e_trust_harness_covers_the_release_surface() -> None:
+    script = REPO_ROOT / "scripts" / "e2e_trust.py"
+    source = script.read_text(encoding="utf-8")
+    compile(source, str(script), "exec")
+    for needle in (
+        "/pair/local",
+        "/pair",
+        "/admin/devices",
+        "/admin/stop",
+        "/admin/start",
+        "/admin/restart",
+        "auto_pair",
+        "spool",
+        "RESTART_EXIT_CODE",
+        "wait_restart",
+        "--report",
+    ):
+        assert needle in source, needle
+    for wrapper in ("e2e-trust.sh", "e2e-trust.ps1"):
+        assert (REPO_ROOT / "scripts" / wrapper).is_file(), wrapper
+    assert "e2e_trust.py" in (REPO_ROOT / "scripts" / "e2e-trust.sh").read_text(encoding="utf-8")
+
+
+def test_documentation_covers_install_release_and_troubleshooting() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    docs = {
+        "security.md": ("Pairing code", "Revoke", "expose on", "Threat model"),
+        "troubleshooting.md": ("Client log", "401", "Certificate changed", "Spool"),
+        "models.md": ("Model catalog", "idle_unload_seconds", "CUDA", "download"),
+        "release.md": ("v1.0.0", "checksums.txt", "verify-version", "manual"),
+        "verification/manual-matrix.md": (
+            "GNOME on Wayland",
+            "Windows 11",
+            "NVIDIA GPU",
+            "Parent spec #65",
+        ),
+    }
+    for name, needles in docs.items():
+        path = REPO_ROOT / "docs" / name
+        assert path.is_file(), name
+        text = path.read_text(encoding="utf-8")
+        for needle in needles:
+            assert needle in text, f"{name}: {needle}"
+        if name != "verification/manual-matrix.md":
+            assert f"docs/{name}" in readme, name
 
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "docker-smoke" not in ci
