@@ -67,12 +67,16 @@ VersionInfoProductVersion={#VersionInfoVersion}
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[CustomMessages]
+CudaTask=Download the NVIDIA CUDA runtime for GPU transcription (~550 MB, several minutes)
+CudaTaskInstalled=NVIDIA CUDA runtime is already installed; no download is needed
+
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 ; CTranslate2 needs cuBLAS 12 on a CUDA host; the Server bundle deliberately
 ; does not carry the ~550 MB wheel. The helper detects an NVIDIA GPU and skips
 ; the download on CPU-only machines, so checking this by default is safe.
-Name: "cuda"; Description: "Download the NVIDIA CUDA runtime for GPU transcription (~550 MB, several minutes)"; GroupDescription: "Optional components:"; Flags: checkedonce
+Name: "cuda"; Description: "{cm:CudaTask}"; GroupDescription: "Optional components:"; Flags: checkedonce
 
 [Files]
 Source: "{#ClientExe}"; DestDir: "{app}\bin"; DestName: "kitsune-client.exe"; Flags: ignoreversion
@@ -106,6 +110,45 @@ const
 
 var
   SetupErrors: Boolean;
+
+// CudaRuntimeInstalled reports whether the previous install already downloaded
+// the optional CUDA runtime into the Server bundle. The bundle replacement
+// preserves that directory, so the task is informational instead of a repeat
+// ~550 MB download.
+function CudaRuntimeInstalled: Boolean;
+begin
+  Result := FileExists(
+    ExpandConstant('{app}\Server\lib\nvidia\cublas\bin\cublas64_12.dll'));
+end;
+
+procedure UpdateCudaTask;
+var
+  Index: Integer;
+  Task, Installed: String;
+begin
+  Task := ExpandConstant('{cm:CudaTask}');
+  Installed := ExpandConstant('{cm:CudaTaskInstalled}');
+  for Index := 0 to WizardForm.TasksList.Items.Count - 1 do
+  begin
+    if (CompareText(WizardForm.TasksList.ItemCaption[Index], Task) = 0) or
+       (CompareText(WizardForm.TasksList.ItemCaption[Index], Installed) = 0) then
+    begin
+      if CudaRuntimeInstalled then
+      begin
+        WizardForm.TasksList.ItemCaption[Index] := Installed;
+        WizardForm.TasksList.Checked[Index] := False;
+        WizardForm.TasksList.ItemEnabled[Index] := False;
+      end;
+      Exit;
+    end;
+  end;
+end;
+
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if CurPageID = wpSelectTasks then
+    UpdateCudaTask;
+end;
 
 function Quote(const Value: String): String;
 begin

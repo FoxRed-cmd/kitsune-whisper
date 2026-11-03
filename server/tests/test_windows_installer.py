@@ -99,6 +99,30 @@ def test_cuda_runtime_is_an_optional_windows_download() -> None:
     assert "warning: CUDA runtime" in helper
 
 
+def test_cuda_task_reports_an_already_downloaded_runtime() -> None:
+    script = read(INNO_SCRIPT)
+    # The task starts as a download offer, then a [Code] hook inspects the
+    # previous install and turns it into a disabled "already installed" line.
+    assert 'Description: "{cm:CudaTask}"' in script
+    assert "CudaTaskInstalled" in script
+    assert "function CudaRuntimeInstalled" in script
+    assert "Server\\lib\\nvidia\\cublas\\bin\\cublas64_12.dll" in script
+    assert "WizardForm.TasksList.ItemCaption[Index]" in script
+    assert "WizardForm.TasksList.Checked[Index] := False" in script
+    assert "WizardForm.TasksList.ItemEnabled[Index] := False" in script
+    assert "CurPageID = wpSelectTasks" in script
+
+
+def test_upgrade_preserves_a_downloaded_cuda_runtime() -> None:
+    helper = read(SETUP_HELPER)
+    # The bundle install replaces lib/ wholesale, so the helper carries the
+    # nvidia wheel directory over before it runs bootstrap install.
+    assert "preserving the CUDA runtime" in helper
+    assert "restored the CUDA runtime" in helper
+    assert "Server\\lib\\nvidia" in helper
+    assert "'kitsune-nvidia-'" in helper
+
+
 def test_in_place_upgrade_stops_the_tray_and_the_server_first() -> None:
     # Inno's Restart Manager cannot close a tray process or a Task Scheduler
     # process, so an upgrade must stop both before copying files instead of

@@ -136,7 +136,28 @@ function Install-ServerBundle {
 
     $stage = Join-Path ([System.IO.Path]::GetTempPath()) ('kitsune-server-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    # The Server bundle replaces lib/ wholesale, while the optional CUDA runtime
+    # lives inside lib/. Keep a previously downloaded runtime so an in-place
+    # upgrade of a host with server.device: cuda does not leave a Server that
+    # cannot start. The Inno CUDA task cannot be relied on here: checkedonce
+    # keeps a user's earlier uncheck, and a failed download is only a warning.
+    $cublas = Join-Path $AppDir 'Server\lib\nvidia\cublas\bin\cublas64_12.dll'
+    $preserve = Join-Path ([System.IO.Path]::GetTempPath()) ('kitsune-nvidia-' + [guid]::NewGuid().ToString('N'))
+    $preserved = $false
     try {
+        if (Test-Path -LiteralPath $cublas) {
+            try {
+                New-Item -ItemType Directory -Force -Path $preserve | Out-Null
+                Copy-Item -LiteralPath (Join-Path $AppDir 'Server\lib\nvidia') `
+                    -Destination (Join-Path $preserve 'nvidia') -Recurse -Force
+                $preserved = $true
+                Write-Log 'preserving the CUDA runtime from the previous installation'
+            }
+            catch {
+                Write-Log "warning: the CUDA runtime could not be preserved: $_"
+            }
+        }
+
         $tar = Get-TarExecutable
         $code = Invoke-Native $tar @('-xzf', $ServerArtifact, '-C', $stage)
         if ($code -ne 0) {
@@ -172,9 +193,17 @@ function Install-ServerBundle {
                 "Fix the error above and run the installer again, or use a Remote Server. " +
                 $tail)
         }
+
+        if ($preserved -and -not (Test-Path -LiteralPath $cublas)) {
+            $lib = Join-Path $AppDir 'Server\lib'
+            New-Item -ItemType Directory -Force -Path $lib | Out-Null
+            Copy-Item -LiteralPath (Join-Path $preserve 'nvidia') -Destination $lib -Recurse -Force
+            Write-Log 'restored the CUDA runtime into the upgraded Server bundle'
+        }
     }
     finally {
         Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $preserve -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
