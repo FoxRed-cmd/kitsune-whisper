@@ -607,6 +607,7 @@ uninstall_all() {
   rm -f "$SYSTEMD_DIR/kitsune-server.service"
   rmdir "$(dirname "$CLIENT_DROPIN")" 2>/dev/null || true
   rm -rf "$WAYLAND_DIR" "$SERVER_ROOT"
+  rmdir "$LOCAL_LIB" 2>/dev/null || true
   rm -f "$BIN_DIR/ydotool" "$BIN_DIR/ydotoold" "$BIN_DIR/wtype"
 
   if [[ "$REMOVE_MODELS" == 1 ]]; then
