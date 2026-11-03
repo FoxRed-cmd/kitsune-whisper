@@ -397,9 +397,12 @@ jobs:
       - name: Generate checksums
         run: |
           set -euo pipefail
+          # install.sh is the Linux updater's verified installer asset. It
+          # downloads the rest of this release itself.
+          cp install.sh dist/install.sh
           cd dist
           rm -f checksums.txt
-          sha256sum kitsune-* > checksums.txt
+          sha256sum kitsune-* install.sh > checksums.txt
           cat checksums.txt
 
       - uses: softprops/action-gh-release@v2
@@ -416,4 +419,5 @@ jobs:
             dist/kitsune-whisper*_amd64.deb
             dist/kitsune-whisper*.rpm
             dist/kitsune-whisper*.AppImage
+            dist/install.sh
             dist/checksums.txt

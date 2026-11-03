@@ -31,6 +31,9 @@ const (
 	StateUnpinned ServerState = "unpinned"
 	// StateMismatch means the certificate changed since it was pinned.
 	StateMismatch ServerState = "mismatch"
+	// StateVersionMismatch means the Server answered but its release is not
+	// compatible with this Client. It is an upgrade problem, not an auth one.
+	StateVersionMismatch ServerState = "version_mismatch"
 )
 
 // Status is one Server health check result. Model fields come from the

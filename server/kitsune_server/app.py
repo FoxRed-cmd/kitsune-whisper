@@ -504,6 +504,7 @@ def create_app(
             "device": device.as_dict(),
             "token": token,
             "fingerprint": certificate.fingerprint if certificate is not None else "",
+            "version": app.state.version,
         }
 
     @app.post("/pair", status_code=201)
@@ -536,6 +537,7 @@ def create_app(
             "device": device.as_dict(),
             "token": token,
             "fingerprint": certificate.fingerprint if certificate is not None else "",
+            "version": app.state.version,
         }
 
     @app.post("/admin/pairing-code", status_code=201)

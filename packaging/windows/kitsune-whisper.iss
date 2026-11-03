@@ -250,7 +250,7 @@ begin
     Result := WebView2OfflineMessage;
 end;
 
-function RunHelper(const Mode: String; PurgeData: Boolean): Integer;
+function RunHelper(const Mode: String; PurgeData, RemoveModels, RemoveServerData: Boolean): Integer;
 var
   Params: String;
   ResultCode: Integer;
@@ -275,6 +275,10 @@ begin
   end;
   if PurgeData then
     Params := Params + ' -Purge';
+  if RemoveModels then
+    Params := Params + ' -RemoveModels';
+  if RemoveServerData then
+    Params := Params + ' -RemoveServerData';
 
   if not Exec(
     ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
@@ -297,7 +301,7 @@ begin
 
   ExtractTemporaryFile('kitsune.example.yaml');
   ExtractTemporaryFile('kitsune-server_windows_amd64.tar.gz');
-  Code := RunHelper('install', False);
+  Code := RunHelper('install', False, False, False);
   if Code <> 0 then
   begin
     SetupErrors := True;
@@ -311,20 +315,28 @@ end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
-  PurgeData: Boolean;
+  PurgeData, RemoveModels, RemoveServerData: Boolean;
   Code: Integer;
 begin
   if CurUninstallStep <> usUninstall then
     Exit;
 
   PurgeData := ExpandConstant('{param:PURGE|}') <> '';
-  if not UninstallSilent then
-    PurgeData := SuppressibleMsgBox(
-      'Also delete kitsune-whisper configuration, models, Devices, certificates, logs, and Spool?' + #13#10#13#10 +
+  RemoveModels := ExpandConstant('{param:REMOVEMODELS|}') <> '';
+  RemoveServerData := ExpandConstant('{param:REMOVESERVERDATA|}') <> '';
+  if not UninstallSilent and not PurgeData then
+  begin
+    RemoveModels := SuppressibleMsgBox(
+      'Also delete downloaded Whisper models (several GB)?' + #13#10#13#10 +
       'Choose No to keep them for a later reinstall.',
       mbConfirmation, MB_YESNO, IDNO) = IDYES;
+    RemoveServerData := SuppressibleMsgBox(
+      'Also delete Server data: certificates, trusted Devices, logs, and soft-stop state?' + #13#10#13#10 +
+      'Choose No to keep them. Configuration, Spool, and Device tokens are always kept unless you purge.',
+      mbConfirmation, MB_YESNO, IDNO) = IDYES;
+  end;
 
-  Code := RunHelper('uninstall', PurgeData);
+  Code := RunHelper('uninstall', PurgeData, RemoveModels, RemoveServerData);
   if Code <> 0 then
     SuppressibleMsgBox(
       'kitsune-whisper was removed, but a task or the Server bundle may remain.' + #13#10#13#10 +

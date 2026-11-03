@@ -30,6 +30,9 @@ type Pairing struct {
 	Device      Device `json:"device"`
 	Token       string `json:"token"`
 	Fingerprint string `json:"fingerprint"`
+	// Version is the Server release. An older Server omits it, which disables
+	// the compatibility check.
+	Version string `json:"version,omitempty"`
 }
 
 // String renders a Pairing without its token, so logging a decoded value by

@@ -218,6 +218,7 @@ def test_client_install_writes_the_binary_template_and_autostart(sandbox, tmp_pa
     assert "client:gtk4" in read_log(sandbox, "calls.log")
     assert config.is_file()
     assert "install-autostart" in read_log(sandbox, "calls.log")
+    assert "client:gtk4 migrate-config" in read_log(sandbox, "calls.log")
 
 
 def test_reinstall_keeps_an_existing_configuration(sandbox, tmp_path):
@@ -496,6 +497,40 @@ def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
     assert "uninstall-autostart" in read_log(sandbox, "calls.log")
 
 
+def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+    assert install_client_only(sandbox, artifacts).returncode == 0
+    config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper"
+    cache = Path(str(sandbox["env"]["XDG_CACHE_HOME"])) / "kitsune-whisper"
+    state = Path(str(sandbox["env"]["XDG_STATE_HOME"])) / "kitsune-whisper"
+    config.mkdir(parents=True, exist_ok=True)
+    (config / "kitsune.yaml").write_text("client: {}\n", encoding="utf-8")
+    (cache / "models").mkdir(parents=True, exist_ok=True)
+    (cache / "models" / "small.bin").write_text("model", encoding="utf-8")
+    (cache / "spool").mkdir(parents=True, exist_ok=True)
+    (cache / "spool" / "failed.wav").write_text("audio", encoding="utf-8")
+    (state / "tls").mkdir(parents=True, exist_ok=True)
+    (state / "tls" / "server.crt").write_text("cert", encoding="utf-8")
+    (state / "devices.json").write_text("{}", encoding="utf-8")
+
+    removed = run_installer(sandbox, "--uninstall", "--remove-models")
+    assert removed.returncode == 0, removed.stderr
+    assert not (cache / "models").exists()
+    assert (cache / "spool" / "failed.wav").is_file()
+    assert (state / "devices.json").is_file()
+    assert (config / "kitsune.yaml").is_file()
+
+    assert install_client_only(sandbox, artifacts).returncode == 0
+    (cache / "models").mkdir(parents=True, exist_ok=True)
+    (cache / "models" / "small.bin").write_text("model", encoding="utf-8")
+    (state / "devices.json").write_text("{}", encoding="utf-8")
+    removed = run_installer(sandbox, "--uninstall", "--remove-server-data")
+    assert removed.returncode == 0, removed.stderr
+    assert not state.exists()
+    assert (cache / "models" / "small.bin").is_file()
+    assert (config / "kitsune.yaml").is_file()
+
+
 def test_dry_run_prints_the_plan_and_changes_nothing(sandbox, tmp_path):
     artifacts = make_artifacts(tmp_path)
 
@@ -543,6 +578,7 @@ def test_release_workflow_publishes_every_artifact() -> None:
         "kitsune-whisper*_amd64.deb",
         "kitsune-whisper*.rpm",
         "kitsune-whisper*.AppImage",
+        "install.sh",
         "checksums.txt",
     ):
         assert asset in text, asset

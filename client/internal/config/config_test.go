@@ -129,8 +129,8 @@ func TestLegacyServerURLBecomesActiveProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(cfg.Servers) != 1 {
-		t.Fatalf("servers = %+v, want the migrated profile only", cfg.Servers)
+	if len(cfg.Servers) != 2 {
+		t.Fatalf("servers = %+v, want the migrated profile plus the Local Server", cfg.Servers)
 	}
 	profile, ok := cfg.ActiveProfile()
 	if !ok {
@@ -144,6 +144,24 @@ func TestLegacyServerURLBecomesActiveProfile(t *testing.T) {
 	}
 	if cfg.ServerURL != profile.URL {
 		t.Fatalf("server_url = %q, want the active profile URL %q", cfg.ServerURL, profile.URL)
+	}
+}
+
+func TestLegacyLoopbackServerURLBecomesTheLocalProfile(t *testing.T) {
+	path := writeConfig(t, map[string]any{"server_url": "http://127.0.0.1:9000"})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(cfg.Servers) != 1 {
+		t.Fatalf("servers = %+v, want one Local Server profile", cfg.Servers)
+	}
+	profile, ok := cfg.ActiveProfile()
+	if !ok || profile.ID != config.LocalServerID || !profile.AutoPair {
+		t.Fatalf("profile = %+v, want the auto-paired Local Server", profile)
+	}
+	if profile.URL != "http://127.0.0.1:9000" {
+		t.Fatalf("profile URL = %q", profile.URL)
 	}
 }
 

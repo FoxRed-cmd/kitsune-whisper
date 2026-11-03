@@ -19,6 +19,8 @@ param(
     [string]$LogPath = '',
     [switch]$Cuda,
     [switch]$Purge,
+    [switch]$RemoveModels,
+    [switch]$RemoveServerData,
     [switch]$ForceConfig
 )
 
@@ -88,6 +90,22 @@ function Initialize-Config {
     New-Item -ItemType Directory -Force -Path $directory | Out-Null
     Copy-Item -LiteralPath $TemplatePath -Destination $ConfigPath -Force
     Write-Log "wrote configuration template to $ConfigPath"
+}
+
+function Invoke-ConfigMigration {
+    $client = Join-Path $AppDir 'bin\kitsune-client.exe'
+    if (-not (Test-Path -LiteralPath $client)) {
+        Write-Log 'the Client is not present; skipping configuration migration'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        Write-Log 'no existing configuration; skipping migration'
+        return
+    }
+    $code = Invoke-Native $client @('migrate-config', '--config', $ConfigPath)
+    if ($code -ne 0) {
+        Write-Log "warning: configuration migration failed (exit $code); the Client still applies defaults"
+    }
 }
 
 function Add-BinToUserPath {
@@ -335,6 +353,25 @@ function Uninstall-Autostart {
     }
 }
 
+function Remove-Models {
+    $models = Join-Path $env:USERPROFILE '.cache\kitsune-whisper\models'
+    if (Test-Path -LiteralPath $models) {
+        Remove-Item -LiteralPath $models -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Log "removed $models"
+    }
+}
+
+function Remove-ServerData {
+    $state = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
+    foreach ($name in @('tls', 'devices.json', 'server.log', 'lifecycle.json')) {
+        $target = Join-Path $state $name
+        if (Test-Path -LiteralPath $target) {
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
+            Write-Log "removed $target"
+        }
+    }
+}
+
 function Remove-UserData {
     Write-Log 'purging configuration, models, Devices, certificates, logs, and Spool'
     $targets = @(
@@ -367,6 +404,7 @@ function Install-Kitsune {
 
     try {
         Initialize-Config
+        Invoke-ConfigMigration
     }
     catch {
         $failures.Add("configuration: $_")
@@ -422,7 +460,19 @@ function Uninstall-Kitsune {
         Remove-UserData
     }
     else {
-        Write-Log 'keeping configuration, models, Devices, certificates, logs, and Spool (use /PURGE=1 to remove them)'
+        if ($RemoveModels) {
+            Remove-Models
+        }
+        if ($RemoveServerData) {
+            Remove-ServerData
+        }
+        Write-Log 'keeping configuration, Spool, wizard progress, and Device tokens unless /PURGE=1 was passed'
+        if (-not $RemoveModels) {
+            Write-Log 'downloaded models were kept (use /REMOVEMODELS=1 to remove them)'
+        }
+        if (-not $RemoveServerData) {
+            Write-Log 'Server certificates, Devices, and logs were kept (use /REMOVESERVERDATA=1 to remove them)'
+        }
     }
     Write-Log 'uninstall completed'
     return 0

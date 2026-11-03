@@ -169,6 +169,13 @@ def test_uninstall_removes_tasks_and_binaries_but_keeps_user_data_by_default() -
     assert "autostart-task.xml" in script
     assert "kitsune-server-task.xml" in script
     assert "user data" in helper or "user data" in script.lower()
+    # Models and Server data are separate choices, not one combined prompt.
+    assert "REMOVEMODELS" in script
+    assert "REMOVESERVERDATA" in script
+    assert "delete downloaded Whisper models" in script
+    assert "delete Server data" in script or "Server data:" in script
+    assert "remove-models" in helper
+    assert "remove-serverdata" in helper
 
 
 def test_build_script_verifies_and_defines_every_installer_input() -> None:
@@ -202,7 +209,10 @@ def test_release_ci_builds_the_windows_bundle_and_installer() -> None:
 
     client_windows = jobs["client-windows"]
     build = next(step for step in client_windows["steps"] if step.get("name") == "Build")
-    assert '-tags "desktop"' in build["run"] or "-tags desktop" in build["run"]
+    # The workflow delegates the desktop tag to the build script, which is the
+    # one place that also sets the GUI subsystem and version resources.
+    assert "packaging/windows/build-client.ps1" in build["run"]
+    assert "-tags 'desktop'" in read(WINDOWS / "build-client.ps1")
 
     upload = next(
         step
@@ -221,6 +231,17 @@ def test_release_ci_builds_the_windows_bundle_and_installer() -> None:
     assert SETUP_ASSET in text
     assert "packaging/windows/build-installer.ps1" in text
     assert "sha256sum" in text
+
+
+def test_install_upgrades_migrate_the_existing_configuration() -> None:
+    helper = read(SETUP_HELPER)
+    installer = read(INSTALL_PS1)
+    assert "Invoke-ConfigMigration" in helper
+    assert "@('migrate-config', '--config', $ConfigPath)" in helper
+    assert "-RemoveModels" in installer
+    assert "-RemoveServerData" in installer
+    assert "/REMOVEMODELS=1" in installer
+    assert "/REMOVESERVERDATA=1" in installer
 
 
 def test_the_one_line_installer_runs_the_full_setup() -> None:

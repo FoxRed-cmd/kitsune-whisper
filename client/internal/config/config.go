@@ -894,16 +894,53 @@ func migrateServers(m map[string]any) map[string]any {
 	delete(migrated, "servers")
 
 	if legacy, ok := migrated["server_url"].(string); ok && strings.TrimSpace(legacy) != "" {
-		migrated["servers"] = []any{map[string]any{
-			"id":          migratedServerID,
-			"name":        "Default Server",
-			"url":         legacy,
-			"fingerprint": "",
-			"auto_pair":   false,
-		}}
+		if isLoopbackServerURL(legacy) {
+			// The legacy address already names the Server on this machine, so
+			// it becomes the Local Server profile instead of a second profile
+			// for the same listener.
+			migrated["servers"] = []any{map[string]any{
+				"id":          LocalServerID,
+				"name":        "Local Server",
+				"url":         legacy,
+				"fingerprint": "",
+				"auto_pair":   true,
+			}}
+			migrated["active_server"] = LocalServerID
+			return migrated
+		}
+		migrated["servers"] = []any{
+			map[string]any{
+				"id":          migratedServerID,
+				"name":        "Default Server",
+				"url":         legacy,
+				"fingerprint": "",
+				"auto_pair":   false,
+			},
+			map[string]any{
+				"id":          LocalServerID,
+				"name":        "Local Server",
+				"url":         LocalServerURL,
+				"fingerprint": "",
+				"auto_pair":   true,
+			},
+		}
 		migrated["active_server"] = migratedServerID
 	}
 	return migrated
+}
+
+// isLoopbackServerURL reports a Server that is the same machine. A legacy
+// server_url there is the Local Server, not a Remote Server profile.
+func isLoopbackServerURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
 
 func firstProfileID(items []any) (string, bool) {

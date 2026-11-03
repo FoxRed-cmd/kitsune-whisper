@@ -387,14 +387,32 @@ fallbacks, injections — is at `~/.cache/kitsune-whisper/client.log`
 Re-run the installer. It replaces the Client binary, refreshes the units and the
 `.desktop` file, and replaces the Server bundle while keeping `kitsune.yaml`,
 models, Devices, and TLS certificates. The Server unit restarts on failure and
-the Client service is restarted after the upgrade. Config-schema changes are
-surfaced by the fail-fast validation (`--check-config`).
+the Client service is restarted after the upgrade.
+
+The installer also runs `kitsune-client migrate-config` against an existing
+`kitsune.yaml`. It adds the new `client.servers` and `client.active_server`
+keys, turns a legacy `client.server_url` into one active Server profile, and
+fills the desktop-release defaults that are missing. User values, comments,
+and the `server:` section are never overwritten; the previous file is kept as
+`kitsune.yaml.bak`. Legacy `client.refine` and `client.summarize` keys are
+accepted with a warning and are never sent to a Server.
+
+### Updates
+
+The Client checks GitHub Releases once at startup and from **Settings → Updates**
+or the Tray. It only shows the available version; downloading is an explicit
+action. The installer is fetched from the checked release, its SHA-256 is
+compared with `checksums.txt`, and only a verified file is launched. On Linux
+that file is the release's `install.sh`; on Windows it is the per-user setup.
+There is no silent or automatic installation.
 
 ### Uninstall
 
 ```sh
 # Linux
-curl -fsSL .../install.sh | bash -s -- --uninstall          # keeps config, models, Devices, logs
+curl -fsSL .../install.sh | bash -s -- --uninstall          # keeps config and user data
+curl -fsSL .../install.sh | bash -s -- --uninstall --remove-models
+curl -fsSL .../install.sh | bash -s -- --uninstall --remove-server-data
 curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything, including the udev rule
 
 # From a checkout, use the script directly:
@@ -404,6 +422,7 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything
 ```powershell
 # If you have the script locally:
 ./install.ps1 -Uninstall
+./install.ps1 -Uninstall -RemoveModels -RemoveServerData
 ./install.ps1 -Uninstall -Purge
 
 # Or straight from the repository, matching the install one-liner:
@@ -412,19 +431,24 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything
 
 The Windows setup also registers itself in **Apps & features**; its uninstaller
 is `%LOCALAPPDATA%\kitsune-whisper\unins000.exe`. An interactive uninstall asks
-whether to delete user data. A silent uninstall keeps it unless `/PURGE=1` is
-passed; `install.ps1 -Uninstall -Purge` does that for you. Uninstall removes the
-Client, Tray, Server bundle, both logon tasks, the Start Menu entry, and any
+two separate questions: whether to delete downloaded models, and whether to
+delete Server data (certificates, Devices, logs, and the soft-stop marker).
+Configuration, Spool, and Device tokens are kept. A silent uninstall keeps
+everything unless `/REMOVEMODELS=1`, `/REMOVESERVERDATA=1`, or `/PURGE=1` is
+passed; `install.ps1 -Uninstall -Purge` removes all user data. Uninstall removes
+the Client, Tray, Server bundle, both logon tasks, the Start Menu entry, and any
 desktop shortcut.
 
 Linux uninstall stops and removes the Client, Server, and ydotool user units,
 their binaries, the bundled helpers, the application-menu entry, the icon, and
-autostart's hidden portal `.desktop` file. It keeps
-`kitsune.yaml`, Setup progress, Spool, logs, the certificate, Devices, and
-models. `--purge` additionally removes all of those and, with `sudo`, the
-`/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On Windows `-Purge`
-removes config, Setup progress, Spool, logs, certificates, Devices, and the
-default model cache.
+autostart's hidden portal `.desktop` file. On a terminal it asks separately
+about downloaded models and Server data; without a terminal it keeps both
+unless `--remove-models` or `--remove-server-data` is passed. It always keeps
+`kitsune.yaml`, Setup progress, Spool, and Device tokens. `--purge` removes the
+configuration, models, certificates, Devices, Spool, logs, wizard progress, and,
+with `sudo`, the `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On
+Windows `-Purge` removes config, Setup progress, Spool, logs, certificates,
+Devices, and the default model cache.
 
 ## Server
 

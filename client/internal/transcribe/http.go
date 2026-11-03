@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/version"
 )
 
 // HTTP is a Transcriber that POSTs an utterance to a Server's /transcribe.
@@ -25,8 +27,16 @@ type HTTP struct {
 	Token string `json:"-"`
 	// Fingerprint is the pinned certificate SHA-256 for an HTTPS profile.
 	Fingerprint string
+	// ClientVersion enables an upgrade message when the Server is reachable
+	// but its release is incompatible. Empty disables the preflight.
+	ClientVersion string
 	// OnWarning, when non-nil, receives each warning from a successful response.
 	OnWarning func(string)
+
+	// versionOnce caches the /health preflight so a mismatch is reported once
+	// per built transcriber, before audio leaves the machine.
+	versionOnce sync.Once
+	versionErr  error
 }
 
 // NewHTTPWithTrust builds an HTTP transcriber for one Server profile. An HTTPS
@@ -78,6 +88,9 @@ func (h *HTTP) client() *http.Client {
 // Transcribe implements Transcriber. The audio is sent verbatim as the
 // multipart "audio" part; the Server is responsible for decoding it.
 func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, error) {
+	if err := h.checkCompatibility(ctx); err != nil {
+		return Transcription{}, err
+	}
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	part, err := writer.CreateFormFile("audio", "utterance.wav")
@@ -135,6 +148,44 @@ func (h *HTTP) Transcribe(ctx context.Context, audio []byte) (Transcription, err
 		}
 	}
 	return transcription, nil
+}
+
+// checkCompatibility reads /health once and turns an incompatible Server into
+// a clear upgrade error before any audio is uploaded. An unreachable Server is
+// left to the transcription request, which reports the real connection error.
+func (h *HTTP) checkCompatibility(ctx context.Context) error {
+	if _, ok := version.Parse(h.ClientVersion); !ok {
+		return nil
+	}
+	h.versionOnce.Do(func() {
+		endpoint := strings.TrimRight(h.BaseURL, "/") + "/health"
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+		if err != nil {
+			return
+		}
+		response, err := h.client().Do(request)
+		if err != nil {
+			return
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return
+		}
+		data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+		if err != nil {
+			return
+		}
+		var health struct {
+			Version string `json:"version"`
+		}
+		if json.Unmarshal(data, &health) != nil || health.Version == "" {
+			return
+		}
+		if err := trust.CheckVersion(h.ClientVersion, health.Version); err != nil {
+			h.versionErr = err
+		}
+	})
+	return h.versionErr
 }
 
 func (h *HTTP) effectiveLanguage() string {

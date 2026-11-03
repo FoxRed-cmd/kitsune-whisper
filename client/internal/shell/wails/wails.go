@@ -384,6 +384,7 @@ func traySignature(snapshot shell.Snapshot) string {
 		ErrorAction shell.Action         `json:"errorAction"`
 		ModelState  string               `json:"modelState"`
 		Server      trust.Status         `json:"server"`
+		Update      shell.SnapshotUpdate `json:"update"`
 	}{
 		State:       snapshot.State,
 		Profile:     snapshot.Profile,
@@ -393,6 +394,7 @@ func traySignature(snapshot shell.Snapshot) string {
 		ErrorAction: snapshot.ErrorAction,
 		ModelState:  snapshot.ModelState,
 		Server:      snapshot.Server,
+		Update:      snapshot.Update,
 	})
 	if err != nil {
 		return ""
@@ -496,6 +498,20 @@ func (t *trayPort) buildMenu(snapshot shell.Snapshot) *application.Menu {
 	menu.Add(toggleLabel).OnClick(func(*application.Context) { t.do(shell.ActionToggle) })
 	menu.AddSeparator()
 	menu.Add(labels.Settings).OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
+	switch {
+	case snapshot.Update.Busy && snapshot.Update.Installing:
+		item := menu.Add(labels.Updating)
+		item.SetEnabled(false)
+	case snapshot.Update.Busy:
+		item := menu.Add(labels.CheckingUpdates)
+		item.SetEnabled(false)
+	case snapshot.Update.Available && labels.UpdateTo != "":
+		menu.Add(fmt.Sprintf(labels.UpdateTo, snapshot.Update.Latest)).OnClick(func(*application.Context) {
+			t.do(shell.ActionInstallUpdate)
+		})
+	case labels.CheckUpdates != "":
+		menu.Add(labels.CheckUpdates).OnClick(func(*application.Context) { t.do(shell.ActionCheckUpdates) })
+	}
 	if labels.ServerRestart != "" {
 		menu.Add(labels.ServerRestart).OnClick(func(*application.Context) {
 			t.do(shell.ActionServerRestart)

@@ -571,6 +571,40 @@ func TestVersionFlagPrintsAndExitsWithoutConfig(t *testing.T) {
 	}
 }
 
+func TestMigrateConfigAddsNewKeysWithoutLoadingTheOldFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kitsune.yaml")
+	body := "client:\n  server_url: http://desktop.local:8765\n  hotkey: Alt+Space\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := cli.Run([]string{"--config", path, "migrate-config"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, stderr.String())
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, needle := range []string{"active_server: default", "url: http://desktop.local:8765", "hotkey: Alt+Space"} {
+		if !strings.Contains(string(content), needle) {
+			t.Errorf("migrated config lost %q:\n%s", needle, content)
+		}
+	}
+	if !strings.Contains(stdout.String(), "migrated") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+
+	stdout.Reset()
+	if code := cli.Run([]string{"--config", path, "migrate-config"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("second exit = %d, stderr = %s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "configuration is current") {
+		t.Fatalf("second stdout = %q", stdout.String())
+	}
+}
+
 func TestInstallDesktopRejectsPositionalArguments(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := cli.Run([]string{"install-desktop", "extra"}, &stdout, &stderr)

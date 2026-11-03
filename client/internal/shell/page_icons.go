@@ -21,6 +21,8 @@ func navIcon(key string) string {
 		return "monitor"
 	case "startup":
 		return "power"
+	case "updates":
+		return "download"
 	case "dictation":
 		return "mic"
 	case "servers":

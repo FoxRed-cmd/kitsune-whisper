@@ -26,6 +26,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/update"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
 
@@ -131,6 +132,10 @@ const (
 	ActionServerStart Action = "server-start"
 	// ActionQuit stops the Client.
 	ActionQuit Action = "quit"
+	// ActionCheckUpdates asks GitHub Releases for a newer build.
+	ActionCheckUpdates Action = "check-updates"
+	// ActionInstallUpdate downloads and launches the verified installer.
+	ActionInstallUpdate Action = "install-update"
 )
 
 // profileActionPrefix marks a Tray menu click on one Server profile.
@@ -188,28 +193,32 @@ const (
 // Labels are the translated strings the page and the Tray render. They travel
 // with the snapshot so a language switch updates both without a restart.
 type Labels struct {
-	State         string `json:"state"`
-	Status        string `json:"status"`
-	Start         string `json:"start"`
-	Stop          string `json:"stop"`
-	Settings      string `json:"settings"`
-	Restart       string `json:"restart"`
-	Quit          string `json:"quit"`
-	Phase         string `json:"phase"`
-	PhaseValue    string `json:"phaseValue"`
-	Client        string `json:"client"`
-	Profile       string `json:"profile"`
-	Version       string `json:"version"`
-	Running       string `json:"running"`
-	Stopped       string `json:"stopped"`
-	Server        string `json:"server"`
-	ServerState   string `json:"serverState"`
-	Profiles      string `json:"profiles"`
-	OpenSettings  string `json:"openSettings"`
-	ServerRestart string `json:"serverRestart"`
-	ServerStop    string `json:"serverStop"`
-	ServerStart   string `json:"serverStart"`
-	ModelState    string `json:"modelState"`
+	State           string `json:"state"`
+	Status          string `json:"status"`
+	Start           string `json:"start"`
+	Stop            string `json:"stop"`
+	Settings        string `json:"settings"`
+	Restart         string `json:"restart"`
+	Quit            string `json:"quit"`
+	Phase           string `json:"phase"`
+	PhaseValue      string `json:"phaseValue"`
+	Client          string `json:"client"`
+	Profile         string `json:"profile"`
+	Version         string `json:"version"`
+	Running         string `json:"running"`
+	Stopped         string `json:"stopped"`
+	Server          string `json:"server"`
+	ServerState     string `json:"serverState"`
+	Profiles        string `json:"profiles"`
+	OpenSettings    string `json:"openSettings"`
+	ServerRestart   string `json:"serverRestart"`
+	ServerStop      string `json:"serverStop"`
+	ServerStart     string `json:"serverStart"`
+	ModelState      string `json:"modelState"`
+	CheckUpdates    string `json:"checkUpdates"`
+	CheckingUpdates string `json:"checkingUpdates"`
+	UpdateTo        string `json:"updateTo"`
+	Updating        string `json:"updating"`
 }
 
 // ProfileState is one Server profile as the Tray lists it.
@@ -241,7 +250,9 @@ type Snapshot struct {
 	Profiles []ProfileState `json:"profiles,omitempty"`
 	// ModelState is the active Server's loaded/cold/stopped state, when known.
 	ModelState string `json:"modelState,omitempty"`
-	Labels     Labels `json:"labels"`
+	// Update is the available-release state the Tray renders.
+	Update SnapshotUpdate `json:"update"`
+	Labels Labels         `json:"labels"`
 }
 
 // NewSnapshot maps the runtime status onto the shell's render model with
@@ -275,28 +286,32 @@ func NewSnapshot(status runtime.Status, version, server string) Snapshot {
 func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 	state := catalog.T("state." + string(snapshot.State))
 	return Labels{
-		State:         state,
-		Status:        catalog.T("tray.status", state),
-		Start:         catalog.T("tray.start"),
-		Stop:          catalog.T("tray.stop"),
-		Settings:      catalog.T("tray.settings"),
-		Restart:       catalog.T("tray.restart"),
-		Quit:          catalog.T("tray.quit"),
-		Phase:         catalog.T("status.phase"),
-		PhaseValue:    phaseLabel(catalog, snapshot.Phase),
-		Client:        catalog.T("status.client"),
-		Profile:       catalog.T("status.profile"),
-		Version:       catalog.T("status.version"),
-		Running:       catalog.T("status.running"),
-		Stopped:       catalog.T("status.stopped"),
-		Server:        catalog.T("status.server"),
-		ServerState:   serverStatusLabel(catalog, snapshot.Server),
-		Profiles:      catalog.T("tray.profiles"),
-		OpenSettings:  catalog.T("action.openSettings"),
-		ServerRestart: catalog.T("tray.serverRestart"),
-		ServerStop:    catalog.T("tray.serverStop"),
-		ServerStart:   catalog.T("tray.serverStart"),
-		ModelState:    modelLifecycleLabel(catalog, snapshot.ModelState),
+		State:           state,
+		Status:          catalog.T("tray.status", state),
+		Start:           catalog.T("tray.start"),
+		Stop:            catalog.T("tray.stop"),
+		Settings:        catalog.T("tray.settings"),
+		Restart:         catalog.T("tray.restart"),
+		Quit:            catalog.T("tray.quit"),
+		Phase:           catalog.T("status.phase"),
+		PhaseValue:      phaseLabel(catalog, snapshot.Phase),
+		Client:          catalog.T("status.client"),
+		Profile:         catalog.T("status.profile"),
+		Version:         catalog.T("status.version"),
+		Running:         catalog.T("status.running"),
+		Stopped:         catalog.T("status.stopped"),
+		Server:          catalog.T("status.server"),
+		ServerState:     serverStatusLabel(catalog, snapshot.Server),
+		Profiles:        catalog.T("tray.profiles"),
+		OpenSettings:    catalog.T("action.openSettings"),
+		ServerRestart:   catalog.T("tray.serverRestart"),
+		ServerStop:      catalog.T("tray.serverStop"),
+		ServerStart:     catalog.T("tray.serverStart"),
+		ModelState:      modelLifecycleLabel(catalog, snapshot.ModelState),
+		CheckUpdates:    catalog.T("tray.checkUpdates"),
+		CheckingUpdates: catalog.T("tray.checkingUpdates"),
+		UpdateTo:        catalog.T("tray.updateTo"),
+		Updating:        catalog.T("tray.updating"),
 	}
 }
 
@@ -401,6 +416,9 @@ type Options struct {
 	Notifier Notifier
 	// Logger receives lifecycle messages; nil is silent.
 	Logger Logger
+	// Updater checks and installs releases. Nil hides the updates screen and
+	// the Tray item.
+	Updater Updater
 }
 
 // Shell drives the desktop shell lifecycle.
@@ -415,9 +433,17 @@ type Shell struct {
 	window        Window
 	tray          Tray
 	levelTest     dictation.LevelStream
+	// notifiedError is the last Dictation failure already announced.
 	notifiedError string
 	healthState   string
 	modelsLoaded  string
+
+	updateInfo       update.Info
+	updateChecked    bool
+	updateBusy       bool
+	updateInstalling bool
+	updateLaunched   bool
+	updateError      string
 
 	// diagnosticsLoading guards the automatic Diagnostics preload so opening
 	// the window while the page is loading does not fetch twice.
@@ -499,6 +525,9 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	defer stopMonitor()
 	if s.opts.CheckServer != nil || s.opts.Servers != nil {
 		go s.monitorServer(monitorCtx)
+	}
+	if s.opts.Updater != nil {
+		go s.checkUpdates(monitorCtx, false)
 	}
 
 	runtimeDone := make(chan error, 1)
@@ -715,6 +744,7 @@ func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 		}
 	}
 	snapshot.Labels = labelsFor(s.catalog(), snapshot)
+	snapshot.Update = s.snapshotUpdateLocked()
 	s.snapshot = snapshot
 	return snapshot, s.window, s.tray
 }
@@ -1073,6 +1103,10 @@ func (s *Shell) handleAction(action Action) {
 		s.runServerAction(actionServerStop)
 	case ActionServerStart:
 		s.runServerAction(actionServerStart)
+	case ActionCheckUpdates:
+		go s.checkUpdates(context.Background(), true)
+	case ActionInstallUpdate:
+		s.installUpdate()
 	case ActionQuit:
 		s.requestQuit()
 	}

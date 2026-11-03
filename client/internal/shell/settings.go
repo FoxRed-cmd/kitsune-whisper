@@ -284,6 +284,9 @@ type SettingsView struct {
 	Wizard wizard.View `json:"wizard"`
 	// Gnome is the GNOME custom-keybinding offer shown on GNOME Wayland.
 	Gnome GnomeShortcutsView `json:"gnome"`
+	// Update is the GitHub Releases state. An empty Title in a build without
+	// an Updater omits the screen.
+	Update UpdateView `json:"update"`
 }
 
 // SettingsPayload is the JSON shape of a settings update: the view plus its
@@ -534,6 +537,7 @@ func serverStateLabels(catalog i18n.Catalog) map[string]string {
 		trust.StateUnauthenticated,
 		trust.StateUnpinned,
 		trust.StateMismatch,
+		trust.StateVersionMismatch,
 	}
 	labels := make(map[string]string, len(states)+1)
 	for _, state := range states {
@@ -625,6 +629,7 @@ func (s *Shell) settingsView() SettingsView {
 		Spool:       s.spoolView(),
 		Wizard:      s.wizardView(),
 		Gnome:       s.gnomeShortcutsView(),
+		Update:      s.updateView(),
 	}
 	return view
 }
@@ -773,6 +778,8 @@ const (
 	IntentServerRestart      = "server-restart"
 	IntentServerStop         = "server-stop"
 	IntentServerStart        = "server-start"
+	IntentCheckUpdates       = "check-updates"
+	IntentInstallUpdate      = "install-update"
 
 	IntentWizardOpen           = "wizard-open"
 	IntentWizardClose          = "wizard-close"
@@ -804,7 +811,7 @@ const (
 // window rather than returned as errors; an error means the intent itself was
 // malformed or no settings service is available.
 func (s *Shell) HandleIntent(payload []byte) error {
-	if s.opts.Settings == nil && s.opts.Servers == nil && s.opts.Spool == nil && s.opts.Wizard == nil {
+	if s.opts.Settings == nil && s.opts.Servers == nil && s.opts.Spool == nil && s.opts.Wizard == nil && s.opts.Updater == nil {
 		return errors.New("settings are not available in this build")
 	}
 	var intent Intent
@@ -967,6 +974,12 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentServerStart:
 		s.runServerAction(actionServerStart)
+		return nil
+	case IntentCheckUpdates:
+		s.checkUpdates(context.Background(), true)
+		return nil
+	case IntentInstallUpdate:
+		s.installUpdate()
 		return nil
 	case IntentWizardOpen, IntentWizardClose, IntentWizardNext, IntentWizardBack,
 		IntentWizardSkip, IntentWizardSkipAll, IntentWizardRestart, IntentWizardFinish,

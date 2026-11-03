@@ -83,7 +83,7 @@ func (s *Shell) diagnosticsView(serverView servers.View) DiagnosticsView {
 		view.ClientLogPath = s.opts.LogPath
 		view.ClientLogText, view.ClientLogTruncated = tailLogFile(s.opts.LogPath, 64*1024)
 	}
-	view.Error = firstNonEmpty(serverView.ConfigError, serverView.LogsError, serverView.LifecycleError)
+	view.Error = firstNonEmpty(serverView.ConfigError, serverView.LogsError, serverView.LifecycleError, server.Error)
 	view.CopyText = diagnosticsText(view)
 	return view
 }

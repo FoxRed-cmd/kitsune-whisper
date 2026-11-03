@@ -182,6 +182,10 @@ type Options struct {
 	// process to release its port before the supervisor starts it. 0 uses
 	// 5 seconds.
 	RestartSettle time.Duration
+	// ClientVersion is the running Client release. When set, a reachable
+	// Server on a different major.minor is reported as an upgrade problem
+	// instead of an authentication one.
+	ClientVersion string
 }
 
 // Service is the Server-profile and Device-management service.
@@ -339,6 +343,7 @@ func (s *Service) CheckHealth(ctx context.Context, profileID string) trust.Statu
 		token = stored
 	}
 	status := s.opts.Check(ctx, profile, token, s.opts.Timeout)
+	status = trust.ApplyVersion(status, s.opts.ClientVersion)
 	s.mu.Lock()
 	s.health[profileID] = status
 	s.mu.Unlock()
@@ -386,6 +391,14 @@ func (s *Service) AddRemote(ctx context.Context, address, code, name string) (Pr
 
 	paired, err := trust.PairRemote(ctx, profile.URL, code, deviceName, profile.Fingerprint)
 	if err != nil {
+		return Profile{}, err
+	}
+	if err := trust.CheckVersion(s.opts.ClientVersion, paired.Version); err != nil {
+		// The Server minted a Device before it reported its version. Remove it
+		// on a best-effort basis so an incompatible Server keeps no orphan.
+		if paired.Device.ID != "" && paired.Token != "" {
+			_ = revokeDevice(ctx, profile, paired.Token, paired.Device.ID, s.opts.Timeout)
+		}
 		return Profile{}, err
 	}
 	oldToken, oldErr := s.opts.Tokens.Load(profile.ID)

@@ -79,6 +79,13 @@ func navEntries(view SettingsView) []navEntry {
 			Targets: []string{"startup"},
 		})
 	}
+	if view.Update.Title != "" {
+		entries = append(entries, navEntry{
+			Key:     "updates",
+			Label:   view.Update.Title,
+			Targets: []string{"updates"},
+		})
+	}
 	if view.Labels.Title != "" {
 		entries = append(entries, navEntry{
 			Key:     "servers",
@@ -154,6 +161,7 @@ func SettingsHTML(view SettingsView) string {
 	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelLabels, view.ModelState))
 	out.WriteString(spoolHTML(view.Spool))
 	out.WriteString(startupHTML(view.Startup, view.Labels))
+	out.WriteString(updatesHTML(view.Update))
 	out.WriteString(serverSettingsHTML(view.Servers, view.Labels))
 	out.WriteString(diagnosticsHTML(view.Diagnostics, view.Labels))
 	if view.DeviceError != "" {
@@ -235,6 +243,9 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 			out.WriteString(`<span class="health-label">` + escape(labels.Health) + `:</span>`)
 			out.WriteString(`<span class="health" data-health="` + escape(healthKey) + `">` + escape(health) + `</span>`)
 			out.WriteString(`<code>` + escape(profile.URL) + `</code>`)
+			if profile.Health.Error != "" && profile.Health.State != trust.StateOnline {
+				out.WriteString(`<p class="failure">` + escape(profile.Health.Error) + `</p>`)
+			}
 			if !profile.Active {
 				out.WriteString(`<button type="button" data-action="use-profile" data-profile-id="` +
 					escape(profile.ID) + `">` + escape(labels.Use) + `</button>`)
@@ -646,6 +657,56 @@ func startupHTML(view StartupView, labels ServerLabels) string {
 		help = labels.StartupServerUnavailable
 	}
 	writeStartupToggle(&out, "server", labels.StartupServer, help, view.Server, view.ServerAvailable)
+	out.WriteString(`</section>`)
+	return out.String()
+}
+
+// updatesHTML renders the release check and the verified installer action.
+func updatesHTML(view UpdateView) string {
+	if view.Title == "" {
+		return ""
+	}
+	var out strings.Builder
+	out.WriteString(`<section class="group" data-section="updates">`)
+	out.WriteString(`<h2>` + pageIcon("download") + escape(view.Title) + `</h2>`)
+	out.WriteString(`<p class="help">` + escape(view.Help) + `</p>`)
+	out.WriteString(`<dl class="diagnostics-versions">`)
+	out.WriteString(`<div><dt>` + escape(view.Current) + `</dt><dd>` + escape(view.CurrentVersion) + `</dd></div>`)
+	if view.LatestVersion != "" {
+		out.WriteString(`<div><dt>` + escape(view.Latest) + `</dt><dd>` + escape(view.LatestVersion) + `</dd></div>`)
+	}
+	out.WriteString(`</dl>`)
+	switch {
+	case view.Busy && view.Installing:
+		out.WriteString(`<p class="notice" data-update-busy="true">` + escape(view.Downloading) + `</p>`)
+	case view.Busy:
+		out.WriteString(`<p class="notice" data-update-busy="true">` + escape(view.Checking) + `</p>`)
+	case view.Available && view.Installable:
+		out.WriteString(`<p class="notice">` + escape(view.AvailableMessage) + `</p>`)
+	case view.Available:
+		out.WriteString(`<p class="notice">` + escape(view.AvailableMessage) + `</p>`)
+		out.WriteString(`<p class="help">` + escape(view.NotInstalledMessage) + `</p>`)
+	case view.Checked && view.CurrentVersion == "dev":
+		out.WriteString(`<p class="help">` + escape(view.DevBuildMessage) + `</p>`)
+	case view.Checked:
+		out.WriteString(`<p class="help">` + escape(view.UpToDateMessage) + `</p>`)
+	}
+	if view.Error != "" {
+		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
+	}
+	if view.Launched {
+		out.WriteString(`<p class="notice">` + escape(view.LaunchedMessage) + `</p>`)
+	}
+	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<button type="button" data-action="check-updates">` + pageIcon("download") + escape(view.Check) + `</button>`)
+	if view.Available && view.Installable && !view.Busy && !view.Launched {
+		out.WriteString(`<button type="button" class="primary" data-action="install-update">` + pageIcon("download") + escape(view.Download) + `</button>`)
+	}
+	out.WriteString(`</div>`)
+	if view.ReleaseURL != "" {
+		out.WriteString(`<p class="help"><a href="` + escape(view.ReleaseURL) + `" target="_blank" rel="noreferrer">` +
+			escape(view.ReleasePage) + `</a></p>`)
+	}
 	out.WriteString(`</section>`)
 	return out.String()
 }
@@ -1880,6 +1941,10 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "server-stop" }, button);
     } else if (action === "server-start") {
       sendIntent({ action: "server-start" }, button);
+    } else if (action === "check-updates") {
+      sendIntent({ action: "check-updates" }, button);
+    } else if (action === "install-update") {
+      sendIntent({ action: "install-update" }, button);
     } else if (action === "wizard-open") {
       sendIntent({ action: "wizard-open" }, button);
     } else if (action === "wizard-close") {

@@ -6,7 +6,7 @@ import pytest
 import yaml
 from conftest import make_client
 from fastapi import FastAPI
-from kitsune_server import cli
+from kitsune_server import __version__, cli
 from kitsune_server.app import create_app
 from kitsune_server.config import ServerConfig, read_server_section
 from kitsune_server.pairing import (
@@ -90,6 +90,7 @@ async def test_a_valid_code_pairs_a_remote_device() -> None:
     assert response.status_code == 201, response.text
     paired = response.json()
     assert paired["token"].startswith("ktn_")
+    assert paired["version"] == __version__
     assert paired["device"]["name"] == "Laptop"
     assert paired["device"]["last_address"] == "192.0.2.10"
     assert "token_hash" not in paired["device"]

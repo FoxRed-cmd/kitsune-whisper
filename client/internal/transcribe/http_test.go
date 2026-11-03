@@ -2,6 +2,7 @@ package transcribe_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -200,5 +201,54 @@ func TestMalformedSuccessBodyIsError(t *testing.T) {
 	client := transcribe.NewHTTP(server.URL, "", "")
 	if _, err := client.Transcribe(context.Background(), []byte("data")); err == nil {
 		t.Fatal("expected error for malformed success body")
+	}
+}
+
+func TestTranscribeRejectsAnIncompatibleServerBeforeUploadingAudio(t *testing.T) {
+	uploaded := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "version": "0.2.0"})
+		case "/transcribe":
+			uploaded = true
+			http.Error(w, "should not be reached", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	transcriber := transcribe.NewHTTP(server.URL, "", "")
+	transcriber.ClientVersion = "v0.1.0"
+
+	_, err := transcriber.Transcribe(context.Background(), []byte("audio"))
+
+	if err == nil || !strings.Contains(err.Error(), "upgrade the Client") {
+		t.Fatalf("error = %v", err)
+	}
+	if uploaded {
+		t.Fatal("audio was uploaded to an incompatible Server")
+	}
+}
+
+func TestTranscribeProceedsWhenTheHealthPreflightFails(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			http.Error(w, "cold", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"text":"hello"}`))
+	}))
+	defer server.Close()
+	transcriber := transcribe.NewHTTP(server.URL, "", "")
+	transcriber.ClientVersion = "v0.1.0"
+
+	transcription, err := transcriber.Transcribe(context.Background(), []byte("audio"))
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transcription.Text != "hello" {
+		t.Fatalf("text = %q", transcription.Text)
 	}
 }

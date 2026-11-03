@@ -50,6 +50,7 @@ type fakeServer struct {
 	token       string
 	accepted    string
 	fingerprint string
+	version     string
 	devices     []map[string]any
 	revoked     []string
 	names       []string
@@ -111,8 +112,9 @@ func newFakeServer(t *testing.T) *fakeServer {
 			fake.names = append(fake.names, body["name"])
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"device": map[string]any{"id": "dev-2", "name": body["name"]},
-				"token":  fake.token,
+				"device":  map[string]any{"id": "dev-2", "name": body["name"]},
+				"token":   fake.token,
+				"version": fake.version,
 			})
 			return
 		}
@@ -310,6 +312,29 @@ func newService(t *testing.T) (*servers.Service, *settings.Store, *trust.TokenSt
 	}
 	tokens := trust.NewTokenStoreWithKeyring(newFakeKeyring(), t.TempDir())
 	return servers.New(servers.Options{Store: store, Tokens: tokens}), store, tokens
+}
+
+func TestAddRemoteRefusesAnIncompatibleServer(t *testing.T) {
+	fake := newFakeServer(t)
+	fake.version = "0.2.0"
+	store, err := settings.Open(settings.Options{Path: t.TempDir() + "/kitsune.yaml", Env: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens := trust.NewTokenStoreWithKeyring(newFakeKeyring(), t.TempDir())
+	service := servers.New(servers.Options{Store: store, Tokens: tokens, ClientVersion: "v0.1.0"})
+
+	if _, err := service.AddRemote(context.Background(), fake.URL, "abcd-2345", "Desktop"); err == nil {
+		t.Fatal("AddRemote accepted incompatible releases")
+	} else if !strings.Contains(err.Error(), "upgrade the Client") {
+		t.Fatalf("error = %v", err)
+	}
+	if len(store.Snapshot().Config.Servers) != 1 {
+		t.Fatalf("a rejected profile was saved: %+v", store.Snapshot().Config.Servers)
+	}
+	if _, err := tokens.Load("remote-127-0-0-1"); err == nil {
+		t.Fatal("a rejected pairing stored a token")
+	}
 }
 
 func TestAddRemotePairsPinsAndActivatesTheProfile(t *testing.T) {

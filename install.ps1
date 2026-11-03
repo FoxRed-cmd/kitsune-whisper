@@ -11,8 +11,9 @@ and Settings window, the native Server bundle, WebView2 when missing, the Start
 Menu entry, and both per-user logon tasks.
 
 Re-run it to upgrade. Existing configuration, models, Devices, certificates, and
-logs are kept. Use -Uninstall to remove the binaries and tasks; add -Purge to
-remove user data too.
+logs are kept. Use -Uninstall to remove the binaries and tasks; add
+-RemoveModels or -RemoveServerData for those data classes, or -Purge to remove
+all user data.
 
 One-liner:
 
@@ -22,6 +23,7 @@ One-liner:
 ./install.ps1
 ./install.ps1 -Version v1.2.3
 ./install.ps1 -Uninstall
+./install.ps1 -Uninstall -RemoveModels -RemoveServerData
 ./install.ps1 -Uninstall -Purge
 #>
 [CmdletBinding()]
@@ -29,6 +31,8 @@ param(
     [string]$Version = $(if ($env:KITSUNE_VERSION) { $env:KITSUNE_VERSION } else { 'latest' }),
     [switch]$Uninstall,
     [switch]$Purge,
+    [switch]$RemoveModels,
+    [switch]$RemoveServerData,
     [switch]$ForceConfig
 )
 
@@ -52,6 +56,12 @@ if ($Uninstall) {
     if ($Purge) {
         $arguments += '/PURGE=1'
     }
+    if ($RemoveModels) {
+        $arguments += '/REMOVEMODELS=1'
+    }
+    if ($RemoveServerData) {
+        $arguments += '/REMOVESERVERDATA=1'
+    }
     $process = Start-Process -FilePath $Uninstaller -ArgumentList $arguments -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw "the uninstaller failed with exit code $($process.ExitCode)"
@@ -60,7 +70,10 @@ if ($Uninstall) {
         Write-Host 'kitsune-whisper uninstalled (configuration, models, Devices, certificates, logs, and Spool purged)'
     }
     else {
-        Write-Host 'kitsune-whisper uninstalled (configuration, models, Devices, certificates, logs, and Spool kept)'
+        $kept = @('configuration', 'Spool', 'Device tokens')
+        if (-not $RemoveModels) { $kept += 'models' }
+        if (-not $RemoveServerData) { $kept += 'Server data' }
+        Write-Host ("kitsune-whisper uninstalled ({0} kept)" -f ($kept -join ', '))
     }
     return
 }

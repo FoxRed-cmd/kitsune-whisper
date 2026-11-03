@@ -25,6 +25,9 @@
 #     --uninstall             remove binaries, units, and helpers; keep data
 #     --uninstall --purge     also remove config, models, certificates, spool,
 #                             logs, Devices, wizard progress, and the udev rule
+#     --remove-models         with --uninstall: delete downloaded models
+#     --remove-server-data    with --uninstall: delete certificates, Devices,
+#                             the Server log, and its soft-stop marker
 #     -h, --help
 #
 # Environment: KITSUNE_VERSION, KITSUNE_ARTIFACTS_DIR,
@@ -71,6 +74,8 @@ DRY_RUN=0
 FORCE_CONFIG=0
 UNINSTALL=0
 PURGE=0
+REMOVE_MODELS=0
+REMOVE_SERVER_DATA=0
 ELEVATED=0
 SERVER_OK=1
 TMP=""
@@ -99,6 +104,8 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1 ;;
     --uninstall) UNINSTALL=1 ;;
     --purge) PURGE=1 ;;
+    --remove-models) REMOVE_MODELS=1 ;;
+    --remove-server-data) REMOVE_SERVER_DATA=1 ;;
     --from)
       shift
       [[ $# -gt 0 ]] || die "--from needs a directory"
@@ -124,6 +131,9 @@ esac
 
 if [[ "$PURGE" == 1 && "$UNINSTALL" != 1 ]]; then
   die "--purge is only valid together with --uninstall"
+fi
+if [[ "$REMOVE_MODELS" == 1 || "$REMOVE_SERVER_DATA" == 1 ]] && [[ "$UNINSTALL" != 1 ]]; then
+  die "--remove-models and --remove-server-data are only valid together with --uninstall"
 fi
 
 if [[ "$CUDA" == 1 && "$NO_SERVER" == 1 ]]; then
@@ -523,7 +533,41 @@ degraded_note() {
 
 # -- uninstall -------------------------------------------------------------
 
+confirm() {
+  local answer
+  # Read the answer from the controlling terminal, not stdin: the documented
+  # `curl ... | bash -s -- --uninstall` path uses stdin for the script itself.
+  if [[ ! -r /dev/tty ]]; then
+    return 1
+  fi
+  printf '%s [y/N] ' "$1" >&2
+  read -r answer < /dev/tty || return 1
+  [[ "$answer" =~ ^[Yy]$ ]]
+}
+
+ask_what_to_delete() {
+  if [[ "$PURGE" == 1 ]]; then
+    return 0
+  fi
+  # A script run without a terminal (a test, CI, or a log-only invocation)
+  # keeps user data unless the caller named the flags explicitly.
+  if [[ ! -t 2 ]]; then
+    return 0
+  fi
+  if [[ "$REMOVE_MODELS" == 0 ]]; then
+    if confirm "Delete downloaded Whisper models (several GB)?"; then
+      REMOVE_MODELS=1
+    fi
+  fi
+  if [[ "$REMOVE_SERVER_DATA" == 0 ]]; then
+    if confirm "Delete Server data (certificates, Devices, logs, soft-stop state)?"; then
+      REMOVE_SERVER_DATA=1
+    fi
+  fi
+}
+
 uninstall_all() {
+  ask_what_to_delete
   info "Removing kitsune-whisper..."
   if [[ -x "$BIN_DIR/kitsune-client" ]]; then
     "$BIN_DIR/kitsune-client" uninstall-autostart >/dev/null 2>&1 \
@@ -547,6 +591,15 @@ uninstall_all() {
   rm -rf "$WAYLAND_DIR" "$SERVER_ROOT"
   rm -f "$BIN_DIR/ydotool" "$BIN_DIR/ydotoold" "$BIN_DIR/wtype"
 
+  if [[ "$REMOVE_MODELS" == 1 ]]; then
+    rm -rf "$CACHE_DIR/models"
+    info "Removed downloaded models"
+  fi
+  if [[ "$REMOVE_SERVER_DATA" == 1 ]]; then
+    rm -rf "$STATE_DIR"
+    info "Removed Server certificates, Devices, logs, and soft-stop state"
+  fi
+
   if [[ "$PURGE" == 1 ]]; then
     rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB"
     if [[ "$NO_ELEVATE" == 0 ]] && command -v sudo >/dev/null 2>&1; then
@@ -562,7 +615,9 @@ uninstall_all() {
     fi
     info "kitsune-whisper purged (config, models, certificates, Devices, spool, logs, wizard)"
   else
-    info "kitsune-whisper uninstalled (config, models, certificates, Devices, spool, logs kept)"
+    info "kitsune-whisper uninstalled (configuration, spool, wizard progress, and Device tokens kept)"
+    [[ "$REMOVE_MODELS" == 1 ]] || info "Downloaded models were kept; pass --remove-models to delete them"
+    [[ "$REMOVE_SERVER_DATA" == 1 ]] || info "Server certificates, Devices, and logs were kept; pass --remove-server-data to delete them"
   fi
 
   if command -v systemctl >/dev/null 2>&1; then
@@ -676,6 +731,14 @@ if [[ "$NO_CLIENT" == 0 ]]; then
   install_client "$CLIENT_ASSET"
 else
   ensure_config "${KITSUNE_CONFIG_TEMPLATE:-}"
+fi
+
+if [[ -x "$BIN_DIR/kitsune-client" && -f "$CONFIG" ]]; then
+  if "$BIN_DIR/kitsune-client" migrate-config --config "$CONFIG"; then
+    info "Checked $CONFIG for new settings"
+  else
+    warn "could not migrate $CONFIG; the Client still reads it with defaults"
+  fi
 fi
 
 if [[ "$NO_WAYLAND" == 0 ]]; then

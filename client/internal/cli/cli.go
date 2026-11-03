@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -51,6 +52,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/transcribe"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/update"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 	"gopkg.in/yaml.v3"
 )
@@ -73,6 +75,7 @@ var subcommands = map[string]bool{
 	"uninstall-autostart": true,
 	"install-desktop":     true,
 	"uninstall-desktop":   true,
+	"migrate-config":      true,
 }
 
 // Run parses args and executes, returning a process exit code.
@@ -125,6 +128,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(rest) > 0 && rest[0] == "uninstall-desktop" {
 		return runDesktop(rest[1:], false, stdout, stderr)
+	}
+	if len(rest) > 0 && rest[0] == "migrate-config" {
+		return runMigrateConfig(*configPath, stdout, stderr)
 	}
 
 	overrides := map[string]any{}
@@ -500,7 +506,8 @@ func serverCheck(
 		if err != nil && !errors.Is(err, trust.ErrNoToken) {
 			token = ""
 		}
-		return trust.CheckServer(ctx, profile, token, 3*time.Second)
+		status := trust.CheckServer(ctx, profile, token, 3*time.Second)
+		return trust.ApplyVersion(status, Version)
 	}
 }
 
@@ -613,9 +620,10 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 		var healthCheck func(context.Context) trust.Status
 		if bootstrap.store != nil {
 			serverService = servers.New(servers.Options{
-				Store:       bootstrap.store,
-				Tokens:      bootstrap.tokens,
-				LocalServer: localserver.Default(),
+				Store:         bootstrap.store,
+				Tokens:        bootstrap.tokens,
+				LocalServer:   localserver.Default(),
+				ClientVersion: Version,
 			})
 		} else {
 			// Without a profile service the shell still probes the active
@@ -661,6 +669,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			Version:              Version,
 			Profile:              server.Name,
 			CheckServer:          healthCheck,
+			Updater:              update.New(update.Options{Current: Version}),
 			Notifier:             shellNotifier{send: newNotifier(logger)},
 			Logger:               logger,
 		})
@@ -816,6 +825,37 @@ func runDesktop(args []string, install bool, stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stdout, "desktop %sed\n", action)
+	return 0
+}
+
+// runMigrateConfig adds the keys introduced by the desktop release to an
+// existing kitsune.yaml. The installer calls it after keeping the user's file;
+// a hand-edited configuration gets the same treatment.
+func runMigrateConfig(configPath string, stdout, stderr io.Writer) int {
+	path, exists := config.Locate(config.LoadOptions{CLIConfig: configPath})
+	if !exists {
+		fmt.Fprintln(stdout, "no kitsune.yaml found; nothing to migrate")
+		return 0
+	}
+	migration, err := config.MigrateFile(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "config: %v\n", err)
+		return 1
+	}
+	for _, warning := range migration.Warnings {
+		fmt.Fprintf(stderr, "config warning: %s\n", warning)
+	}
+	if !migration.Written {
+		fmt.Fprintf(stdout, "configuration is current: %s\n", migration.Path)
+		return 0
+	}
+	fmt.Fprintf(
+		stdout,
+		"migrated %s: added %s (backup %s)\n",
+		migration.Path,
+		strings.Join(migration.Added, ", "),
+		migration.BackupPath,
+	)
 	return 0
 }
 
@@ -1153,6 +1193,7 @@ func (p *profileTranscriber) http() (*transcribe.HTTP, error) {
 		p.logger.Warning("transcribe: profile %q is not trusted yet: %v", p.profile.Name, p.buildErr)
 		return nil, p.buildErr
 	}
+	p.client.ClientVersion = Version
 	p.client.OnWarning = func(warning string) { p.logger.Warning("transcribe: %s", warning) }
 	return p.client, nil
 }
@@ -1185,6 +1226,7 @@ Commands:
   uninstall-autostart          remove the login registration
   install-desktop              add the application-menu entry and icon
   uninstall-desktop            remove the application-menu entry and icon
+  migrate-config               add new keys to an existing kitsune.yaml
 
 Flags:
   --config PATH     path to kitsune.yaml
