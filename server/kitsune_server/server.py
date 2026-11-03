@@ -8,13 +8,15 @@ import os
 import socket
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TextIO
 
 import uvicorn
 
+from . import __version__
 from .app import create_app
+from .bundle import BundleError, Manifest
 from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
 from .engine import EngineLoadError, WhisperTranscriber
 from .gpu import detect_cuda_devices
@@ -43,6 +45,25 @@ from .trust import (
 logger = logging.getLogger("kitsune.server")
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+def release_version(env: Mapping[str, str] | None = None) -> str:
+    """The release this Server was installed from.
+
+    A released bundle records its tag in ``bundle.json`` next to ``lib/``. That
+    is the version the Client compares against, so an upgrade of either side is
+    reported as one instead of looking like an authentication failure. A
+    source checkout has no manifest and falls back to the package version.
+    """
+    environ = os.environ if env is None else env
+    override = environ.get("KITSUNE_SERVER_VERSION", "").strip()
+    if override:
+        return override
+    manifest = Path(__file__).resolve().parents[2] / "bundle.json"
+    try:
+        return Manifest.from_path(manifest).version
+    except BundleError:
+        return __version__
 
 
 def default_log_file(env: dict[str, str] | None = None) -> Path:
@@ -306,6 +327,7 @@ def run_server(
         log_file=log_file if log_file is not None else default_log_file(),
         restart=exit_for_restart,
         shutdown=exit_for_stop,
+        version=release_version(),
     )
     # The manager is the only owner: dropping this local reference lets an
     # unload actually release the model while uvicorn keeps serving.

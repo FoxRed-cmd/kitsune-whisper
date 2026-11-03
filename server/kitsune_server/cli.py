@@ -16,7 +16,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, get_args
 
-from . import __version__, bundle, supervisor
+from . import bundle, supervisor
 from .config import ConfigError, Device, ServerConfig, dump_config, load_config, resolve_config_file
 from .pairing import (
     PAIRING_TTL_SECONDS,
@@ -299,7 +299,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     _ensure_standard_streams()
     args = build_parser().parse_args(argv)
     if getattr(args, "version", False):
-        print(f"kitsune-server {__version__}")
+        from .server import release_version
+
+        print(f"kitsune-server {release_version()}")
         return 0
 
     if getattr(args, "check_config", False):
@@ -371,7 +373,9 @@ def _start(args: argparse.Namespace) -> int:
 def _status(args: argparse.Namespace) -> int:
     layout = _layout()
     manifest: bundle.Manifest | None = None
-    print(f"kitsune-server {__version__}")
+    from .server import release_version
+
+    print(f"kitsune-server {release_version()}")
     if not layout.manifest_path.is_file():
         print(f"bundle:     not installed ({layout.root})")
     else:

@@ -366,3 +366,31 @@ def test_main_reports_engine_load_error(
 
     assert code == 1
     assert "engine error: model unavailable" in capsys.readouterr().err
+
+
+def test_release_version_reads_the_installed_bundle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "server"
+    package = root / "lib" / "kitsune_server"
+    package.mkdir(parents=True)
+    (root / "bundle.json").write_text('{"version": "v0.5.0"}\n', encoding="utf-8")
+    monkeypatch.setattr(server, "__file__", str(package / "server.py"))
+
+    assert server.release_version() == "v0.5.0"
+
+
+def test_release_version_falls_back_to_the_package_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package = tmp_path / "lib" / "kitsune_server"
+    package.mkdir(parents=True)
+    monkeypatch.setattr(server, "__file__", str(package / "server.py"))
+
+    assert server.release_version() == server.__version__
+
+
+def test_release_version_honours_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("KITSUNE_SERVER_VERSION", "v0.9.0")
+
+    assert server.release_version() == "v0.9.0"
