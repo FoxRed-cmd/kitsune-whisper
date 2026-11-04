@@ -519,7 +519,7 @@ function Get-ChecksumFor {
     if (-not $line) {
         throw "no checksum for $Asset in checksums.txt"
     }
-    return (($_ -split '\s+')[0]).ToLowerInvariant()
+    return (($line -split '\s+')[0]).ToLowerInvariant()
 }
 
 function Assert-Checksum {
