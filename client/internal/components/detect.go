@@ -66,15 +66,7 @@ func Default() Environment {
 	home, _ := os.UserHomeDir()
 	serverRoot := os.Getenv("KITSUNE_SERVER_ROOT")
 	if serverRoot == "" {
-		if goos == "windows" {
-			local := os.Getenv("LOCALAPPDATA")
-			if local == "" {
-				local = filepath.Join(home, "AppData", "Local")
-			}
-			serverRoot = filepath.Join(local, configDirName, "Server")
-		} else {
-			serverRoot = filepath.Join(home, ".local", "lib", configDirName, "server")
-		}
+		serverRoot = defaultServerRoot(goos, home, os.Getenv("LOCALAPPDATA"))
 	}
 	executable, _ := os.Executable()
 	return Environment{
@@ -84,6 +76,20 @@ func Default() Environment {
 		Executable: executable,
 		Run:        runCommand,
 	}
+}
+
+// defaultServerRoot is the per-user bundle root install.sh and install.ps1
+// write when KITSUNE_SERVER_ROOT is unset. Windows uses the per-user Programs
+// convention, matching the installer's %LOCALAPPDATA%\Programs\kitsune-whisper.
+func defaultServerRoot(goos, home, localAppData string) string {
+	if goos == "windows" {
+		local := localAppData
+		if local == "" {
+			local = filepath.Join(home, "AppData", "Local")
+		}
+		return filepath.Join(local, "Programs", configDirName, "Server")
+	}
+	return filepath.Join(home, ".local", "lib", configDirName, "server")
 }
 
 // ConfigHome resolves the per-user configuration root for goos.
