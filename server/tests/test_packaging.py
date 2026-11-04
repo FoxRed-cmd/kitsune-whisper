@@ -423,10 +423,10 @@ def test_readme_has_quick_start_and_a_dependencies_section() -> None:
 
 
 def test_dependencies_document_mirrors_the_installer_identifiers() -> None:
-    """The dependency doc is the human matrix for the identifiers the scripts check.
+    """Pin the public identifier set, then check the document still names it.
 
-    #102 formalises this contract in CI; this small assertion keeps the doc from
-    silently drifting before then.
+    The parsed-table comparison below is the drift guard; this test keeps the
+    expected public set explicit so an accidental rename is visible here too.
     """
     install_sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
     install_ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
@@ -454,6 +454,96 @@ def test_dependencies_document_mirrors_the_installer_identifiers() -> None:
     assert client_floor is not None and server_floor is not None
     for floor in (client_floor.group(1), server_floor.group(1)):
         assert f"`{floor}`" in dependencies, floor
+
+
+def _installer_dependency_surface() -> tuple[set[str], set[str], dict[str, str], str]:
+    """Parse the identifiers and floors the installers actually check.
+
+    Formatting tolerance is deliberate: the values are the contract, not the
+    spacing around the assignment. ``docs/dependencies.md`` is parsed by
+    :func:`_documented_dependency_surface`.
+    """
+
+    install_sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
+    install_ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
+
+    linux_ids = set(
+        re.findall(r'^\s*DEP_[A-Z0-9_]+\s*=\s*["\']([^"\']+)["\']', install_sh, re.MULTILINE)
+    )
+    windows_ids = set(
+        re.findall(
+            r'^\s*\$Dep[A-Za-z0-9_]+\s*=\s*["\']([^"\']+)["\']',
+            install_ps1,
+            re.MULTILINE,
+        )
+    )
+    floors = {
+        name.lower(): value
+        for name, value in re.findall(
+            r'^\s*GLIBC_(CLIENT|SERVER)_FLOOR\s*=\s*["\']([^"\']+)["\']',
+            install_sh,
+            re.MULTILINE,
+        )
+    }
+    minimum_build = re.search(r"^\s*\$MinimumWindowsBuild\s*=\s*(\d+)", install_ps1, re.MULTILINE)
+    assert minimum_build is not None
+    return linux_ids, windows_ids, floors, minimum_build.group(1)
+
+
+def _documented_dependency_surface() -> dict[str, str]:
+    """Parse the identifier table in the dependencies document.
+
+    The table is delimited by its heading and the next section, so package,
+    glibc and injection tables elsewhere in the document cannot leak into the
+    comparison. Each row maps the first column (backticks optional) to the last
+    column, which holds the minimum or fix.
+    """
+
+    text = (REPO_ROOT / "docs" / "dependencies.md").read_text(encoding="utf-8")
+    section = text.split("## What the installers check", 1)[1]
+    section = section.split("## Linux packages", 1)[0]
+
+    rows: dict[str, str] = {}
+    for line in section.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        identifier = cells[0].strip("`").strip()
+        if not identifier or identifier == "Identifier" or set(identifier) <= set("-: "):
+            continue
+        rows[identifier] = cells[-1]
+    assert rows, "no identifiers parsed from docs/dependencies.md"
+    return rows
+
+
+def test_dependency_document_matches_every_installer_identifier_and_floor() -> None:
+    """An identifier or glibc floor cannot exist on only one side of the seam."""
+
+    linux_ids, windows_ids, floors, minimum_build = _installer_dependency_surface()
+    documented = _documented_dependency_surface()
+
+    installer_ids = linux_ids | windows_ids
+    assert documented.keys() == installer_ids, (
+        "installer identifiers missing from docs/dependencies.md: "
+        f"{sorted(installer_ids - documented.keys())}; "
+        "documented identifiers no installer checks: "
+        f"{sorted(documented.keys() - installer_ids)}"
+    )
+
+    assert floors.keys() == {"client", "server"}, floors
+    for component, identifier in (("client", "glibc-client"), ("server", "glibc-server")):
+        floor = floors[component]
+        assert f"`{floor}`" in documented[identifier], (
+            f"{identifier} documents {documented[identifier]!r}, but install.sh checks {floor!r}"
+        )
+
+    assert f"`{minimum_build}`" in documented["windows-version"], (
+        "docs/dependencies.md does not document the Windows build floor "
+        f"{minimum_build} that install.ps1 checks"
+    )
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:
