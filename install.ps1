@@ -322,7 +322,8 @@ function Invoke-ConfigMigration {
     $code = Invoke-Native -FilePath $client `
         -Arguments @('migrate-config', '--config', $ConfigPath)
     if ($code -ne 0) {
-        Write-Warning "configuration migration failed (exit $code); the Client still applies defaults"
+        Write-Warning -Message "configuration migration failed (exit $code); the Client still applies defaults" `
+            -WarningAction Continue
     }
 }
 
@@ -676,9 +677,11 @@ function Write-DependencyWarning {
         [Parameter(Mandatory = $true)][string]$Detail
     )
     # The README is the only place with package commands. Vary the wording of
-    # the fix, never the installation itself.
-    Write-Warning ("dependency '$Identifier' is missing: $Detail " +
-        "See the README Dependencies section: $ReadmeDependencies")
+    # the fix, never the installation itself. Continue explicitly: a caller
+    # with $WarningPreference = 'Stop' must not turn a warning into a failure.
+    Write-Warning -Message ("dependency '$Identifier' is missing: $Detail " +
+        "See the README Dependencies section: $ReadmeDependencies") `
+        -WarningAction Continue
 }
 
 function Write-WebView2Warning {
@@ -769,7 +772,8 @@ function Install-Kitsune {
         # digest and before fetching or extracting an archive.
         $signature = Join-Path $Temp 'checksums.txt.sig'
         if ($Insecure) {
-            Write-Warning '-Insecure: skipping the release signature check'
+            Write-Warning -Message '-Insecure: skipping the release signature check' `
+                -WarningAction Continue
         }
         else {
             if ($From) {

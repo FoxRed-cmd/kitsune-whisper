@@ -290,6 +290,24 @@ def test_purge_and_data_flags_require_uninstall(installer: str) -> None:
         assert flag in installer
 
 
+def test_uninstall_does_not_require_a_previous_install(installer: str) -> None:
+    uninstall = installer.split("function Uninstall-Kitsune", 1)[1].split("if ($ClientOnly", 1)[0]
+    # A current shim carries the requested flags regardless of what an older
+    # install left behind, and removal is safe when nothing was installed.
+    assert "Write-UninstallShim -Path $shim" in uninstall
+    assert "'-InstallRoot', $InstallRoot" in uninstall
+    assert "Test-Path -LiteralPath $UninstallShim" not in uninstall
+
+
+def test_uninstall_tolerates_a_client_only_or_server_only_tree(installer: str) -> None:
+    shim = uninstall_shim(installer)
+    # Both probes are guarded, so a missing Client or Server is not an error.
+    assert "if (Test-Path -LiteralPath $client)" in shim
+    assert "if (Test-Path -LiteralPath $launcher)" in shim
+    assert "schtasks.exe /Delete /TN 'kitsune-server'" in shim
+    assert "schtasks.exe /Delete /TN 'kitsune-client'" in shim
+
+
 def test_user_path_is_extended_once_and_removed_on_uninstall(installer: str) -> None:
     assert "GetEnvironmentVariable('Path', 'User')" in installer
     assert "SetEnvironmentVariable('Path'" in installer
