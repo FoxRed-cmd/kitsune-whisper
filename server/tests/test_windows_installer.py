@@ -410,6 +410,8 @@ def test_the_installer_exposes_the_maintained_flags(installer: str) -> None:
         "-ClientOnly",
         "-ServerOnly",
         "-ForceConfig",
+        "-Force",
+        "-Check",
         "-DryRun",
         "-From",
         "-Insecure",
@@ -427,6 +429,8 @@ def test_the_installer_exposes_the_maintained_flags(installer: str) -> None:
         "-ClientOnly",
         "-ServerOnly",
         "-ForceConfig",
+        "-Force",
+        "-Check",
         "-DryRun",
         "-From",
         "-Insecure",
@@ -434,6 +438,105 @@ def test_the_installer_exposes_the_maintained_flags(installer: str) -> None:
         assert flag in help_text, flag
     # Nothing to start after install, so nothing is launched in the Tray.
     assert "gui --hidden" not in installer
+
+
+def test_install_manifest_matches_the_linux_schema(installer: str) -> None:
+    assert "$ManifestPath = Join-Path $StateDir 'install.json'" in installer
+    assert "function Write-InstallManifest" in installer
+    manifest = installer.split("function Write-InstallManifest", 1)[1].split("function ", 1)[0]
+    for field in ('"version"', '"components"', '"installed_at"'):
+        assert field in manifest, field
+    # ISO-8601 UTC, byte-for-byte the format install.sh writes.
+    assert "UtcNow.ToString('yyyy-MM-ddTHH:mm:ss') + 'Z'" in manifest
+    # Atomic replace beside the manifest, not a partial in-place write.
+    assert "Set-Content -LiteralPath $temporary" in manifest
+    assert "Move-Item -LiteralPath $temporary -Destination $ManifestPath -Force" in manifest
+    assert 'Write-Step "wrote the install manifest' in manifest
+
+    # Apps & Features reads the manifest rather than guessing from binaries.
+    display = installer.split("function Get-DisplayVersion", 1)[1].split("function ", 1)[0]
+    assert "Get-ManifestVersion" in display
+
+    # Uninstall removes the bookkeeping even when it keeps user data.
+    shim = uninstall_shim(installer)
+    assert "$manifest = if ($stateDir) { Join-Path $stateDir 'install.json' } else { '' }" in shim
+    assert "Remove-OurPath $manifest" in shim
+
+
+def test_check_mode_reports_versions_and_components_without_changing_anything(
+    installer: str,
+) -> None:
+    assert "[switch]$Check" in installer
+    assert "function Show-CheckStatus" in installer
+    check = installer.split("function Show-CheckStatus", 1)[1].split("function ", 1)[0]
+    for label in ("Manifest:", "Installed:", "Components:", "Available:"):
+        assert label in check, label
+    assert "exit 0" in check
+    # Check mode neither installs nor prompts.
+    assert "Install-Kitsune" not in check
+    assert "Read-Host" not in check
+    assert "'-Check and -Uninstall are mutually exclusive'" in installer
+    # Dispatch runs the check before the installer can write anything.
+    dispatch = installer.rsplit("if ($Check)", 1)[1]
+    assert "Show-CheckStatus" in dispatch
+    assert dispatch.index("Show-CheckStatus") < dispatch.index("Install-Kitsune")
+
+
+def test_available_version_and_downgrade_guard_match_linux(installer: str) -> None:
+    assert "[switch]$Force" in installer
+    assert "function Resolve-AvailableVersion" in installer
+    assert "function Get-LocalArtifactVersion" in installer
+    assert "function Get-LatestReleaseVersion" in installer
+    assert "Join-Path $From 'VERSION'" in installer
+    assert "'-xOf' $archive 'bundle.json'" in installer
+    assert "tag_name" in installer
+
+    resolve = installer.split("function Resolve-AvailableVersion", 1)[1].split("function ", 1)[0]
+    assert "if ($Version -ne 'latest')" in resolve
+    assert "Get-LocalArtifactVersion" in resolve
+    assert "Get-LatestReleaseVersion" in resolve
+
+    guard = installer.split("function Assert-NoDowngrade", 1)[1].split("function ", 1)[0]
+    assert "Get-ManifestVersion" in guard
+    assert "Test-VersionIsLower $Available $installed" in guard
+    assert "refusing to downgrade" in guard
+    assert "pass -Force" in guard
+    # Equal and higher versions pass; only a lower numeric component refuses.
+    assert "if ($an -lt $bn) { return $true }" in installer
+    assert "if ($an -gt $bn) { return $false }" in installer
+
+    # The guard runs after the signature check but before archives are fetched.
+    guard_call = installer.index("Assert-NoDowngrade -Available")
+    assert guard_call < installer.index("foreach ($asset in $assets)")
+    assert installer.index("Assert-ReleaseSignature -ChecksumsPath") < guard_call
+
+
+def test_install_stops_a_running_client_and_server_before_replacing(installer: str) -> None:
+    assert "function Stop-RunningComponents" in installer
+    stop = installer.split("function Stop-RunningComponents", 1)[1].split("function ", 1)[0]
+    assert "Get-Process -Name 'kitsune-client'" in stop
+    assert "Stop-Process -Force" in stop
+    assert "& schtasks.exe /End /TN 'kitsune-server'" in stop
+    # A Server started outside Task Scheduler is matched by bundle path, never
+    # by stopping an unrelated Python.
+    assert "Get-Process -Name 'python', 'pythonw'" in stop
+    assert "StartsWith($prefix" in stop
+    # Every stop is best-effort: no failure may abort the install.
+    assert stop.count("catch") >= 3
+    assert "throw" not in stop
+    assert "exit 1" not in stop
+
+    install_client = installer.split("function Install-Client", 1)[1].split("function ", 1)[0]
+    assert "Stop-RunningComponents" in install_client
+    assert install_client.index("Stop-RunningComponents") < install_client.index(
+        "Copy-Item -LiteralPath $executable"
+    )
+
+    install_server = installer.split("function Install-Server {", 1)[1].split("function ", 1)[0]
+    assert "Stop-RunningComponents" in install_server
+    assert install_server.index("Stop-RunningComponents") < install_server.index(
+        "Install-ServerBundle"
+    )
 
 
 def test_release_workflow_publishes_scripts_and_archives_only() -> None:
