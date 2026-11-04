@@ -23,6 +23,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
@@ -657,6 +658,21 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 
 	bootstrap := prepareTrust(ctx, cfg, so, logger)
 	cfg = bootstrap.cfg
+
+	// The Client owns the Local Server lifecycle. Start it before the shell's
+	// first health probe when the install and the Autostart mode permit it, so
+	// the probe can observe the Server coming up. A failure never blocks the
+	// window: it is logged and shown in the window, and the Server stays
+	// reported offline.
+	startupController := startup.Default(so.configPath)
+	localServer := localserver.Default()
+	launchErr := maybeStartLocalServer(
+		ctx, startupController.Status(), localServer, localServerReachable(cfg),
+	)
+	if launchErr != nil {
+		logger.Warning("Local Server: %v", launchErr)
+	}
+
 	adapters, err := buildAdapters(cfg, logger, bootstrap.manager)
 	if err != nil {
 		logger.Error("%v", err)
@@ -712,7 +728,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			serverService = servers.New(servers.Options{
 				Store:         bootstrap.store,
 				Tokens:        bootstrap.tokens,
-				LocalServer:   localserver.Default(),
+				LocalServer:   localServer,
 				ClientVersion: Version,
 			})
 		} else {
@@ -727,8 +743,14 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			statePath := paths.WizardState(bootstrap.store.Snapshot().Path)
 			stateStore := wizard.NewFileStore(statePath)
 			stateStore.OnLog = func(message string) { logger.Warning("wizard: %s", message) }
+			// The Component set is read once per launch, before any step runs.
+			// It stays out of wizard.json so upgrading a Client-only install
+			// with the Local Server brings its steps back on the next start.
+			installed := components.Detect(components.Default())
+			logger.Info("wizard: client=%t server=%t", installed.Client, installed.Server)
 			wizardService = wizard.Open(stateStore, wizard.Options{
-				OnLog: func(message string) { logger.Warning("wizard: %s", message) },
+				OnLog:      func(message string) { logger.Warning("wizard: %s", message) },
+				Components: func() components.Set { return installed },
 			})
 		}
 		clientLogPath := cfg.LogFile
@@ -736,17 +758,18 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			clientLogPath = paths.LogFile()
 		}
 		sh = shell.New(shell.Options{
-			Runtime:        rt,
-			Desktop:        desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
-			Settings:       settingsService,
-			Servers:        serverService,
-			Wizard:         wizardService,
-			Spool:          newSpoolService(bootstrap.store, cfg, rt),
-			Startup:        startup.Default(so.configPath),
-			GnomeShortcuts: newGnomeShortcuts(),
-			LogPath:        clientLogPath,
-			ApplyConfig:    rt.Apply,
-			Send:           rt.Trigger,
+			Runtime:           rt,
+			Desktop:           desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
+			Settings:          settingsService,
+			Servers:           serverService,
+			Wizard:            wizardService,
+			Spool:             newSpoolService(bootstrap.store, cfg, rt),
+			Startup:           startupController,
+			ServerLaunchError: launchErr,
+			GnomeShortcuts:    newGnomeShortcuts(),
+			LogPath:           clientLogPath,
+			ApplyConfig:       rt.Apply,
+			Send:              rt.Trigger,
 			// The appearance screen previews the real pill on every edit.
 			PreviewIndicator: func(anchor string, offsetX, offsetY int) error {
 				return rt.PreviewIndicator(indicator.Placement{

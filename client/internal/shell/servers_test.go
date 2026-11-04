@@ -98,6 +98,10 @@ func (f *fakeServers) AddRemote(_ context.Context, address, code, name string) (
 	f.addCalls = append(f.addCalls, address+"|"+code+"|"+name)
 	err, profile := f.pairErr, f.profile
 	if err == nil {
+		for i := range f.view.Profiles {
+			f.view.Profiles[i].Active = false
+		}
+		profile.Active = true
 		f.view.ActiveID = profile.ID
 		f.view.Profiles = append(f.view.Profiles, profile)
 		f.cfg.ActiveServer = profile.ID
