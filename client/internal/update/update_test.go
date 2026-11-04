@@ -98,15 +98,15 @@ func TestCheckReportsTheAvailableLinuxInstaller(t *testing.T) {
 	}
 }
 
-func TestCheckSelectsTheWindowsSetup(t *testing.T) {
-	f := newFixture(t, "kitsune-whisper_windows_amd64_setup.exe", "setup", "")
+func TestCheckSelectsTheWindowsInstaller(t *testing.T) {
+	f := newFixture(t, "install.ps1", "install", "")
 	svc := service(t, f, update.Options{Current: "0.1.0", Platform: "windows", Arch: "amd64"})
 
 	info, err := svc.Check(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Asset != "kitsune-whisper_windows_amd64_setup.exe" || !info.Installable {
+	if info.Asset != "install.ps1" || !info.Installable {
 		t.Fatalf("windows asset = %+v", info)
 	}
 }
@@ -137,6 +137,38 @@ func TestUnsupportedPlatformChecksButCannotInstall(t *testing.T) {
 	}
 	if _, err := svc.Install(context.Background(), info); err == nil {
 		t.Fatal("Install accepted an unsupported platform")
+	}
+}
+
+func TestInstallPinsTheWindowsInstallerToTheCheckedRelease(t *testing.T) {
+	f := newFixture(t, "install.ps1", "install", "")
+	var launchedPath string
+	var launchedArgs []string
+	var launchedEnv []string
+	svc := service(t, f, update.Options{
+		Current: "0.1.0", Platform: "windows", Arch: "amd64",
+		Run: func(path string, args []string, env []string) error {
+			launchedPath, launchedArgs, launchedEnv = path, args, env
+			return nil
+		},
+	})
+	info, err := svc.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := svc.Install(context.Background(), info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != launchedPath || filepath.Base(path) != "install.ps1" {
+		t.Fatalf("launched %q, returned %q", launchedPath, path)
+	}
+	if len(launchedArgs) != 2 || launchedArgs[0] != "-Version" || launchedArgs[1] != "v0.2.0" {
+		t.Fatalf("args = %v", launchedArgs)
+	}
+	if len(launchedEnv) != 0 {
+		t.Fatalf("env = %v", launchedEnv)
 	}
 }
 

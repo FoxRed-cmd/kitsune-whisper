@@ -7,10 +7,9 @@ name: Release
 #   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1
 #   kitsune-server_linux_amd64.tar.gz          native Server bundle
 #
-# The Windows set is the contract install.ps1 and the setup rely on:
+# The Windows set is the contract install.ps1 relies on:
 #   kitsune-client_windows_amd64.zip           Client, Tray, Settings window
 #   kitsune-server_windows_amd64.tar.gz        native Server bundle
-#   kitsune-whisper_windows_amd64_setup.exe    per-user Inno Setup installer
 #
 # The publish job also attaches install.sh (the Linux updater's verified asset)
 # and install.ps1 (the pinned Windows bootstrap), with checksums.txt covering
@@ -202,46 +201,6 @@ jobs:
           path: dist/kitsune-server_windows_amd64.tar.gz
           if-no-files-found: error
 
-  windows-installer:
-    name: windows installer
-    runs-on: windows-latest
-    needs: [verify-version, client-windows, server-bundle-windows]
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: windows-client
-          path: dist
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: server-bundle-windows
-          path: dist
-
-      - name: Install Inno Setup 6
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      - name: Unpack the Client
-        shell: pwsh
-        run: Expand-Archive -LiteralPath dist\kitsune-client_windows_amd64.zip -DestinationPath dist -Force
-
-      - name: Build the per-user setup
-        shell: pwsh
-        run: |
-          $version = if ($env:GITHUB_REF_NAME) { $env:GITHUB_REF_NAME } else { "dev" }
-          ./packaging/windows/build-installer.ps1 `
-            -Client dist/kitsune-client.exe `
-            -ServerArtifact dist/kitsune-server_windows_amd64.tar.gz `
-            -Version $version -Output dist
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: windows-installer
-          path: dist/kitsune-whisper_windows_amd64_setup.exe
-          if-no-files-found: error
-
   release:
     name: publish
     runs-on: ubuntu-24.04
@@ -251,7 +210,6 @@ jobs:
       - client-windows
       - server-bundle
       - server-bundle-windows
-      - windows-installer
     steps:
       # install.sh and install.ps1 are checked out, not downloaded artifacts.
       - uses: actions/checkout@v4
@@ -305,7 +263,6 @@ jobs:
             dist/kitsune-client_windows_amd64.zip
             dist/kitsune-server_linux_amd64.tar.gz
             dist/kitsune-server_windows_amd64.tar.gz
-            dist/kitsune-whisper_windows_amd64_setup.exe
             dist/install.sh
             dist/install.ps1
             dist/checksums.txt

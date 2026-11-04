@@ -12,7 +12,7 @@ Release under verification: **1.0.0** (`VERSION`).
 | ID | Environment | Needed for |
 | --- | --- | --- |
 | A | GNOME on Wayland, Linux x64 | GTK4 Settings/Tray, portal hotkey, `wtype`/`ydotool` injection, indicator |
-| B | Windows 11 x64 | per-user setup, WebView2, Task Scheduler, Credential Manager, hidden Server |
+| B | Windows 11 x64 | install.ps1, WebView2, Task Scheduler, Credential Manager, hidden Server |
 | C | Linux or Windows with a real NVIDIA GPU | CUDA runtime, model load, latency |
 | D | Two machines on one LAN | remote pairing and Device revocation (tracked with #84) |
 
