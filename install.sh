@@ -45,6 +45,23 @@ REMOVE_SERVER_DATA=0
 SERVER_OK=1
 TMP=""
 
+# -- runtime dependency identifiers ----------------------------------------
+# These identifiers are stable and machine-readable. The dependencies document
+# (#101) mirrors them and the release tests (#102) assert the two do not drift.
+DEP_GTK4="gtk4"
+DEP_WEBKITGTK="webkitgtk-6.0"
+DEP_ALSA="alsa"
+DEP_LIBX11="libx11"
+DEP_GLIBC_CLIENT="glibc-client"
+DEP_GLIBC_SERVER="glibc-server"
+DEP_WAYLAND_INJECTION="wayland-injection"
+
+# The Client is built on Ubuntu 24.04 and links the host's GTK/WebKit, so it
+# needs glibc 2.39. The Server ships a standalone Python runtime and runs on
+# the oldest supported distribution, Ubuntu 22.04 with glibc 2.35.
+GLIBC_CLIENT_FLOOR="2.39"
+GLIBC_SERVER_FLOOR="2.35"
+
 info() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -245,6 +262,109 @@ install_desktop_entry() {
   fi
 }
 
+# -- dependency reporting --------------------------------------------------
+#
+# These checks run after the selected binaries are in place. They only report:
+# a missing dependency never fails an install and never changes its status.
+# The README owns the package commands; this script deliberately prints none.
+
+find_ldconfig() {
+  if command -v ldconfig >/dev/null 2>&1; then
+    command -v ldconfig
+  elif [[ -x /sbin/ldconfig ]]; then
+    printf '%s\n' /sbin/ldconfig
+  else
+    return 1
+  fi
+}
+
+# KITSUNE_GLIBC_VERSION pins the detected version so tests do not depend on
+# the host. Users normally leave it unset.
+detect_glibc_version() {
+  if [[ -n "${KITSUNE_GLIBC_VERSION:-}" ]]; then
+    printf '%s\n' "$KITSUNE_GLIBC_VERSION"
+    return 0
+  fi
+  local version=""
+  if command -v getconf >/dev/null 2>&1; then
+    version="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')"
+  fi
+  if [[ -z "$version" ]] && command -v ldd >/dev/null 2>&1; then
+    version="$(ldd --version 2>/dev/null | awk 'NR == 1 {print $NF}')"
+  fi
+  [[ -n "$version" ]] || return 1
+  printf '%s\n' "$version"
+}
+
+version_at_least() {
+  local have="$1" want="$2"
+  [[ -n "$have" && -n "$want" ]] || return 1
+  printf '%s\n%s\n' "$want" "$have" | sort -V -C 2>/dev/null
+}
+
+warn_dependency() {
+  local identifier="$1" detail="$2"
+  warn "dependency '$identifier' is missing: $detail See the README Dependencies section."
+}
+
+check_client_libraries() {
+  local ldconfig listing
+  ldconfig="$(find_ldconfig)" || return 0
+  listing="$("$ldconfig" -p 2>/dev/null || true)"
+  [[ -n "$listing" ]] || return 0
+
+  local checks=(
+    "$DEP_GTK4|libgtk-4.so.1|libgtk-4.so.1 was not found, so the Settings window falls back to the browser."
+    "$DEP_WEBKITGTK|libwebkitgtk-6.0.so.4|libwebkitgtk-6.0.so.4 was not found, so the Settings window falls back to the browser."
+    "$DEP_ALSA|libasound.so.2|libasound.so.2 was not found, so the Client cannot record audio."
+    "$DEP_LIBX11|libX11.so.6|libX11.so.6 was not found, so hotkeys and X11 injection will not load."
+  )
+  local entry identifier soname detail
+  for entry in "${checks[@]}"; do
+    IFS='|' read -r identifier soname detail <<< "$entry"
+    if ! grep -Fq -- "$soname" <<< "$listing"; then
+      warn_dependency "$identifier" "$detail"
+    fi
+  done
+}
+
+check_client_glibc() {
+  local version
+  version="$(detect_glibc_version)" || return 0
+  if version_at_least "$version" "$GLIBC_CLIENT_FLOOR"; then
+    return 0
+  fi
+  warn_dependency "$DEP_GLIBC_CLIENT" \
+    "this system has glibc $version, but the Client needs $GLIBC_CLIENT_FLOOR or newer."
+  if version_at_least "$version" "$GLIBC_SERVER_FLOOR"; then
+    warn "Only the Server can run on this system (glibc $version); install it with --server-only. See the README Dependencies section."
+  fi
+}
+
+check_server_glibc() {
+  local version
+  version="$(detect_glibc_version)" || return 0
+  if version_at_least "$version" "$GLIBC_SERVER_FLOOR"; then
+    return 0
+  fi
+  warn_dependency "$DEP_GLIBC_SERVER" \
+    "this system has glibc $version, but the Server needs $GLIBC_SERVER_FLOOR or newer."
+}
+
+check_injection_tool() {
+  local session="${XDG_SESSION_TYPE:-}"
+  if [[ -z "$session" && -n "${WAYLAND_DISPLAY:-}" ]]; then
+    session="wayland"
+  fi
+  # X11 injects through the internal XTEST path and needs no external tool.
+  [[ "$session" == "wayland" ]] || return 0
+  if command -v wtype >/dev/null 2>&1 || command -v ydotool >/dev/null 2>&1; then
+    return 0
+  fi
+  warn_dependency "$DEP_WAYLAND_INJECTION" \
+    "this Wayland session has neither wtype nor ydotool on PATH, so transcription will only reach the clipboard."
+}
+
 # -- uninstall -------------------------------------------------------------
 
 confirm() {
@@ -421,6 +541,16 @@ fi
 
 if [[ -x "$BIN_DIR/kitsune-client" ]]; then
   install_desktop_entry
+fi
+
+# Check the runtime surface now that the selected binaries are in place.
+if [[ "$INSTALL_CLIENT" == 1 ]]; then
+  check_client_libraries
+  check_client_glibc
+  check_injection_tool
+fi
+if [[ "$INSTALL_SERVER" == 1 && "$SERVER_OK" == 1 ]]; then
+  check_server_glibc
 fi
 
 if [[ "$SERVER_OK" == 0 ]]; then
