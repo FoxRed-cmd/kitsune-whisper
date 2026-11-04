@@ -5,8 +5,9 @@
 Installs, upgrades, or removes kitsune-whisper on Windows without elevation.
 
 .DESCRIPTION
-Downloads the release's Client archive and (unless -ClientOnly) the native
-Server bundle, verifies both against checksums.txt, and installs them under the
+Downloads the release's Client archive and/or native Server bundle, verifies
+checksums.txt against the release's detached ECDSA P-256 signature, verifies
+every archive against checksums.txt, and only then installs it under the
 current user's own programs directory:
 
   %LOCALAPPDATA%\Programs\kitsune-whisper\bin      Client and Server launcher
@@ -23,8 +24,50 @@ Re-run the script to upgrade in place. Configuration in
 %APPDATA%\kitsune-whisper and models are kept. An existing CUDA runtime
 directory (Server\lib\nvidia) is preserved across an upgrade.
 
-The Microsoft Edge WebView2 Runtime is not installed or downloaded. When it is
-missing, the installer warns and points at the documented manual install.
+The Microsoft Edge WebView2 Runtime and every other dependency are not
+installed or downloaded. A missing dependency produces a warning that points at
+the README Dependencies section; the README is the only place with package
+commands.
+
+.PARAMETER Version
+Install VERSION instead of the latest release (also KITSUNE_VERSION).
+
+.PARAMETER ClientOnly
+Install only the Client. The Server bundle and its task are not installed.
+
+.PARAMETER ServerOnly
+Install only the Server bundle and launcher. No Client, config or shortcut.
+
+.PARAMETER From
+Install from release artifacts in this directory (also
+KITSUNE_ARTIFACTS_DIR). The directory must contain checksums.txt and
+checksums.txt.sig (unless -Insecure).
+
+.PARAMETER ForceConfig
+Overwrite an existing %APPDATA%\kitsune-whisper\kitsune.yaml.
+
+.PARAMETER DryRun
+Print the plan and change nothing.
+
+.PARAMETER Insecure
+Skip the release signature check. For local development only; the SHA-256
+checksums are still verified. Never use it for a download you do not control.
+
+.PARAMETER Uninstall
+Remove the binaries, Server bundle, supervisor tasks, Start Menu shortcut, PATH
+entry and Apps & Features entry. Configuration, models, certificates, pairing
+state and logs are kept.
+
+.PARAMETER Purge
+With -Uninstall: also remove configuration, models, cache/state, certificates,
+pairing state, logs, spool, stored tokens and the install directory, leaving
+nothing of ours.
+
+.PARAMETER RemoveModels
+With -Uninstall: delete downloaded models only.
+
+.PARAMETER RemoveServerData
+With -Uninstall: delete Server certificates, Devices, logs and soft-stop state.
 
 One-liner:
 
@@ -37,16 +80,24 @@ One-liner:
 ./install.ps1 -ServerOnly
 ./install.ps1 -ForceConfig
 ./install.ps1 -DryRun -From .\dist
+./install.ps1 -Insecure -From .\dist
 ./install.ps1 -Uninstall
+./install.ps1 -Uninstall -Purge
+./install.ps1 -Uninstall -RemoveModels
+./install.ps1 -Uninstall -RemoveServerData
 #>
 [CmdletBinding()]
 param(
     [string]$Version = $(if ($env:KITSUNE_VERSION) { $env:KITSUNE_VERSION } else { 'latest' }),
     [switch]$Uninstall,
+    [switch]$Purge,
+    [switch]$RemoveModels,
+    [switch]$RemoveServerData,
     [switch]$ClientOnly,
     [switch]$ServerOnly,
     [switch]$ForceConfig,
     [switch]$DryRun,
+    [switch]$Insecure,
     [string]$From = $(if ($env:KITSUNE_ARTIFACTS_DIR) { $env:KITSUNE_ARTIFACTS_DIR } else { '' })
 )
 
@@ -62,18 +113,39 @@ $Repo = 'FoxRed-cmd/kitsune-whisper'
 $ClientAsset = 'kitsune-client_windows_amd64.zip'
 $ServerAsset = 'kitsune-server_windows_amd64.tar.gz'
 
+# The release key that signs checksums.txt. It is the same PEM committed at
+# packaging/keys/kitsune-release-public.pem; pinning it here means a compromised
+# download host cannot substitute both the checksums and their signature.
+$ReleasePublicKeyPem = @'
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGh5umJxHjCLuQS4EVIkydw0zrLKU
+f+HckG02s6mF/HzNPpGCLIZ6RBotAeC5KTfg6B0mmMnLopxnc1WKln/kYQ==
+-----END PUBLIC KEY-----
+'@
+
 # The per-user programs convention, not a machine-wide directory.
 $InstallRoot = Join-Path $env:LOCALAPPDATA 'Programs\kitsune-whisper'
 $BinDir = Join-Path $InstallRoot 'bin'
 $ServerRoot = Join-Path $InstallRoot 'Server'
 $UninstallShim = Join-Path $InstallRoot 'uninstall.ps1'
-$ConfigPath = Join-Path $env:APPDATA 'kitsune-whisper\kitsune.yaml'
+$ConfigDir = Join-Path $env:APPDATA 'kitsune-whisper'
+$ConfigPath = Join-Path $ConfigDir 'kitsune.yaml'
+$StateDir = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
+$HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { '' }
+$ModelDir = if ($HomeDir) { Join-Path $HomeDir '.cache\kitsune-whisper\models' } else { '' }
 $StartMenuShortcut = Join-Path $env:APPDATA `
     'Microsoft\Windows\Start Menu\Programs\kitsune-whisper.lnk'
 $UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\kitsune-whisper'
 $WebView2Client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
 $WebView2Help = 'https://developer.microsoft.com/microsoft-edge/webview2/'
-$InstallHelp = "https://github.com/$Repo/blob/main/docs/install.md#windows"
+$ReadmeDependencies = "https://github.com/$Repo/blob/main/README.md#dependencies"
+
+# Stable dependency identifiers. The README Dependencies section and the tests
+# may rely on them; warnings never print a package-manager command.
+$DepWebView2 = 'webview2'
+$DepWindowsVersion = 'windows-version'
+$DepWindows64 = 'windows-64-bit'
+$MinimumWindowsBuild = 17763  # Windows 10 1809, the oldest serviced release.
 
 $Temp = ''
 
@@ -87,6 +159,58 @@ function Get-BaseUrl {
         return "https://github.com/$Repo/releases/latest/download"
     }
     return "https://github.com/$Repo/releases/download/$Version"
+}
+
+function Get-ReleasePublicKeyPem {
+    # KITSUNE_RELEASE_PUBLIC_KEY exists only for the installer test harness, so
+    # local artifacts can be signed with a throwaway key. Production uses the
+    # pinned PEM above. The value is a path or the PEM text itself.
+    $override = $env:KITSUNE_RELEASE_PUBLIC_KEY
+    if ($override) {
+        if ($override -match '-----BEGIN PUBLIC KEY-----') {
+            return $override
+        }
+        try {
+            if (Test-Path -LiteralPath $override -PathType Leaf) {
+                return Get-Content -LiteralPath $override -Raw
+            }
+        }
+        catch {
+            # Not a path and not PEM: let ImportFromPem report the bad key.
+        }
+        return $override
+    }
+    return $ReleasePublicKeyPem
+}
+
+function Assert-ReleaseSignature {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath,
+        [Parameter(Mandatory = $true)][string]$SignaturePath
+    )
+    if (-not (Test-Path -LiteralPath $SignaturePath -PathType Leaf)) {
+        throw "missing release signature: $SignaturePath"
+    }
+    $key = [System.Security.Cryptography.ECDsa]::Create()
+    try {
+        $key.ImportFromPem((Get-ReleasePublicKeyPem))
+        $valid = $key.VerifyData(
+            [System.IO.File]::ReadAllBytes($ChecksumsPath),
+            [System.IO.File]::ReadAllBytes($SignaturePath),
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence)
+        if (-not $valid) {
+            throw 'release signature verification failed: checksums.txt.sig does not match the pinned release key'
+        }
+    }
+    catch [System.Security.Cryptography.CryptographicException] {
+        throw ("release signature verification failed: checksums.txt.sig is not a valid " +
+            "ECDSA P-256 signature ($($_.Exception.Message))")
+    }
+    finally {
+        $key.Dispose()
+    }
+    Write-Step 'verified the release signature for checksums.txt'
 }
 
 function ConvertTo-Argument {
@@ -198,7 +322,8 @@ function Invoke-ConfigMigration {
     $code = Invoke-Native -FilePath $client `
         -Arguments @('migrate-config', '--config', $ConfigPath)
     if ($code -ne 0) {
-        Write-Warning "configuration migration failed (exit $code); the Client still applies defaults"
+        Write-Warning -Message "configuration migration failed (exit $code); the Client still applies defaults" `
+            -WarningAction Continue
     }
 }
 
@@ -315,23 +440,104 @@ function New-StartMenuShortcut {
 }
 
 function Write-UninstallShim {
-    # The shim lives next to bin/ and Server/, so apps & features never depends
-    # on a download or an interactive prompt. #97 adds the purge boundaries.
+    # The shim lives next to bin/ and Server/, so Apps & Features never depends
+    # on a download or an interactive prompt. It is the single source of the
+    # uninstall and purge boundaries, and it is safe to run non-interactively.
+    param([string]$Path = $UninstallShim)
+
     $body = @'
 #requires -Version 7
 # Generated by the kitsune-whisper installer: removes the files and
-# registrations this installation created and keeps configuration, models and
-# pairing state. It is safe to run non-interactively.
+# registrations this installation created. Without -Purge it keeps
+# configuration, models, certificates, pairing state and logs; -Purge removes
+# every trace we created. No elevation and no package changes.
 [CmdletBinding()]
-param()
+param(
+    [switch]$Purge,
+    [switch]$RemoveModels,
+    [switch]$RemoveServerData,
+    [string]$InstallRoot = ''
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$installRoot = $PSScriptRoot
+# Apps & Features runs the shim in place, so $PSScriptRoot is the install root.
+# The installer's temp-shim fallback passes -InstallRoot explicitly.
+$installRoot = if ($InstallRoot) { $InstallRoot } else { $PSScriptRoot }
 $bin = Join-Path $installRoot 'bin'
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\kitsune-whisper'
 $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\kitsune-whisper.lnk'
+$configDir = if ($env:APPDATA) { Join-Path $env:APPDATA 'kitsune-whisper' } else { '' }
+$stateDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'kitsune-whisper' } else { '' }
+$homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { '' }
+$modelDir = if ($homeDir) { Join-Path $homeDir '.cache\kitsune-whisper\models' } else { '' }
+
+function Remove-OurPath {
+    param([string]$Path)
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Remove-InstallRoot {
+    if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {
+        # Remove children first: a file still held by a just-stopped process
+        # must not take the whole tree removal down with it.
+        Get-ChildItem -LiteralPath $installRoot -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Remove-PathEntry {
+    # Remove every duplicate, comparing case-insensitively: Windows paths are
+    # case-insensitive, and an older install may have appended the entry twice.
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath) {
+        return
+    }
+    $entries = @($userPath -split ';')
+    $kept = @($entries | Where-Object { $_ -and ($_ -ine $bin) })
+    if ($kept.Count -ne $entries.Count) {
+        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
+    }
+}
+
+function Remove-StoredCredentials {
+    # go-keyring files Windows tokens in Credential Manager as
+    # "kitsune-whisper:<profile>". Read profile ids from the config while it
+    # still exists, then sweep any target cmdkey lists for the same prefix.
+    if (-not $env:SystemRoot) {
+        return
+    }
+    $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
+    if (-not (Test-Path -LiteralPath $cmdkey)) {
+        return
+    }
+    try {
+        $ids = @('local')
+        $configFile = Join-Path $configDir 'kitsune.yaml'
+        if ($configDir -and (Test-Path -LiteralPath $configFile)) {
+            $yaml = Get-Content -LiteralPath $configFile -Raw
+            foreach ($match in [regex]::Matches($yaml, '(?m)^\s*-\s*id:\s*["'']?([A-Za-z0-9._-]+)')) {
+                $ids += $match.Groups[1].Value
+            }
+        }
+        foreach ($id in @($ids | Select-Object -Unique)) {
+            & $cmdkey ("/delete:kitsune-whisper:$id") 2>$null | Out-Null
+        }
+        $listing = & $cmdkey '/list' 2>$null
+        foreach ($line in @($listing)) {
+            if ($line -match 'kitsune-whisper:[^\s]+') {
+                & $cmdkey ("/delete:" + $Matches[0]) 2>$null | Out-Null
+            }
+        }
+    }
+    catch {
+        Write-Verbose "could not clear stored credentials: $($_.Exception.Message)"
+    }
+}
 
 Get-Process -Name 'kitsune-client' -ErrorAction SilentlyContinue |
     Stop-Process -Force -ErrorAction SilentlyContinue
@@ -352,31 +558,61 @@ if (Test-Path -LiteralPath $launcher) {
 & schtasks.exe /Delete /TN 'kitsune-server' /F 2>$null | Out-Null
 & schtasks.exe /End /TN 'kitsune-client' 2>$null | Out-Null
 & schtasks.exe /Delete /TN 'kitsune-client' /F 2>$null | Out-Null
-
-$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-if ($userPath) {
-    $entries = @($userPath -split ';' | Where-Object { $_ })
-    $kept = @($entries | Where-Object { $_ -ine $bin })
-    if ($kept.Count -ne $entries.Count) {
-        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
-    }
+if ($configDir) {
+    Remove-OurPath (Join-Path $configDir 'kitsune-server-task.xml')
+    Remove-OurPath (Join-Path $configDir 'autostart-task.xml')
 }
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if (Test-Path -LiteralPath $runKey) {
+    Remove-ItemProperty -Path $runKey -Name 'kitsune-whisper' -ErrorAction SilentlyContinue
+}
+
+Remove-PathEntry
 
 if (Test-Path -LiteralPath $uninstallKey) {
     Remove-Item -LiteralPath $uninstallKey -Recurse -Force
 }
 Remove-Item -LiteralPath $shortcut -Force -ErrorAction SilentlyContinue
 
-if (Test-Path -LiteralPath $installRoot) {
-    Get-ChildItem -LiteralPath $installRoot -Force -ErrorAction SilentlyContinue |
-        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+if ($RemoveServerData -and -not $Purge) {
+    # Creating new Server data would invalidate the kept Client pin, so forget
+    # the Local Server pairing while the Client can still do it.
+    if (Test-Path -LiteralPath $client) {
+        $null = Start-Process -FilePath $client -ArgumentList @('reset-local-pairing') `
+            -Wait -PassThru -NoNewWindow
+    }
+    if ($stateDir) {
+        foreach ($entry in @('tls', 'devices.json', 'pairing.json', 'server.log', 'lifecycle.json')) {
+            Remove-OurPath (Join-Path $stateDir $entry)
+        }
+    }
 }
 
+if ($RemoveModels) {
+    Remove-OurPath $modelDir
+    if ($stateDir) {
+        Remove-OurPath (Join-Path $stateDir 'models')
+    }
+}
+
+if ($Purge) {
+    Remove-StoredCredentials
+    Remove-OurPath $configDir
+    Remove-OurPath $stateDir
+    Remove-OurPath $modelDir
+    if ($homeDir) {
+        Remove-OurPath (Join-Path $homeDir '.cache\kitsune-whisper')
+    }
+    Remove-InstallRoot
+    Write-Host 'kitsune-whisper was purged (configuration, models, certificates, Devices, spool, logs, tokens).'
+    return
+}
+
+Remove-InstallRoot
 Write-Host 'kitsune-whisper was removed; configuration, models and pairing state were kept.'
 '@
-    New-Item -ItemType Directory -Force -Path $InstallRoot | Out-Null
-    Set-Content -LiteralPath $UninstallShim -Value $body -Encoding utf8NoBOM
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    Set-Content -LiteralPath $Path -Value $body -Encoding utf8NoBOM
 }
 
 function Register-UninstallEntry {
@@ -445,27 +681,70 @@ function Test-WebView2Installed {
     return $false
 }
 
+function Write-DependencyWarning {
+    param(
+        [Parameter(Mandatory = $true)][string]$Identifier,
+        [Parameter(Mandatory = $true)][string]$Detail
+    )
+    # The README is the only place with package commands. Vary the wording of
+    # the fix, never the installation itself. Continue explicitly: a caller
+    # with $WarningPreference = 'Stop' must not turn a warning into a failure.
+    Write-Warning -Message ("dependency '$Identifier' is missing: $Detail " +
+        "See the README Dependencies section: $ReadmeDependencies") `
+        -WarningAction Continue
+}
+
 function Write-WebView2Warning {
     if (Test-WebView2Installed) {
         return
     }
     # Never download the runtime: it is a system component with its own
     # installer and terms, and the fix is documented for the user.
-    Write-Warning ("kitsune-whisper needs the Microsoft Edge WebView2 Runtime for " +
-        "its Settings window and Tray. Install it once from $WebView2Help " +
-        "(see $InstallHelp). The installer does not download or install it.")
+    Write-DependencyWarning $DepWebView2 ("the Microsoft Edge WebView2 Runtime was not found, " +
+        "so the Settings window and Tray cannot open. Install it once from " +
+        "$WebView2Help.")
+}
+
+function Write-WindowsDependencyWarnings {
+    # These checks run after the selected binaries are in place. They only
+    # report: a missing dependency never changes the install's exit status.
+    try {
+        if (-not $ServerOnly) {
+            Write-WebView2Warning
+        }
+        $build = [Environment]::OSVersion.Version.Build
+        if ($build -gt 0 -and $build -lt $MinimumWindowsBuild) {
+            Write-DependencyWarning $DepWindowsVersion ("this is Windows build $build, but the " +
+                "releases target Windows 10 build $MinimumWindowsBuild or newer.")
+        }
+        if (-not [Environment]::Is64BitOperatingSystem) {
+            Write-DependencyWarning $DepWindows64 ("this is a 32-bit Windows installation, but the " +
+                "release artifacts are built for windows/amd64.")
+        }
+    }
+    catch {
+        # Detection itself must never fail an install that placed its files.
+        Write-Verbose "dependency detection was skipped: $($_.Exception.Message)"
+    }
 }
 
 function Write-InstallPlan {
     $clientPlan = if ($ClientOnly) { 'disabled' } else { Join-Path $BinDir 'kitsune-client.exe' }
     $serverPlan = if ($ServerOnly) { 'disabled' } else { $ServerRoot }
+    $signaturePlan = if ($Insecure) {
+        'skipped (-Insecure; checksums still verified)'
+    }
+    else {
+        'verified against the pinned release key'
+    }
     Write-Host 'kitsune-whisper install plan'
-    Write-Host "  version: $Version"
-    Write-Host "  client:  $clientPlan"
-    Write-Host "  server:  $serverPlan"
-    Write-Host "  path:    $BinDir"
-    Write-Host "  install: $InstallRoot"
-    Write-Host '  starts:  nothing (the Server supervisor registration is disabled)'
+    Write-Host "  version:   $Version"
+    Write-Host "  client:    $clientPlan"
+    Write-Host "  server:    $serverPlan"
+    Write-Host "  path:      $BinDir"
+    Write-Host "  install:   $InstallRoot"
+    Write-Host "  signature: $signaturePlan"
+    Write-Host '  starts:    nothing (the Server supervisor registration is disabled)'
     Write-Host 'Nothing has been changed.'
 }
 
@@ -499,9 +778,35 @@ function Install-Kitsune {
             Invoke-WebRequest -Uri "$(Get-BaseUrl)/checksums.txt" -OutFile $checksums -UseBasicParsing
         }
 
-        # Trust seam: #97 verifies checksums.txt.sig with .NET ECDsa here,
-        # against the same checksums consumed below. Until then HTTPS plus these
-        # SHA-256 checks are the only integrity checks.
+        # The signature covers checksums.txt, so verify it before trusting any
+        # digest and before fetching or extracting an archive.
+        $signature = Join-Path $Temp 'checksums.txt.sig'
+        if ($Insecure) {
+            Write-Warning -Message '-Insecure: skipping the release signature check' `
+                -WarningAction Continue
+        }
+        else {
+            if ($From) {
+                $signatureSource = Join-Path $From 'checksums.txt.sig'
+                if (-not (Test-Path -LiteralPath $signatureSource -PathType Leaf)) {
+                    throw "missing release signature: $signatureSource"
+                }
+                Copy-Item -LiteralPath $signatureSource -Destination $signature -Force
+            }
+            else {
+                Write-Step "downloading checksums.txt.sig ($Version)"
+                try {
+                    Invoke-WebRequest -Uri "$(Get-BaseUrl)/checksums.txt.sig" `
+                        -OutFile $signature -UseBasicParsing
+                }
+                catch {
+                    throw ("missing release signature: could not download " +
+                        "$(Get-BaseUrl)/checksums.txt.sig ($($_.Exception.Message))")
+                }
+            }
+            Assert-ReleaseSignature -ChecksumsPath $checksums -SignaturePath $signature
+        }
+
         $assets = @()
         if (-not $ServerOnly) {
             $assets += $ClientAsset
@@ -519,8 +824,8 @@ function Install-Kitsune {
             Install-Client -Archive $paths[$ClientAsset]
         }
         if (-not $ClientOnly) {
-            $serverSha = Get-ChecksumFor -ChecksumsPath $checksums -Asset $ServerAsset
-            Install-Server -Archive $paths[$ServerAsset] -Sha256 $serverSha
+            Install-Server -Archive $paths[$ServerAsset] `
+                -Sha256 (Get-ChecksumFor -ChecksumsPath $checksums -Asset $ServerAsset)
         }
 
         Invoke-ConfigMigration
@@ -528,9 +833,7 @@ function Install-Kitsune {
         Write-UninstallShim
         Register-UninstallEntry
         New-StartMenuShortcut
-        if (-not $ServerOnly) {
-            Write-WebView2Warning
-        }
+        Write-WindowsDependencyWarnings
 
         Write-Step "installed to $InstallRoot"
         Write-Step 'nothing was started; the Server task is registered disabled'
@@ -542,18 +845,46 @@ function Install-Kitsune {
 }
 
 function Uninstall-Kitsune {
-    if (-not (Test-Path -LiteralPath $UninstallShim -PathType Leaf)) {
-        throw "kitsune-whisper is not installed (no uninstall shim at $UninstallShim)"
-    }
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
-    & $pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $UninstallShim
-    if ($LASTEXITCODE -ne 0) {
-        throw "the uninstaller failed with exit code $LASTEXITCODE"
+    # Run a fresh copy of the current boundaries rather than a shim left by an
+    # older installer. The shim receives the install root explicitly because
+    # its $PSScriptRoot is the temp directory. Removal is idempotent, so this
+    # also works when a partial install left no shim.
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ('kitsune-uninstall-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    $shim = Join-Path $tempDir 'uninstall.ps1'
+    Write-UninstallShim -Path $shim
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $shim,
+        '-InstallRoot', $InstallRoot
+    )
+    if ($Purge) {
+        $arguments += '-Purge'
+    }
+    if ($RemoveModels) {
+        $arguments += '-RemoveModels'
+    }
+    if ($RemoveServerData) {
+        $arguments += '-RemoveServerData'
+    }
+    try {
+        & $pwsh @arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "the uninstaller failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
 if ($ClientOnly -and $ServerOnly) {
     throw '-ClientOnly and -ServerOnly are mutually exclusive'
+}
+
+if (-not $Uninstall -and ($Purge -or $RemoveModels -or $RemoveServerData)) {
+    throw '-Purge, -RemoveModels and -RemoveServerData are only valid together with -Uninstall'
 }
 
 if ($Uninstall) {
