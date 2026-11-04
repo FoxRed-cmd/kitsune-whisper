@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import shutil
 import stat
 import subprocess
 import tarfile
@@ -110,6 +111,7 @@ def fake_commands(tmp_path: Path) -> Path:
         "sudo": '#!/bin/sh\necho "sudo $*" >> "$SUDO_LOG"\nexit 0\n',
         "pkexec": '#!/bin/sh\necho "pkexec $*" >> "$SUDO_LOG"\nexit 0\n',
         "systemctl": '#!/bin/sh\necho "systemctl $*" >> "$SYSTEMCTL_LOG"\nexit 0\n',
+        "ldconfig": '#!/bin/sh\nprintf "%s\\n" "${FAKE_LDCONFIG:-}"\nexit 0\n',
         "secret-tool": (
             "#!/bin/sh\n"
             'echo "secret-tool $*" >> "$CALL_LOG"\n'
@@ -144,7 +146,7 @@ def sandbox(tmp_path: Path) -> dict[str, Any]:
         "SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
     }
     (tmp_path / "runtime").mkdir()
-    return {"home": home, "env": env, "tmp": tmp_path}
+    return {"home": home, "env": env, "tmp": tmp_path, "fake_bin": fake_bin}
 
 
 def merged_env(sandbox: dict[str, Any], env: dict[str, str] | None) -> dict[str, str]:
@@ -265,9 +267,7 @@ def test_the_script_names_no_privileged_or_helper_step() -> None:
         "/opt/",
         "modules-load",
         "udev",
-        "ydotool",
         "ydotoold",
-        "wtype",
         "kitsune-wayland",
         "install-autostart",
         "systemctl",
@@ -580,3 +580,343 @@ def test_the_linux_artifact_builder_has_no_wayland_surface() -> None:
         assert retired not in help_output.stdout, retired
     assert "--no-client" in source
     assert "--no-server" in source
+
+
+# -- dependency reporting --------------------------------------------------
+#
+# The installer checks the runtime surface after the binaries are in place and
+# only warns: a missing library never fails an install that placed its files.
+# These tests replace ldconfig with a fake listing and pin the glibc version,
+# so they do not depend on the machine running the suite.
+
+LIBRARY_LINES = {
+    "libgtk-4.so.1": "libgtk-4.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libgtk-4.so.1",
+    "libwebkitgtk-6.0.so.4": (
+        "libwebkitgtk-6.0.so.4 (libc6,x86-64) => /lib/x86_64-linux-gnu/libwebkitgtk-6.0.so.4"
+    ),
+    "libasound.so.2": "libasound.so.2 (libc6,x86-64) => /lib/x86_64-linux-gnu/libasound.so.2",
+    "libX11.so.6": "libX11.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libX11.so.6",
+}
+
+CLIENT_DEPENDENCY_IDS = (
+    "gtk4",
+    "webkitgtk-6.0",
+    "alsa",
+    "libx11",
+    "glibc-client",
+    "wayland-injection",
+)
+
+# Enough of the userland for install.sh to run without the real PATH, whose
+# contents (a wtype or ydotool installed on the developer machine) would make
+# the injection checks ambiguous.
+BASE_TOOLS = (
+    "awk",
+    "bash",
+    "cat",
+    "chmod",
+    "cp",
+    "dirname",
+    "getconf",
+    "grep",
+    "gzip",
+    "install",
+    "ldd",
+    "mkdir",
+    "mktemp",
+    "rm",
+    "rmdir",
+    "sha256sum",
+    "sort",
+    "tar",
+    "uname",
+)
+
+
+def ldconfig_listing(*missing: str) -> str:
+    lines = ["libc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6"]
+    for soname, line in LIBRARY_LINES.items():
+        if soname not in missing:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def minimal_path(sandbox: dict[str, Any]) -> str:
+    directory = Path(str(sandbox["tmp"])) / "min-bin"
+    if not directory.exists():
+        directory.mkdir()
+        for name in BASE_TOOLS:
+            found = shutil.which(name)
+            if found is not None:
+                (directory / name).symlink_to(found)
+    return f"{sandbox['fake_bin']}:{directory}"
+
+
+def dependency_env(
+    sandbox: dict[str, Any],
+    *,
+    glibc: str = "2.39",
+    session: str | None = "x11",
+    missing: tuple[str, ...] = (),
+    extra_path: str | None = None,
+) -> dict[str, str]:
+    path = minimal_path(sandbox)
+    if extra_path is not None:
+        path = f"{extra_path}:{path}"
+    env = {
+        "PATH": path,
+        "FAKE_LDCONFIG": ldconfig_listing(*missing),
+        "KITSUNE_GLIBC_VERSION": glibc,
+    }
+    if session is not None:
+        env["XDG_SESSION_TYPE"] = session
+    return env
+
+
+def add_injection_tool(sandbox: dict[str, Any], name: str) -> str:
+    directory = Path(str(sandbox["tmp"])) / "tool-bin"
+    directory.mkdir(exist_ok=True)
+    tool = directory / name
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return str(directory)
+
+
+def assert_warning_names(completed: subprocess.CompletedProcess[str], identifier: str) -> None:
+    assert identifier in completed.stderr, completed.stderr
+    assert "README" in completed.stderr, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("args", "expect_client", "expect_server"),
+    [
+        (("--client-only",), True, False),
+        (("--server-only",), False, True),
+        ((), True, True),
+    ],
+)
+def test_component_selection_installs_exactly_that_tree(
+    sandbox, tmp_path, args, expect_client, expect_server
+):
+    artifacts = make_artifacts(tmp_path, with_server=True)
+
+    completed = run_installer(sandbox, *args, "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    calls = read_log(sandbox, "calls.log")
+    home = Path(str(sandbox["home"]))
+
+    if expect_client:
+        assert client_binary(sandbox).is_file()
+        assert config_file(sandbox).is_file()
+        assert "client: install-desktop" in calls
+    else:
+        assert not client_binary(sandbox).exists()
+        assert not config_file(sandbox).exists()
+        assert "client:" not in calls
+
+    if expect_server:
+        assert "bootstrap.py install --no-start" in calls
+        assert "kitsune-server_linux_amd64.tar.gz" in calls
+    else:
+        assert "bootstrap.py" not in calls
+        assert not (home / ".local" / "lib" / "kitsune-whisper" / "server").exists()
+        assert not server_launcher(sandbox).exists()
+
+    assert_nothing_privileged_ran(sandbox)
+    assert_no_helpers_installed(sandbox)
+
+
+@pytest.mark.parametrize(
+    ("identifier", "soname"),
+    [
+        ("gtk4", "libgtk-4.so.1"),
+        ("webkitgtk-6.0", "libwebkitgtk-6.0.so.4"),
+        ("alsa", "libasound.so.2"),
+        ("libx11", "libX11.so.6"),
+    ],
+)
+def test_a_missing_client_library_is_named_in_a_warning(sandbox, tmp_path, identifier, soname):
+    artifacts = make_artifacts(tmp_path)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, missing=(soname,)),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, identifier)
+
+
+def test_an_old_glibc_tells_the_user_only_the_server_can_run(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, glibc="2.36"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, "glibc-client")
+    assert "only the server" in completed.stderr.lower(), completed.stderr
+
+
+def test_a_host_below_both_glibc_floors_does_not_promise_the_server(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, glibc="2.30"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, "glibc-client")
+    assert "only the server" not in completed.stderr.lower(), completed.stderr
+
+
+def test_server_only_reports_server_dependencies_but_not_client_ones(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, with_server=True)
+
+    completed = run_installer(
+        sandbox,
+        "--server-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(
+            sandbox,
+            glibc="2.30",
+            session="wayland",
+            missing=tuple(LIBRARY_LINES),
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, "glibc-server")
+    for identifier in CLIENT_DEPENDENCY_IDS:
+        assert identifier not in completed.stderr, identifier
+
+
+def test_client_only_does_not_report_the_server_glibc_floor(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, glibc="2.34"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "glibc-server" not in completed.stderr, completed.stderr
+
+
+def test_wayland_without_an_injection_tool_warns_about_the_clipboard(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, session="wayland"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, "wayland-injection")
+    assert "clipboard" in completed.stderr.lower(), completed.stderr
+
+
+@pytest.mark.parametrize("tool", ["wtype", "ydotool"])
+def test_wayland_with_an_injection_tool_is_not_warned(sandbox, tmp_path, tool):
+    artifacts = make_artifacts(tmp_path)
+    tool_bin = add_injection_tool(sandbox, tool)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, session="wayland", extra_path=tool_bin),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "wayland-injection" not in completed.stderr, completed.stderr
+
+
+def test_x11_needs_no_external_injection_tool(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, session="x11"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "wayland-injection" not in completed.stderr, completed.stderr
+
+
+def test_warnings_never_print_a_package_manager_command(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, with_server=True)
+
+    completed = run_installer(
+        sandbox,
+        "--from",
+        str(artifacts),
+        env=dependency_env(
+            sandbox,
+            glibc="2.30",
+            session="wayland",
+            missing=tuple(LIBRARY_LINES),
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    output = (completed.stdout + completed.stderr).lower()
+    for forbidden in (
+        "sudo",
+        "apt-get",
+        "apt install",
+        "dnf install",
+        "pacman",
+        "zypper",
+        "pip install",
+        "libgtk-4-1",
+        "libasound2",
+        "libwebkit2gtk",
+    ):
+        assert forbidden not in output, forbidden
+
+
+def test_dependency_warnings_do_not_change_the_exit_status(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, with_server=True)
+
+    completed = run_installer(
+        sandbox,
+        "--from",
+        str(artifacts),
+        env=dependency_env(
+            sandbox,
+            glibc="2.30",
+            session="wayland",
+            missing=tuple(LIBRARY_LINES),
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert client_binary(sandbox).is_file()
+    assert "bootstrap.py install --no-start" in read_log(sandbox, "calls.log")
+    for identifier in (*CLIENT_DEPENDENCY_IDS, "glibc-server"):
+        assert identifier in completed.stderr, identifier
