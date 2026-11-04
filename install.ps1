@@ -480,6 +480,16 @@ function Remove-OurPath {
     }
 }
 
+function Remove-InstallRoot {
+    if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {
+        # Remove children first: a file still held by a just-stopped process
+        # must not take the whole tree removal down with it.
+        Get-ChildItem -LiteralPath $installRoot -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Remove-PathEntry {
     # Remove every duplicate, comparing case-insensitively: Windows paths are
     # case-insensitive, and an older install may have appended the entry twice.
@@ -593,12 +603,12 @@ if ($Purge) {
     if ($homeDir) {
         Remove-OurPath (Join-Path $homeDir '.cache\kitsune-whisper')
     }
-    Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-InstallRoot
     Write-Host 'kitsune-whisper was purged (configuration, models, certificates, Devices, spool, logs, tokens).'
     return
 }
 
-Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
+Remove-InstallRoot
 Write-Host 'kitsune-whisper was removed; configuration, models and pairing state were kept.'
 '@
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
