@@ -183,7 +183,9 @@ try {
     $env:KITSUNE_RELEASE_PUBLIC_KEY = Join-Path $Artifacts 'ci-public-key.pem'
 
     function Invoke-Installer {
-        param([string[]]$Arguments)
+        # Hashtable splatting: an array would pass '-Version' as a positional
+        # value instead of binding the installer's named parameters.
+        param([hashtable]$Arguments)
         & $Installer @Arguments
     }
 
@@ -252,7 +254,7 @@ try {
     }
 
     Write-Host "install smoke: installing $Version from $Artifacts"
-    Invoke-Installer -Arguments @('-From', $Artifacts, '-Version', $Version)
+    Invoke-Installer -Arguments @{ From = $Artifacts; Version = $Version }
     Assert-Tree
 
     # Uninstall removes our files, registrations and PATH entry but keeps the
@@ -265,7 +267,7 @@ try {
     Set-Content -LiteralPath (Join-Path $stateDir 'pairing.json') -Value '{"device":"smoke"}'
     Add-Content -LiteralPath $config -Value '# smoke-kept'
 
-    Invoke-Installer -Arguments @('-Uninstall')
+    Invoke-Installer -Arguments @{ Uninstall = $true }
     Assert-Cleanup
     Assert-File $config
     Assert-Contains $config '# smoke-kept'
@@ -275,13 +277,13 @@ try {
     Assert-File (Join-Path $stateDir 'pairing.json')
 
     # Purge removes everything, including what uninstall kept.
-    Invoke-Installer -Arguments @('-From', $Artifacts, '-Version', $Version)
+    Invoke-Installer -Arguments @{ From = $Artifacts; Version = $Version }
     New-Item -ItemType Directory -Force -Path $models | Out-Null
     Set-Content -LiteralPath (Join-Path $models 'smoke-model.bin') -Value 'model'
     New-Item -ItemType Directory -Force -Path (Join-Path $stateDir 'tls') | Out-Null
     Set-Content -LiteralPath (Join-Path $stateDir 'tls\server.crt') -Value 'certificate'
 
-    Invoke-Installer -Arguments @('-Uninstall', '-Purge')
+    Invoke-Installer -Arguments @{ Uninstall = $true; Purge = $true }
     Assert-Cleanup
     Assert-Absent $configDir
     Assert-Absent $stateDir
