@@ -654,7 +654,7 @@ them on your own host. The Server logs a `WARN` when it resolves to CPU, and the
 authenticated `GET /status` reports the resolved `device`/`compute_type` so you
 can confirm the GPU is actually in use.
 
-For GPU prerequisites, see [GPU prerequisites](../README.md#gpu-prerequisites).
+For GPU prerequisites, see [CUDA (optional)](../README.md#cuda-optional).
 For the full config surface, see [Configuration](configuration.md).
 
 ## Troubleshooting and security
