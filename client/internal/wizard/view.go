@@ -3,6 +3,7 @@ package wizard
 import (
 	"fmt"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
@@ -209,11 +210,12 @@ type ProfileView struct {
 
 // ServerView is the Server step's rendered state.
 type ServerView struct {
-	Profiles     []ProfileView `json:"profiles"`
-	ActiveID     string        `json:"activeId"`
-	ActiveName   string        `json:"activeName"`
-	LocalAddress string        `json:"localAddress"`
-	HasLocal     bool          `json:"hasLocal"`
+	Profiles       []ProfileView `json:"profiles"`
+	ActiveID       string        `json:"activeId"`
+	ActiveName     string        `json:"activeName"`
+	LocalAddress   string        `json:"localAddress"`
+	HasLocal       bool          `json:"hasLocal"`
+	LocalAvailable bool          `json:"localAvailable"`
 }
 
 // ReasonView is one translated missing prerequisite.
@@ -305,7 +307,7 @@ func (s *Service) View(data Data) View {
 	}
 	view.StepNumber = stepIndex(state.Step) + 1
 	view.Progress = catalog.T("wizard.progress", view.StepNumber, view.StepCount)
-	view.Steps = stepViews(catalog, state)
+	view.Steps = stepViews(catalog, state, s.installed())
 	view.ServerState = serverHealthLabel(catalog, data.Server)
 	view.ModelName, view.ModelState = ActiveModel(data)
 	if view.ModelState != "" {
@@ -313,7 +315,7 @@ func (s *Service) View(data Data) View {
 	}
 	view.Hardware = hardwareView(catalog, PlanHardware(data))
 	view.Model = modelView(catalog, data)
-	view.Server = serverView(catalog, data.Servers)
+	view.Server = serverView(catalog, data.Servers, s.installed().Server)
 	view.Try = tryView(catalog, labels, s, data)
 	return view
 }
@@ -435,7 +437,7 @@ func labelsFor(catalog i18n.Catalog) Labels {
 	}
 }
 
-func stepViews(catalog i18n.Catalog, state State) []StepView {
+func stepViews(catalog i18n.Catalog, state State, installed components.Set) []StepView {
 	steps := make([]StepView, 0, len(AllSteps))
 	for index, step := range AllSteps {
 		status := StatusPending
@@ -446,6 +448,8 @@ func stepViews(catalog i18n.Catalog, state State) []StepView {
 			status = StatusSkipped
 		case containsStep(state.Done, step):
 			status = StatusDone
+		case !stepAvailable(step, installed):
+			status = StatusSkipped
 		}
 		steps = append(steps, StepView{
 			ID:     step,
@@ -581,10 +585,11 @@ func serverHealthLabel(catalog i18n.Catalog, status trust.Status) string {
 	return catalog.T("server." + string(state))
 }
 
-func serverView(catalog i18n.Catalog, view servers.View) ServerView {
+func serverView(catalog i18n.Catalog, view servers.View, localAvailable bool) ServerView {
 	out := ServerView{
-		ActiveID: view.ActiveID,
-		Profiles: make([]ProfileView, 0, len(view.Profiles)),
+		ActiveID:       view.ActiveID,
+		LocalAvailable: localAvailable,
+		Profiles:       make([]ProfileView, 0, len(view.Profiles)),
 	}
 	for _, profile := range view.Profiles {
 		out.Profiles = append(out.Profiles, ProfileView{
