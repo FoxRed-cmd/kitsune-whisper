@@ -795,8 +795,14 @@ function Install-Kitsune {
             }
             else {
                 Write-Step "downloading checksums.txt.sig ($Version)"
-                Invoke-WebRequest -Uri "$(Get-BaseUrl)/checksums.txt.sig" `
-                    -OutFile $signature -UseBasicParsing
+                try {
+                    Invoke-WebRequest -Uri "$(Get-BaseUrl)/checksums.txt.sig" `
+                        -OutFile $signature -UseBasicParsing
+                }
+                catch {
+                    throw ("missing release signature: could not download " +
+                        "$(Get-BaseUrl)/checksums.txt.sig ($($_.Exception.Message))")
+                }
             }
             Assert-ReleaseSignature -ChecksumsPath $checksums -SignaturePath $signature
         }
