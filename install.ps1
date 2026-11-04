@@ -54,6 +54,10 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $ProgressPreference = 'SilentlyContinue'
 
+if (-not $env:LOCALAPPDATA) {
+    throw 'kitsune-whisper releases are built for 64-bit Windows; run this script on Windows.'
+}
+
 $Repo = 'FoxRed-cmd/kitsune-whisper'
 $ClientAsset = 'kitsune-client_windows_amd64.zip'
 $ServerAsset = 'kitsune-server_windows_amd64.tar.gz'
@@ -346,6 +350,8 @@ if (Test-Path -LiteralPath $launcher) {
 # failed; never leave a registration that points at deleted files.
 & schtasks.exe /End /TN 'kitsune-server' 2>$null | Out-Null
 & schtasks.exe /Delete /TN 'kitsune-server' /F 2>$null | Out-Null
+& schtasks.exe /End /TN 'kitsune-client' 2>$null | Out-Null
+& schtasks.exe /Delete /TN 'kitsune-client' /F 2>$null | Out-Null
 
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
 if ($userPath) {
@@ -546,9 +552,6 @@ function Uninstall-Kitsune {
     }
 }
 
-if (-not $env:LOCALAPPDATA) {
-    throw 'kitsune-whisper releases are built for 64-bit Windows; run this script on Windows.'
-}
 if ($ClientOnly -and $ServerOnly) {
     throw '-ClientOnly and -ServerOnly are mutually exclusive'
 }

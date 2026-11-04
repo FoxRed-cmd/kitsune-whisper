@@ -120,6 +120,7 @@ def test_uninstall_shim_removes_our_files_and_keeps_user_data(installer: str) ->
     assert "uninstall-autostart" in shim
     assert "kitsune-server.cmd" in shim
     assert "schtasks.exe /Delete /TN 'kitsune-server'" in shim
+    assert "schtasks.exe /Delete /TN 'kitsune-client'" in shim
     assert "Remove-Item -LiteralPath $installRoot" in shim
     assert "configuration, models and pairing state were kept" in shim
     # No interactive prompt, and purge boundaries stay with #97.
