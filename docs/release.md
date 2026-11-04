@@ -52,7 +52,6 @@ The `verify-version` job runs first and every build job depends on it.
 | `server-bundle` | `kitsune-server_linux_amd64.tar.gz` |
 | `server-bundle-windows` | `kitsune-server_windows_amd64.tar.gz` |
 | `windows-installer` | `kitsune-whisper_windows_amd64_setup.exe` |
-| `wayland-tools` | `kitsune-wayland_linux_amd64.tar.gz` (`ydotool`, `ydotoold`, `wtype`) |
 | `release` | `install.sh`, `install.ps1`, `checksums.txt`, `checksums.txt.sig`, all of the above |
 
 `checksums.txt` is generated in the release job with `sha256sum` over every
@@ -148,9 +147,8 @@ scripts/build-linux-artifacts.sh --output dist
 Without `--version` it reads the root `VERSION`; release CI passes the tag
 explicitly. It builds the GTK4 and GTK3 Clients, the Server bundle (when
 `KITSUNE_SERVER_RUNTIME`, `KITSUNE_SERVER_SITE_PACKAGES`, and
-`KITSUNE_SERVER_PYTHON` point at a resolved runtime), and the Wayland helpers,
-then writes `checksums.txt`. Use `--no-server --no-wayland` for a Client-only
-build.
+`KITSUNE_SERVER_PYTHON` point at a resolved runtime), then writes
+`checksums.txt`. Use `--no-server` for a Client-only build.
 
 A manual publish must sign the same way CI does and upload the signature with
 the checksums:
