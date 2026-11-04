@@ -6,7 +6,6 @@ name: Release
 #   kitsune-client_linux_amd64.tar.gz          GTK4/WebKitGTK 6.0
 #   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1
 #   kitsune-server_linux_amd64.tar.gz          native Server bundle
-#   kitsune-wayland_linux_amd64.tar.gz         ydotool/ydotoold/wtype
 #
 # The Windows set is the contract install.ps1 and the setup rely on:
 #   kitsune-client_windows_amd64.zip           Client, Tray, Settings window
@@ -76,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/build-linux-artifacts.sh \
-            --no-server --no-wayland \
+            --no-server \
             --output dist --version "${GITHUB_REF_NAME:-dev}"
 
       - uses: actions/upload-artifact@v4
@@ -150,7 +149,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/build-linux-artifacts.sh \
-            --no-client --no-wayland \
+            --no-client \
             --output dist --version "${GITHUB_REF_NAME:-dev}"
 
       - uses: actions/upload-artifact@v4
@@ -243,28 +242,6 @@ jobs:
           path: dist/kitsune-whisper_windows_amd64_setup.exe
           if-no-files-found: error
 
-  wayland-tools:
-    name: wayland helpers
-    runs-on: ubuntu-24.04
-    needs: verify-version
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build ydotool and wtype
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake meson ninja-build pkg-config scdoc \
-            libwayland-dev libxkbcommon-dev wayland-protocols
-          scripts/build-wayland-tools.sh --output dist
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: wayland-tools
-          path: dist/kitsune-wayland_linux_amd64.tar.gz
-          if-no-files-found: error
-
   release:
     name: publish
     runs-on: ubuntu-24.04
@@ -275,7 +252,6 @@ jobs:
       - server-bundle
       - server-bundle-windows
       - windows-installer
-      - wayland-tools
     steps:
       # install.sh and install.ps1 are checked out, not downloaded artifacts.
       - uses: actions/checkout@v4
@@ -329,7 +305,6 @@ jobs:
             dist/kitsune-client_windows_amd64.zip
             dist/kitsune-server_linux_amd64.tar.gz
             dist/kitsune-server_windows_amd64.tar.gz
-            dist/kitsune-wayland_linux_amd64.tar.gz
             dist/kitsune-whisper_windows_amd64_setup.exe
             dist/install.sh
             dist/install.ps1

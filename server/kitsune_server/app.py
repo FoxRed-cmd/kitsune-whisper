@@ -438,8 +438,22 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
-        """Liveness and version only: reachable before pairing, no secrets."""
-        return {"status": "ok", "version": app.state.version}
+        """Liveness, version, and whether a model is active: reachable before pairing.
+
+        A Server that started without a model reports ``loaded: false`` and
+        ``model_state: "cold"`` with an empty ``model``. The full model details
+        stay on the authenticated ``/status``; this payload carries no secrets.
+        """
+        runtime = app.state.runtime
+        snapshot = runtime.snapshot()
+        return {
+            "status": "ok",
+            "version": app.state.version,
+            "model": snapshot.model if snapshot.loaded else "",
+            "model_state": snapshot.state,
+            "loaded": snapshot.loaded,
+            "stopped": snapshot.stopped,
+        }
 
     @app.get("/status")
     async def status(

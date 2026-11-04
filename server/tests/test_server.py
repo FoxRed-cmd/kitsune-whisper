@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import socket
@@ -9,10 +10,11 @@ from typing import Any
 
 import pytest
 import yaml
+from conftest import make_client, make_wav
 from kitsune_server import cli, lifecycle, server
 from kitsune_server.config import ServerConfig
 from kitsune_server.engine import EngineLoadError
-from kitsune_server.models import CatalogError
+from kitsune_server.models import CatalogError, DownloadedModel
 from kitsune_server.transcriber import EngineInfo, FakeTranscriber
 
 
@@ -91,8 +93,10 @@ def test_check_port_available_explains_other_bind_errors() -> None:
 
 
 def test_run_server_fails_fast_when_the_port_is_taken(monkeypatch: pytest.MonkeyPatch) -> None:
-    loaded: list[ServerConfig] = []
-    monkeypatch.setattr(server, "build_transcriber", loaded.append)
+    built: list[ServerConfig] = []
+    monkeypatch.setattr(
+        server, "build_model_manager", lambda config, **kwargs: built.append(config)
+    )
 
     def taken(host: str, port: int) -> None:
         raise server.PortInUseError(f"server.port {port} is already in use on {host}")
@@ -100,14 +104,13 @@ def test_run_server_fails_fast_when_the_port_is_taken(monkeypatch: pytest.Monkey
     with pytest.raises(server.PortInUseError):
         server.run_server(ServerConfig(), port_check=taken)
 
-    assert loaded == []
+    assert built == []
 
 
 def test_run_server_logs_resolved_engine(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
@@ -123,8 +126,7 @@ def test_run_server_logs_resolved_engine(
 def test_run_server_warns_on_cpu_with_escape_hatch(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
@@ -140,13 +142,13 @@ def test_run_server_rejects_pinned_cuda_without_the_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
-    loaded: list[object] = []
-    monkeypatch.setattr(server, "build_transcriber", loaded.append)
+    built: list[object] = []
+    monkeypatch.setattr(server, "build_model_manager", lambda *args, **kwargs: built.append(True))
 
     with pytest.raises(EngineLoadError) as caught:
         server.run_server(ServerConfig(device="cuda"), port_check=allow_port)
 
-    assert loaded == []
+    assert built == []
     assert "nvidia-cublas-cu12" in str(caught.value)
 
 
@@ -154,8 +156,6 @@ def test_run_server_does_not_warn_on_cuda(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     monkeypatch.setattr(server, "detect_cuda_devices", lambda: 1)
-    fake = FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     with caplog.at_level(logging.INFO, logger="kitsune.server"):
@@ -166,8 +166,7 @@ def test_run_server_does_not_warn_on_cuda(
 
 def _capture_uvicorn(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
     captured: dict[str, object] = {}
-    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
 
     def fake_run(app: object, **kwargs: object) -> None:
         captured.update(kwargs)
@@ -201,12 +200,13 @@ def test_run_server_detects_cuda_once_and_shares_it(monkeypatch: pytest.MonkeyPa
     detections: list[bool] = []
     monkeypatch.setattr(server, "detect_cuda_devices", lambda: detections.append(True) or 2)
     seen: dict[str, object] = {}
+    real_build = server.build_model_manager
 
-    def fake_build(config: ServerConfig, *, cuda_device_count: int | None = None) -> Any:
+    def capture(config: ServerConfig, *, cuda_device_count: int = 0, **kwargs: Any) -> Any:
         seen["devices"] = cuda_device_count
-        return FakeTranscriber(info=EngineInfo("small", "cuda", "float16"))
+        return real_build(config, cuda_device_count=cuda_device_count, **kwargs)
 
-    monkeypatch.setattr(server, "build_transcriber", fake_build)
+    monkeypatch.setattr(server, "build_model_manager", capture)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
 
     server.run_server(ServerConfig(), port_check=allow_port)
@@ -215,27 +215,133 @@ def test_run_server_detects_cuda_once_and_shares_it(monkeypatch: pytest.MonkeyPa
     assert seen["devices"] == 2
 
 
-def test_build_transcriber_loads_whisper_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls: dict[str, object] = {}
-    sentinel = FakeTranscriber()
+class _RecordingLoader:
+    """Records model loads and returns a fake, so lifecycle tests stay offline."""
 
-    def fake_load(config: ServerConfig, **kwargs: object) -> FakeTranscriber:
-        calls["config"] = config
-        calls["kwargs"] = kwargs
-        return sentinel
+    def __init__(self) -> None:
+        self.calls: list[str] = []
 
-    monkeypatch.setattr(server.WhisperTranscriber, "load", fake_load)
-    config = ServerConfig()
+    def load(self, config: ServerConfig) -> FakeTranscriber:
+        self.calls.append(config.model)
+        name = Path(config.model).name or config.model
+        return FakeTranscriber(
+            info=EngineInfo(name, "cpu", "int8"),
+            text="downloaded model",
+        )
 
-    assert server.build_transcriber(config) is sentinel
-    assert calls["config"] is config
+
+class _RecordingDownloader:
+    """Writes a minimal local model instead of fetching from Hugging Face."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def fetch(
+        self,
+        spec: Any,
+        target: Path,
+        report: Any,
+        cancelled: Any,
+    ) -> DownloadedModel:
+        self.calls.append(spec.name)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "model.bin").write_bytes(b"weights")
+        (target / "config.json").write_text("{}", encoding="utf-8")
+        report(spec.disk_bytes, spec.disk_bytes)
+        return DownloadedModel(path=target)
+
+
+def _start_offline_server(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    loader: _RecordingLoader,
+    downloader: _RecordingDownloader,
+) -> Any:
+    """Run the real startup wiring with fake model ports, returning the ASGI app."""
+    monkeypatch.setattr(server, "WhisperLoader", lambda **kwargs: loader)
+    monkeypatch.setattr(server, "HttpModelDownloader", lambda **kwargs: downloader)
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
+    captured: dict[str, Any] = {}
+
+    def capture(app: Any, **kwargs: Any) -> None:
+        captured["app"] = app
+
+    monkeypatch.setattr(server.uvicorn, "run", capture)
+    config = ServerConfig(workers=1, download_root=str(tmp_path / "models"))
+    server.run_server(config, port_check=allow_port, log_file=tmp_path / "server.log")
+    return captured["app"]
+
+
+async def test_run_server_starts_without_a_model_and_fetches_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loader = _RecordingLoader()
+    downloader = _RecordingDownloader()
+    app = _start_offline_server(tmp_path, monkeypatch, loader=loader, downloader=downloader)
+
+    async with make_client(app) as client:
+        health = await client.get("/health")
+        before = await client.post(
+            "/transcribe",
+            files={"audio": ("clip.wav", make_wav(0.2), "audio/wav")},
+        )
+
+    assert health.status_code == 200
+    body = health.json()
+    assert body["model"] == ""
+    assert body["model_state"] == "cold"
+    assert body["loaded"] is False
+    assert before.status_code == 503
+    assert before.json()["error"]["code"] == "model_unavailable"
+    # Startup and the refused transcription must not touch the network seam.
+    assert loader.calls == []
+    assert downloader.calls == []
+
+
+async def test_a_downloaded_model_is_used_without_a_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    loader = _RecordingLoader()
+    downloader = _RecordingDownloader()
+    app = _start_offline_server(tmp_path, monkeypatch, loader=loader, downloader=downloader)
+
+    async with make_client(app) as client:
+        before = await client.post(
+            "/transcribe",
+            files={"audio": ("clip.wav", make_wav(0.2), "audio/wav")},
+        )
+        assert before.status_code == 503
+
+        queued = await client.post("/admin/models/download", json={"model": "base"})
+        assert queued.status_code == 202
+        view: dict[str, Any] = {}
+        for _ in range(500):
+            view = (await client.get("/admin/models")).json()
+            if view["active_model"] == "base" and view["state"] == "loaded":
+                break
+            await asyncio.sleep(0.01)
+
+        health = await client.get("/health")
+        transcribed = await client.post(
+            "/transcribe",
+            files={"audio": ("clip.wav", make_wav(0.2), "audio/wav")},
+        )
+
+    assert view["active_model"] == "base"
+    assert view["state"] == "loaded"
+    assert health.json()["model"] == "base"
+    assert health.json()["loaded"] is True
+    assert transcribed.status_code == 200
+    assert transcribed.json()["text"] == "downloaded model"
+    assert downloader.calls == ["base"]
+    assert loader.calls and loader.calls[-1].endswith("base")
 
 
 def test_run_server_writes_its_output_to_the_log_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
     log_file = tmp_path / "state" / "server.log"
 
@@ -315,8 +421,7 @@ def test_exit_for_restart_uses_the_supervisor_restart_code(
 def test_run_server_survives_an_unwritable_log_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake = FakeTranscriber(info=EngineInfo("small", "cpu", "int8"))
-    monkeypatch.setattr(server, "build_transcriber", lambda config, **kwargs: fake)
+    monkeypatch.setattr(server, "detect_cuda_devices", lambda: 0)
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: None)
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("", encoding="utf-8")

@@ -48,12 +48,19 @@ def audio_part(
     return {"audio": ("clip.wav", make_wav(seconds, rate=rate, channels=channels), "audio/wav")}
 
 
-async def test_health_reports_liveness_and_version_only() -> None:
+async def test_health_reports_liveness_version_and_the_model_state() -> None:
     app, _ = build()
     async with make_client(app, token="") as client:
         response = await client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": __version__}
+    assert response.json() == {
+        "status": "ok",
+        "version": __version__,
+        "model": "fake",
+        "model_state": "loaded",
+        "loaded": True,
+        "stopped": False,
+    }
 
 
 async def test_status_shape() -> None:
