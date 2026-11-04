@@ -79,15 +79,15 @@ class Layout:
         if resolved == "windows":
             local = environ.get("LOCALAPPDATA")
             local_dir = Path(local) if local else home / "AppData" / "Local"
-            root = (
-                Path(override).expanduser()
-                if override
-                else local_dir / "kitsune-whisper" / "Server"
-            )
+            # The per-user programs convention: the bundle and its launcher sit
+            # together under %LOCALAPPDATA%\Programs\kitsune-whisper, which is
+            # where install.ps1 puts them.
+            programs_dir = local_dir / "Programs" / "kitsune-whisper"
+            root = Path(override).expanduser() if override else programs_dir / "Server"
             return cls(
                 os_name=resolved,
                 root=root,
-                bin_dir=local_dir / "kitsune-whisper" / "bin",
+                bin_dir=programs_dir / "bin",
                 config_dir=config_dir,
             )
         root = (

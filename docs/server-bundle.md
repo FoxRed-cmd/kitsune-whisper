@@ -194,12 +194,12 @@ reports the model, device, readiness, and a `gpu`
 block: `{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
 comes from CTranslate2, imported lazily; the resolved device honours
 `server.device`, so a GPU machine can still report `device: cpu`. CPU-only hosts
-are fully supported. CUDA wheels are an optional download: the Windows setup
-offers `nvidia-cublas-cu12` as a task, and `install.sh --cuda` installs it into
-the Linux bundle. `detect_cuda_devices` only reports CUDA after cuBLAS actually
+are fully supported. CUDA wheels are an optional download: Windows installs
+`nvidia-cublas-cu12` into the bundle's `lib/` with its own runtime (the
+documented `pip install --target` command), and `install.sh --cuda` does the
+same on Linux. `detect_cuda_devices` only reports CUDA after cuBLAS actually
 loads, so a GPU host without the runtime resolves to CPU instead of failing on
-the first transcription. Both installers skip the download when `nvidia-smi`
-finds no GPU.
+the first transcription. Neither installer downloads the runtime unless asked.
 
 ## Building the artifact (release CI)
 
@@ -221,10 +221,9 @@ back to CPU when it is absent.
 
 Release CI builds the matching Windows bundle with
 `--platform windows` from a standalone Python tree that contains both
-`python.exe` and `pythonw.exe`, then passes that archive to
-`packaging/windows/build-installer.ps1`. The setup verifies the archive's
-SHA-256 before calling the bundle's bootstrap, so a corrupted download never
-replaces a working Server.
+`python.exe` and `pythonw.exe`. `install.ps1` verifies the archive's SHA-256
+against the release's `checksums.txt` before calling the bundle's bootstrap, so
+a corrupted download never replaces a working Server.
 
 ## Uninstall
 

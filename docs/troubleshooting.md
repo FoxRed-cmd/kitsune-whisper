@@ -35,14 +35,13 @@ installer with elevation. Without a desktop toolkit the Client still works and
 Settings open in the browser.
 
 **The Settings window is blank.** On Linux check that the WebKitGTK runtime
-matches the build (`--gui gtk3` for old hosts). On Windows the installer
-bootstraps the WebView2 Evergreen Runtime per user; an offline machine gets a
-message with the manual download link. Re-run the setup after installing
-WebView2.
+matches the build (`--gui gtk3` for old hosts). On Windows the installer never
+downloads the WebView2 Evergreen Runtime; when it is missing it warns and links
+to the manual download. Install it from that link, then reopen the Client.
 
 **Port 8765 is already in use.** The Server never picks a random port. Stop the
 other process or set `server.port` in `kitsune.yaml` and restart the Server. The
-Client's Local Server profile must use the same port; the installer writes both.
+Client's Local Server profile must use the same port.
 
 **The CUDA download failed or was declined.** The Server falls back to CPU
 (`server.device: auto`). Re-run the installer with the CUDA task, or run
@@ -193,13 +192,14 @@ the Docker host for a hard stop. See [docker-smoke.md](verification/docker-smoke
 
 **Models or credentials remain after uninstalling.** The default uninstaller
 keeps user data. Re-run with `--remove-models` / `--remove-server-data` (Linux)
-or the matching uninstaller checkboxes (Windows), or use `--purge` / `-Purge`
-for a clean slate. A purge also removes the udev rule on Linux and the keychain
-tokens. See [install.md](install.md#uninstall).
+or use `--purge` for a clean slate. A purge also removes the udev rule on Linux
+and the keychain tokens. Windows uninstall currently keeps configuration,
+models and pairing state; removing those data classes is a later installer
+revision. See [install.md](install.md#uninstall).
 
 ## Reporting a problem
 
 Include the release (`kitsune-client --version`, `/health`), the platform and
 session type, the active profile, the exact command or click, and the copied
 diagnostics. For an installation problem, say which installer you used (the
-Linux one-liner or the Windows setup) and whether it was a clean machine.
+Linux one-liner or the Windows `install.ps1`) and whether it was a clean machine.
