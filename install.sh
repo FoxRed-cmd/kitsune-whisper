@@ -86,7 +86,7 @@ Usage: install.sh [options]
 
   --from DIR             install from release artifacts in DIR
   --version VERSION      install VERSION instead of the latest release
-  --force                allow a downgrade or an overwrite of the manifest
+  --force                allow installing a version older than the manifest
   --force-config         overwrite an existing kitsune.yaml
   --check                report installed versus available versions and
                          installed components; change nothing
