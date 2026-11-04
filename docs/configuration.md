@@ -163,8 +163,8 @@ The Client logs those warnings.
 
 The authenticated `GET /status` advertises it as a
 `processing: {enabled, refine, summarize}` block; the unauthenticated
-`GET /health` reports liveness and version only. The endpoint is any
-OpenAI-compatible service; see
+`GET /health` reports liveness, the version, and whether a model is loaded.
+The endpoint is any OpenAI-compatible service; see
 [Optional post-processing](install.md#optional-post-processing) for the bundled
 local sidecar and for pointing at an external provider.
 
@@ -194,7 +194,7 @@ Every `/transcribe` and `/status` request needs `Authorization: Bearer
 <Device token>`. Missing, malformed, unknown, and revoked tokens all return
 `401` with the `{error:{code:"unauthorized",message:...}}` envelope and a
 `WWW-Authenticate: Bearer` header. `/health` stays unauthenticated and reports
-only liveness and the version.
+liveness, the version, and whether a model is loaded.
 
 `POST /pair/local` issues a Device token without a code, but only to a genuine
 loopback peer. A Docker port forward makes the peer the bridge gateway, so a

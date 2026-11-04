@@ -5,15 +5,13 @@
 #   kitsune-client_linux_amd64.tar.gz          GTK4/WebKitGTK 6.0 Client
 #   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1 Client
 #   kitsune-server_linux_amd64.tar.gz          native Server bundle
-#   kitsune-wayland_linux_amd64.tar.gz         ydotool/ydotoold/wtype
 #   checksums.txt
 #
 #   scripts/build-linux-artifacts.sh --output dist
 #
 # The Client needs a C toolchain (hotkey uses cgo). The Server bundle needs a
 # standalone runtime and a resolved site-packages directory; without them the
-# server artifact is skipped. Wayland helpers come from --wayland-dir or from
-# the ydotool/wtype already on PATH (handy for a local smoke test).
+# server artifact is skipped.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,11 +23,9 @@ GO="${GO:-go}"
 CC_VALUE="${CC:-}"
 NO_CLIENT=0
 NO_SERVER=0
-NO_WAYLAND=0
 SERVER_RUNTIME="${KITSUNE_SERVER_RUNTIME:-}"
 SERVER_SITE_PACKAGES="${KITSUNE_SERVER_SITE_PACKAGES:-}"
 SERVER_PYTHON="${KITSUNE_SERVER_PYTHON:-python3}"
-WAYLAND_DIR="${KITSUNE_WAYLAND_DIR:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -48,14 +44,10 @@ while [[ $# -gt 0 ]]; do
     --server-python)
       shift; [[ $# -gt 0 ]] || { echo "error: --server-python needs a path" >&2; exit 2; }
       SERVER_PYTHON="$1" ;;
-    --wayland-dir)
-      shift; [[ $# -gt 0 ]] || { echo "error: --wayland-dir needs a directory" >&2; exit 2; }
-      WAYLAND_DIR="$1" ;;
     --no-client) NO_CLIENT=1 ;;
     --no-server) NO_SERVER=1 ;;
-    --no-wayland) NO_WAYLAND=1 ;;
     -h|--help)
-      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -110,33 +102,6 @@ build_server() {
 
 if [[ "$NO_SERVER" == 0 ]]; then
   build_server
-fi
-
-build_wayland() {
-  local stage="$work/wayland"
-  mkdir -p "$stage/bin"
-  if [[ -n "$WAYLAND_DIR" ]]; then
-    for tool in ydotool ydotoold wtype; do
-      [[ -x "$WAYLAND_DIR/$tool" ]] && cp "$WAYLAND_DIR/$tool" "$stage/bin/"
-    done
-  else
-    for tool in ydotool ydotoold wtype; do
-      if command -v "$tool" >/dev/null 2>&1; then
-        cp "$(command -v "$tool")" "$stage/bin/$tool"
-      fi
-    done
-  fi
-  if [[ -z "$(ls -A "$stage/bin")" ]]; then
-    echo "note: no Wayland helpers found; skipping the bundle (install ydotool/wtype)"
-    return 0
-  fi
-  chmod 0755 "$stage/bin/"*
-  tar -C "$stage" -czf "$OUTPUT_DIR/kitsune-wayland_linux_${ARCH}.tar.gz" bin
-  echo "Wrote $OUTPUT_DIR/kitsune-wayland_linux_${ARCH}.tar.gz"
-}
-
-if [[ "$NO_WAYLAND" == 0 ]]; then
-  build_wayland
 fi
 
 (

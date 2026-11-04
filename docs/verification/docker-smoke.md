@@ -68,8 +68,8 @@ writable `/config` directory, and `/state`/`/models` as persistent data.
 ## What it checks
 
 1. **No unauthenticated access.** `/status` and `/transcribe` return `401`;
-   `/health` returns `200` and only liveness/version. No pairing-code HTTP
-   endpoint is generated without a Device token.
+   `/health` returns `200` with liveness, the version, and the loaded model
+   state. No pairing-code HTTP endpoint is generated without a Device token.
 2. **`docker exec` pairing.** `kitsune-server pair` exits 0, prints
    `config: /config/kitsune.yaml`, an 8-character code, and a 64-hex
    certificate fingerprint.

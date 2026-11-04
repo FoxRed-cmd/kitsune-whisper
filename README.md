@@ -37,7 +37,8 @@ touch the models. Audio never leaves the network.
   and returns JSON. It can optionally post-process the text through an
   OpenAI-compatible LLM endpoint (see **Processing** below). The authenticated
   `GET /status` reports the resolved device, compute type, model, and whether
-  processing is enabled; `GET /health` stays minimal.
+  processing is enabled; `GET /health` reports liveness, the version, and
+  whether a model is loaded.
 - **Processing** (optional) — a request may ask the Server to **Refine** (remove
   disfluencies, add punctuation) and/or **Summarize** (compress to the key
   points). Refine runs before Summarize. It is off by default and never makes
@@ -219,13 +220,16 @@ enter `https://<host>:8765` (or your `KITSUNE_HOST_PORT`) and the code; the
 Client pins the certificate and stores the Device token. The Device and pairing
 stores, the TLS pair, the soft-stop flag, and the log live on the
 `kitsune-state` volume, so they survive a container restart and recreation.
-`GET /health` needs no token and reports `status` and `version` only:
+`GET /health` needs no token and reports `status`, `version`, and the model
+state (`model`, `model_state`, `loaded`, `stopped`):
 
 ```sh
 curl -k https://localhost:8765/health
 ```
 
-It returns `status` and `version` only. The native per-user install does not
+A Server that has not loaded a model answers `loaded: false` with
+`model_state: "cold"` and an empty `model`, and `POST /transcribe` returns
+`503` until the wizard downloads a model. The native per-user install does not
 have this limitation: the Client auto-pairs over loopback on the same machine.
 
 ### 2. Client
