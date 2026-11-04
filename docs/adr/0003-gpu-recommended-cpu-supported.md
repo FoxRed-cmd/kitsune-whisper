@@ -14,7 +14,7 @@ Dictation latency is the client's whole feel. On the measured host (Ryzen 7 8700
 
 - `server.model` stays `small`, `server.device` stays `auto`, `server.compute_type` stays `auto` (#6 unchanged).
 - `compute_type: auto` resolves CUDA→`float16`, CPU→`int8`; `int8_float16` is a documented manual override for low-VRAM GPUs. No per-device config keys.
-- The authenticated `GET /status` reports the **resolved** `device` and `compute_type` alongside `model`/`ready`; the unauthenticated `GET /health` carries liveness and version only. Startup logs one line `model=… device=… compute_type=… (resolved from auto)`.
+- The authenticated `GET /status` reports the **resolved** `device` and `compute_type` alongside `model`/`ready`; the unauthenticated `GET /health` carries liveness, version, and whether a model is loaded. Startup logs one line `model=… device=… compute_type=… (resolved from auto)` and does not load a model.
 - When the resolved device is `cpu`, the server logs a `WARN` naming the slow path and the escape hatch (GPU, or `base`/`tiny`).
 - The spec/install docs carry a "recommended hardware" section: NVIDIA/CUDA GPU recommended; CPU minimum with the caveat. `base` (≈2–3× faster than `small`, derived — validate locally) is the headline CPU recommendation; `tiny` is mentioned for the weakest hosts.
 - The `/transcribe` response keeps its hardware-independent core `{text, language, language_probability, duration}` (#5); optional post-processing later adds `raw_text`, `applied`, and `warnings` (see [ADR 0004](0004-local-llm-runtime-llama-cpp.md)) — the client never depends on server hardware.

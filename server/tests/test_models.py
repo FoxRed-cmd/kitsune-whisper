@@ -291,6 +291,49 @@ async def test_download_reports_progress_and_serialises_models() -> None:
     assert downloader.max_active == 1
 
 
+def test_a_download_while_soft_stopped_does_not_load_the_model() -> None:
+    from kitsune_server.lifecycle import Lifecycle
+
+    downloader = FakeDownloader()
+    downloader.gate("base").set()
+    loader = FakeLoader()
+    soft_stop = Lifecycle(stopped=True)
+    manager = ModelManager(
+        ServerConfig(workers=1, model="small"),
+        loader=loader,
+        downloader=downloader,
+        storage=FakeStorage(),
+        soft_stop=soft_stop,
+    )
+
+    manager.start_download("base")
+    wait_for(lambda: model_entry(manager, "base")["download"]["state"] == "done")
+
+    assert loader.calls == []
+    assert manager.current_transcriber() is None
+    assert manager.snapshot().state == "stopped"
+    assert soft_stop.stopped is True
+
+
+def test_a_download_does_not_replace_an_active_model() -> None:
+    downloader = FakeDownloader()
+    downloader.gate("base").set()
+    loader = FakeLoader()
+    manager = build_manager(
+        transcriber=FakeTranscriber(info=EngineInfo("small", "cpu", "int8")),
+        loader=loader,
+        downloader=downloader,
+        storage=FakeStorage(installed={"small": 10}),
+    )
+
+    manager.start_download("base")
+    wait_for(lambda: model_entry(manager, "base")["download"]["state"] == "done")
+
+    assert manager.active_model == "small"
+    assert manager.current_transcriber() is not None
+    assert loader.calls == []
+
+
 async def test_cancel_stops_a_running_download() -> None:
     downloader = FakeDownloader()
     manager = build_manager(downloader=downloader)

@@ -668,6 +668,7 @@ class ModelManager:
     def _fetch(self, record: _Download) -> None:
         spec = self._catalog.require(record.model)
         target = self._storage.path(record.model)
+        adopt = self._can_adopt_download()
         try:
             downloaded = self._downloader.fetch(
                 spec,
@@ -690,6 +691,9 @@ class ModelManager:
             self._cleanup(record, exc)
         except Exception as exc:
             self._cleanup(record, exc)
+        else:
+            if adopt:
+                self._activate_download(record.model)
 
     def _progress(self, record: _Download, received: int, total: int) -> None:
         with self._lock:
@@ -728,6 +732,42 @@ class ModelManager:
             )
 
     # -- activation --------------------------------------------------------
+
+    def _can_adopt_download(self) -> bool:
+        """Whether a fresh download should become the active model.
+
+        Only a Server with no usable model adopts one. An idle unload keeps the
+        existing choice (its files are still installed), and a soft-stop must
+        not reload anything until the user asks for it.
+        """
+        with self._lock:
+            if self._transcriber is not None or self._soft_stop.stopped:
+                return False
+            if self._state == "loading":
+                return False
+            if not self._active_model:
+                return True
+            if self._storage.installed(self._active_model):
+                return False
+            if _looks_like_path(self._active_model):
+                return not Path(self._active_model).expanduser().is_dir()
+            return True
+
+    def _activate_download(self, name: str) -> None:
+        """Load a downloaded model when the Server had none (first-run wizard).
+
+        A failure leaves the download installed and reports through the usual
+        ``state``/``error`` fields; it never fails the download itself.
+        """
+        with self._lock:
+            if self._transcriber is not None or self._soft_stop.stopped:
+                return
+        try:
+            self.activate(name)
+        except ModelError as exc:
+            logger.warning("downloaded %s but could not activate it: %s", name, exc)
+        else:
+            logger.info("activated downloaded model %s", name)
 
     def resolve_reference(self, name: str) -> tuple[str, str, str]:
         """Resolve a catalog name to (label, reference, path) or validate a local path."""

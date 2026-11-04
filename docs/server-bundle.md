@@ -177,8 +177,9 @@ It never picks a random port.
 
 ## Health and GPU
 
-`GET /health` stays minimal (`status` and `version`) and unauthenticated. The
-authenticated `GET /status` reports the model, device, readiness, and a `gpu`
+`GET /health` stays minimal (`status`, `version`, `model`, `model_state`,
+`loaded`, `stopped`) and unauthenticated. The authenticated `GET /status`
+reports the model, device, readiness, and a `gpu`
 block: `{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
 comes from CTranslate2, imported lazily; the resolved device honours
 `server.device`, so a GPU machine can still report `device: cpu`. CPU-only hosts
