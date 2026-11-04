@@ -3,7 +3,6 @@
 # install.sh and release CI use:
 #
 #   kitsune-client_linux_amd64.tar.gz          GTK4/WebKitGTK 6.0 Client
-#   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1 Client
 #   kitsune-server_linux_amd64.tar.gz          native Server bundle
 #   checksums.txt
 #
@@ -47,7 +46,7 @@ while [[ $# -gt 0 ]]; do
     --no-client) NO_CLIENT=1 ;;
     --no-server) NO_SERVER=1 ;;
     -h|--help)
-      sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -84,7 +83,6 @@ build_client() {
 if [[ "$NO_CLIENT" == 0 ]]; then
   command -v "$GO" >/dev/null 2>&1 || { echo "error: go is required" >&2; exit 1; }
   build_client "desktop purego" "kitsune-client_linux_${ARCH}.tar.gz"
-  build_client "desktop purego gtk3" "kitsune-client_linux_${ARCH}-legacy.tar.gz"
 fi
 
 build_server() {

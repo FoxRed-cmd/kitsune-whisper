@@ -4,7 +4,6 @@ name: Release
 # cgo, so no cross-compilation) and attaches them with checksums to the GitHub
 # Release. The Linux set is the contract install.sh relies on:
 #   kitsune-client_linux_amd64.tar.gz          GTK4/WebKitGTK 6.0
-#   kitsune-client_linux_amd64-legacy.tar.gz   GTK3/WebKit2GTK 4.1
 #   kitsune-server_linux_amd64.tar.gz          native Server bundle
 #
 # The Windows set is the contract install.ps1 relies on:
@@ -53,8 +52,20 @@ jobs:
           fi
           echo "releasing $tag"
 
+  verify-docs:
+    name: verify installer/document drift
+    runs-on: ubuntu-24.04
+    needs: verify-version
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stdlib only; the system python is deliberate so a tag cannot publish
+      # when an installer check and docs/dependencies.md disagree (#102).
+      - name: Check the installers and the dependencies document agree
+        run: python3 scripts/check-dependency-drift.py
+
   client-linux:
-    name: client linux (GTK4 + GTK3)
+    name: client linux (GTK4)
     runs-on: ubuntu-24.04
     needs: verify-version
     env:
@@ -70,7 +81,7 @@ jobs:
       - name: Ensure build deps
         run: sudo apt-get update && sudo apt-get install -y libx11-dev
 
-      - name: Build both Linux clients
+      - name: Build the Linux Client
         run: |
           set -euo pipefail
           scripts/build-linux-artifacts.sh \
@@ -82,7 +93,6 @@ jobs:
           name: linux-client
           path: |
             dist/kitsune-client_linux_amd64.tar.gz
-            dist/kitsune-client_linux_amd64-legacy.tar.gz
           if-no-files-found: error
 
   client-windows:
@@ -206,6 +216,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs:
       - verify-version
+      - verify-docs
       - client-linux
       - client-windows
       - server-bundle
@@ -259,7 +270,6 @@ jobs:
           generate_release_notes: true
           files: |
             dist/kitsune-client_linux_amd64.tar.gz
-            dist/kitsune-client_linux_amd64-legacy.tar.gz
             dist/kitsune-client_windows_amd64.zip
             dist/kitsune-server_linux_amd64.tar.gz
             dist/kitsune-server_windows_amd64.tar.gz

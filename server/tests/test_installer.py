@@ -1103,12 +1103,22 @@ def test_release_workflow_has_no_wayland_helper_job() -> None:
     assert "windows-installer" not in workflow["jobs"]
     assert set(workflow["jobs"]) == {
         "verify-version",
+        "verify-docs",
         "client-linux",
         "client-windows",
         "server-bundle",
         "server-bundle-windows",
         "release",
     }
+
+    # A tag cannot publish when installer checks and the dependencies document
+    # disagree: the drift gate is a required job of the publish job.
+    assert "verify-docs" in workflow["jobs"]["release"]["needs"]
+    verify_docs = workflow["jobs"]["verify-docs"]
+    assert any(
+        "scripts/check-dependency-drift.py" in str(step.get("run", ""))
+        for step in verify_docs["steps"]
+    )
 
     text = workflow_path.read_text(encoding="utf-8")
     for retired in (
@@ -1132,9 +1142,13 @@ def test_release_workflow_has_no_wayland_helper_job() -> None:
     ):
         assert retired not in text, retired
 
+    # One Linux desktop build: the GTK4/WebKitGTK 6.0 Client only.
+    assert "kitsune-client_linux_amd64-legacy.tar.gz" not in text
+    assert "GTK3" not in text
+    assert "WebKit2GTK" not in text
+
     for asset in (
         "kitsune-client_linux_amd64.tar.gz",
-        "kitsune-client_linux_amd64-legacy.tar.gz",
         "kitsune-client_windows_amd64.zip",
         "kitsune-server_linux_amd64.tar.gz",
         "kitsune-server_windows_amd64.tar.gz",
