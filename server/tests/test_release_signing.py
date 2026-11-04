@@ -65,6 +65,19 @@ def test_the_committed_public_key_is_an_ec_p256_spki_pem() -> None:
     assert isinstance(key, ec.EllipticCurvePublicKey)
     assert isinstance(key.curve, ec.SECP256R1)
 
+    if shutil.which("openssl") is not None:
+        described = run_openssl("pkey", "-pubin", "-in", str(PUBLIC_KEY), "-text", "-noout")
+        assert described.returncode == 0, described.stderr
+        assert "NIST CURVE: P-256" in described.stdout
+
+
+def test_no_private_key_ships_in_the_repository() -> None:
+    for path in (REPO_ROOT / "packaging" / "keys").iterdir():
+        assert b"PRIVATE KEY" not in path.read_bytes(), path
+    # The release job reads the key from a secret, never a committed file.
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+    assert "PRIVATE KEY" not in workflow
+
 
 def test_the_release_job_signs_the_checksums_before_publishing() -> None:
     steps = release_steps()
