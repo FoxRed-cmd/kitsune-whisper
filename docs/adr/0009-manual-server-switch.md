@@ -28,7 +28,8 @@ Spool. It never retries another profile on its own and never injects twice.
 
 - A Remote Server outage costs one failed utterance plus a manual switch, even
   though the Local Server is running.
-- The Local Server still starts at login with the model loaded (subject to the
-  idle unload timeout), so switching to it is instant when it is warm.
+- When autostart includes the Local Server, it starts at login with the model
+  loaded (subject to the idle unload timeout), so switching to it is instant
+  when it is warm.
 - Health and status are still shown in the Tray and Settings; they inform the
   user but never change routing.
