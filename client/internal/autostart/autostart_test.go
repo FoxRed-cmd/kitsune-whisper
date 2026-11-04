@@ -184,6 +184,31 @@ func TestUninstallLinuxStopsAndRemoves(t *testing.T) {
 	}
 }
 
+func TestRemoveLinuxDisablesAndRemovesWithoutStopping(t *testing.T) {
+	f := newFake(t, "linux")
+	opts := autostart.Options{Binary: "/home/u/.local/bin/kitsune-client"}
+	if err := autostart.Install(f.env, opts); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if err := autostart.Remove(f.env); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if !f.ran("systemctl", "--user", "disable", autostart.UnitName) {
+		t.Error("missing systemctl --user disable")
+	}
+	if f.ran("systemctl", "--user", "disable", "--now", autostart.UnitName) {
+		t.Error("removing the registration must not stop the running Client")
+	}
+	unit := filepath.Join(f.env.ConfigHome, "systemd", "user", autostart.UnitName)
+	if _, err := os.Stat(unit); !os.IsNotExist(err) {
+		t.Errorf("unit still present after Remove: %v", err)
+	}
+	desktop := filepath.Join(f.env.DataHome, "applications", autostart.AppID+".desktop")
+	if _, err := os.Stat(desktop); !os.IsNotExist(err) {
+		t.Errorf("desktop entry still present after Remove: %v", err)
+	}
+}
+
 func TestUninstallIsIdempotent(t *testing.T) {
 	f := newFake(t, "linux")
 	f.failRun = func(string, []string) error { return os.ErrNotExist }

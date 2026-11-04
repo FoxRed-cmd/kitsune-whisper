@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/gnome"
@@ -28,21 +29,24 @@ type Settings interface {
 	StartLevelTest(device string) (dictation.LevelStream, error)
 }
 
-// Startup controls the login autostart registration for the Client and the
-// local Server. The Settings window renders the state and calls the setters;
-// the platform implementation lives in the CLI, so the shell stays testable.
+// Startup controls the Autostart mode for the installed Components. The
+// Settings window renders the state and sets one switch plus one mode; the
+// platform implementation lives in the CLI, so the shell stays testable.
 type Startup interface {
-	Status() (clientEnabled, serverEnabled, serverAvailable bool)
-	SetClient(enabled bool) error
-	SetServer(enabled bool) error
+	Status() components.State
+	SetMode(enabled bool, mode components.Mode) error
 }
 
-// StartupView is the autostart screen's state.
+// StartupView is the autostart screen's state. Modes holds only the
+// combinations whose Components are installed, fullest first. While autostart
+// is off, Mode is the default offered mode and the selector is read-only.
 type StartupView struct {
-	Available       bool `json:"available"`
-	Client          bool `json:"client"`
-	Server          bool `json:"server"`
-	ServerAvailable bool `json:"serverAvailable"`
+	Available       bool              `json:"available"`
+	Enabled         bool              `json:"enabled"`
+	Mode            components.Mode   `json:"mode"`
+	Modes           []components.Mode `json:"modes"`
+	ClientInstalled bool              `json:"clientInstalled"`
+	ServerInstalled bool              `json:"serverInstalled"`
 }
 
 // GnomeShortcuts manages the Client's GNOME custom keybindings. It is optional:
@@ -178,13 +182,17 @@ type ServerLabels struct {
 	LogLevelTitle   string `json:"logLevelTitle"`
 	LogLevelHelp    string `json:"logLevelHelp"`
 
-	StartupTitle             string `json:"startupTitle"`
-	StartupHelp              string `json:"startupHelp"`
-	StartupClient            string `json:"startupClient"`
-	StartupClientHelp        string `json:"startupClientHelp"`
-	StartupServer            string `json:"startupServer"`
-	StartupServerHelp        string `json:"startupServerHelp"`
-	StartupServerUnavailable string `json:"startupServerUnavailable"`
+	StartupTitle                string `json:"startupTitle"`
+	StartupHelp                 string `json:"startupHelp"`
+	StartupSwitch               string `json:"startupSwitch"`
+	StartupMode                 string `json:"startupMode"`
+	StartupModeClientServer     string `json:"startupModeClientServer"`
+	StartupModeClientServerHelp string `json:"startupModeClientServerHelp"`
+	StartupModeClient           string `json:"startupModeClient"`
+	StartupModeClientHelp       string `json:"startupModeClientHelp"`
+	StartupModeServer           string `json:"startupModeServer"`
+	StartupModeServerHelp       string `json:"startupModeServerHelp"`
+	StartupUnavailable          string `json:"startupUnavailable"`
 
 	DiagnosticsTitle string `json:"diagnosticsTitle"`
 	DiagnosticsHelp  string `json:"diagnosticsHelp"`
@@ -505,13 +513,17 @@ func (s *Shell) serverLabels() ServerLabels {
 		LogLevelTitle:   catalog.T("diagnostics.logLevel"),
 		LogLevelHelp:    catalog.T("diagnostics.logLevelHelp"),
 
-		StartupTitle:             catalog.T("startup.title"),
-		StartupHelp:              catalog.T("startup.help"),
-		StartupClient:            catalog.T("startup.client"),
-		StartupClientHelp:        catalog.T("startup.clientHelp"),
-		StartupServer:            catalog.T("startup.server"),
-		StartupServerHelp:        catalog.T("startup.serverHelp"),
-		StartupServerUnavailable: catalog.T("startup.serverUnavailable"),
+		StartupTitle:                catalog.T("startup.title"),
+		StartupHelp:                 catalog.T("startup.help"),
+		StartupSwitch:               catalog.T("startup.switch"),
+		StartupMode:                 catalog.T("startup.mode"),
+		StartupModeClientServer:     catalog.T("startup.mode.clientServer"),
+		StartupModeClientServerHelp: catalog.T("startup.mode.clientServerHelp"),
+		StartupModeClient:           catalog.T("startup.mode.client"),
+		StartupModeClientHelp:       catalog.T("startup.mode.clientHelp"),
+		StartupModeServer:           catalog.T("startup.mode.server"),
+		StartupModeServerHelp:       catalog.T("startup.mode.serverHelp"),
+		StartupUnavailable:          catalog.T("startup.unavailable"),
 
 		DiagnosticsTitle: catalog.T("diagnostics.title"),
 		DiagnosticsHelp:  catalog.T("diagnostics.help"),
@@ -647,18 +659,21 @@ func (s *Shell) settingsView() SettingsView {
 	return view
 }
 
-// startupView reads the login autostart state. Without a controller (a
-// headless or non-systemd build) the screen is omitted.
+// startupView reads the Autostart state. Without a controller (a headless or
+// non-systemd build) the screen is omitted.
 func (s *Shell) startupView() StartupView {
 	if s.opts.Startup == nil {
 		return StartupView{}
 	}
-	client, server, available := s.opts.Startup.Status()
+	state := s.opts.Startup.Status()
+	modes := state.Installed.Modes()
 	return StartupView{
-		Available:       true,
-		Client:          client,
-		Server:          server,
-		ServerAvailable: available,
+		Available:       state.Supported && len(modes) > 0,
+		Enabled:         state.Enabled,
+		Mode:            state.Mode,
+		Modes:           modes,
+		ClientInstalled: state.Installed.Client,
+		ServerInstalled: state.Installed.Server,
 	}
 }
 
@@ -733,9 +748,9 @@ type Intent struct {
 	Model string `json:"model,omitempty"`
 	// Seconds carries the idle unload timeout.
 	Seconds int `json:"seconds,omitempty"`
-	// Component selects the autostart component: client or server.
-	Component string `json:"component,omitempty"`
-	// Enabled is the requested autostart state.
+	// Mode selects the Autostart mode for ActionSetStartup.
+	Mode string `json:"mode,omitempty"`
+	// Enabled is the requested autostart switch state.
 	Enabled bool `json:"enabled,omitempty"`
 	// Tail is the number of log lines for ActionLoadLogs; 0 uses 200.
 	Tail int `json:"tail,omitempty"`
@@ -966,7 +981,7 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		s.saveServerSettings(patch)
 		return nil
 	case IntentSetStartup:
-		s.setStartup(intent.Component, intent.Enabled)
+		s.setStartup(intent.Enabled, intent.Mode)
 		return nil
 	case IntentSetLogLevel:
 		s.setLogLevel(intent.Value)

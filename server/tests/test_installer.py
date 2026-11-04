@@ -851,6 +851,15 @@ def test_release_workflow_has_no_wayland_helper_job() -> None:
     workflow_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
     assert "wayland-tools" not in workflow["jobs"]
+    assert "windows-installer" not in workflow["jobs"]
+    assert set(workflow["jobs"]) == {
+        "verify-version",
+        "client-linux",
+        "client-windows",
+        "server-bundle",
+        "server-bundle-windows",
+        "release",
+    }
 
     text = workflow_path.read_text(encoding="utf-8")
     for retired in (
@@ -862,6 +871,30 @@ def test_release_workflow_has_no_wayland_helper_job() -> None:
         "wtype",
     ):
         assert retired not in text, retired
+
+    # The setup executable, its Inno definition, and the job that built it are
+    # gone: the Windows installer is the checked-out install.ps1.
+    for retired in (
+        "kitsune-whisper_windows_amd64_setup.exe",
+        "build-" + "installer.ps1",
+        "kitsune-whisper" + ".iss",
+        "windows-installer",
+        "inno" + "setup",
+    ):
+        assert retired not in text, retired
+
+    for asset in (
+        "kitsune-client_linux_amd64.tar.gz",
+        "kitsune-client_linux_amd64-legacy.tar.gz",
+        "kitsune-client_windows_amd64.zip",
+        "kitsune-server_linux_amd64.tar.gz",
+        "kitsune-server_windows_amd64.tar.gz",
+        "install.sh",
+        "install.ps1",
+        "checksums.txt",
+    ):
+        assert asset in text, asset
+    assert "sha256sum" in text
 
     # The publish job still ships both installers and their signature.
     assert "dist/install.sh" in text

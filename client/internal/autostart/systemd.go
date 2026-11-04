@@ -49,6 +49,22 @@ func uninstallLinux(env Environment) error {
 			env.logf("autostart: systemctl --user disable %s: %v (ignored)", UnitName, err)
 		}
 	}
+	return removeLinuxFiles(env)
+}
+
+// removeLinuxLogin disables the unit and deletes our registration files without
+// stopping a Client that is running now.
+func removeLinuxLogin(env Environment) error {
+	if env.Run != nil {
+		if err := env.Run("systemctl", "--user", "disable", UnitName); err != nil {
+			env.logf("autostart: systemctl --user disable %s: %v (ignored)", UnitName, err)
+		}
+	}
+	return removeLinuxFiles(env)
+}
+
+// removeLinuxFiles deletes the unit and portal entry and reloads systemd.
+func removeLinuxFiles(env Environment) error {
 	if err := removeFile(systemdUnitPath(env.ConfigHome)); err != nil {
 		return err
 	}

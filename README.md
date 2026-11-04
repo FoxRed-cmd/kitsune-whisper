@@ -240,19 +240,22 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 ```
 
 ```powershell
-# Windows (PowerShell 7+): per-user setup, Tray, local Server bundle
+# Windows (PowerShell 7+): native per-user install, Tray, local Server bundle
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-The Windows one-liner downloads `kitsune-whisper_windows_amd64_setup.exe`,
-verifies its SHA-256, and runs it. The setup needs no administrator rights,
-bootstraps WebView2 per user, and registers per-user logon tasks for the Client
-and the hidden Server. You can also download that setup executable from the
-release and run it directly; the Tasks page offers an optional desktop shortcut.
+The Windows one-liner downloads `kitsune-client_windows_amd64.zip` and
+`kitsune-server_windows_amd64.tar.gz`, verifies both against `checksums.txt`,
+and installs them under `%LOCALAPPDATA%\Programs\kitsune-whisper`. It needs no
+administrator rights, installs nothing at login, and never downloads WebView2:
+a missing Evergreen Runtime produces a warning that points at the documented
+manual install. `install.ps1 -ClientOnly` and `install.ps1 -ServerOnly` select a
+single component. The uninstall entry is in **Apps & features**.
 
-The native Server bundle does not ship CUDA. On an NVIDIA host leave the CUDA
-task checked in the Windows setup, or add `--cuda` to the Linux one-liner
-(`... | bash -s -- --cuda`); otherwise the Server falls back to CPU.
+The native Server bundle does not ship CUDA. On an NVIDIA host, install
+`nvidia-cublas-cu12` into the installed bundle's `lib` directory as described in
+[`docs/install.md`](docs/install.md#windows); without it the Server falls back to
+CPU. An existing CUDA directory survives a Windows installer upgrade.
 
 The Linux installer verifies every archive checksum, installs the Client, the
 native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**
@@ -453,8 +456,8 @@ The current release line is **1.0.0**. The root [`VERSION`](VERSION),
 version, and release CI refuses a tag that does not match.
 
 Tagging `v*` runs `.github/workflows/release.yml`: it builds the GTK4 and GTK3
-Clients, the native Server bundle, the bundled Wayland helpers, and the Windows
-setup on native runners, then attaches them with `install.sh`, `install.ps1`,
+Clients, the native Server bundles, the bundled Wayland helpers, and the Windows
+Client zip on native runners, then attaches them with `install.sh`, `install.ps1`,
 and `checksums.txt` to the GitHub Release. `publish-server-image.yml` publishes
 the Server images to GHCR.
 See [`docs/release.md`](docs/release.md) for the checklist.
