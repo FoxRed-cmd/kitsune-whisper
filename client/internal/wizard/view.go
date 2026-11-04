@@ -54,13 +54,14 @@ type Labels struct {
 	StepPending string `json:"stepPending"`
 	StepSkipped string `json:"stepSkipped"`
 
-	WelcomeTitle   string `json:"welcomeTitle"`
-	WelcomeIntro   string `json:"welcomeIntro"`
-	WelcomeClient  string `json:"welcomeClient"`
-	WelcomeProfile string `json:"welcomeProfile"`
-	WelcomeServer  string `json:"welcomeServer"`
-	WelcomeModel   string `json:"welcomeModel"`
-	WelcomeCheck   string `json:"welcomeCheck"`
+	WelcomeTitle     string `json:"welcomeTitle"`
+	WelcomeIntro     string `json:"welcomeIntro"`
+	WelcomeClient    string `json:"welcomeClient"`
+	WelcomeProfile   string `json:"welcomeProfile"`
+	WelcomeServer    string `json:"welcomeServer"`
+	WelcomeModel     string `json:"welcomeModel"`
+	WelcomeModelNone string `json:"welcomeModelNone"`
+	WelcomeCheck     string `json:"welcomeCheck"`
 
 	MicTitle     string `json:"micTitle"`
 	MicHelp      string `json:"micHelp"`
@@ -140,6 +141,9 @@ type Labels struct {
 	TryError       string `json:"tryError"`
 	TryFinish      string `json:"tryFinish"`
 	TryStartServer string `json:"tryStartServer"`
+	TryPhase       string `json:"tryPhase"`
+	TryState       string `json:"tryState"`
+	TryTranscript  string `json:"tryTranscript"`
 	GotoStep       string `json:"gotoStep"`
 
 	NoticeSaved          string `json:"noticeSaved"`
@@ -342,13 +346,14 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		StepPending: catalog.T("wizard.step.pending"),
 		StepSkipped: catalog.T("wizard.step.skipped"),
 
-		WelcomeTitle:   catalog.T("wizard.welcome.title"),
-		WelcomeIntro:   catalog.T("wizard.welcome.intro"),
-		WelcomeClient:  catalog.T("wizard.welcome.client"),
-		WelcomeProfile: catalog.T("wizard.welcome.profile"),
-		WelcomeServer:  catalog.T("wizard.welcome.server"),
-		WelcomeModel:   catalog.T("wizard.welcome.model"),
-		WelcomeCheck:   catalog.T("wizard.welcome.check"),
+		WelcomeTitle:     catalog.T("wizard.welcome.title"),
+		WelcomeIntro:     catalog.T("wizard.welcome.intro"),
+		WelcomeClient:    catalog.T("wizard.welcome.client"),
+		WelcomeProfile:   catalog.T("wizard.welcome.profile"),
+		WelcomeServer:    catalog.T("wizard.welcome.server"),
+		WelcomeModel:     catalog.T("wizard.welcome.model"),
+		WelcomeModelNone: catalog.T("wizard.welcome.modelNone"),
+		WelcomeCheck:     catalog.T("wizard.welcome.check"),
 
 		MicTitle:     catalog.T("wizard.mic.title"),
 		MicHelp:      catalog.T("wizard.mic.help"),
@@ -428,6 +433,9 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		TryError:       catalog.T("wizard.try.error"),
 		TryFinish:      catalog.T("wizard.try.finish"),
 		TryStartServer: catalog.T("wizard.try.startServer"),
+		TryPhase:       catalog.T("wizard.try.phase"),
+		TryState:       catalog.T("wizard.try.state"),
+		TryTranscript:  catalog.T("wizard.try.transcript"),
 		GotoStep:       catalog.T("wizard.gotoStep"),
 
 		NoticeSaved:          catalog.T("wizard.notice.saved"),
@@ -697,7 +705,7 @@ func LabelKeys() []string {
 		"wizard.step.done", "wizard.step.current", "wizard.step.pending", "wizard.step.skipped",
 		"wizard.welcome.title", "wizard.welcome.intro", "wizard.welcome.client",
 		"wizard.welcome.profile", "wizard.welcome.server", "wizard.welcome.model",
-		"wizard.welcome.check",
+		"wizard.welcome.modelNone", "wizard.welcome.check",
 		"wizard.mic.title", "wizard.mic.help", "wizard.mic.device", "wizard.mic.test",
 		"wizard.mic.stop", "wizard.mic.noDevices", "wizard.mic.listError",
 		"wizard.hotkey.title", "wizard.hotkey.help", "wizard.hotkey.label",
@@ -722,7 +730,8 @@ func LabelKeys() []string {
 		"wizard.try.title", "wizard.try.help", "wizard.try.ready", "wizard.try.start",
 		"wizard.try.stop", "wizard.try.confirm", "wizard.try.retry", "wizard.try.passed",
 		"wizard.try.notPassed", "wizard.try.missingTitle", "wizard.try.error", "wizard.try.finish",
-		"wizard.try.startServer", "wizard.gotoStep", "wizard.try.missing.profile", "wizard.try.missing.server",
+		"wizard.try.startServer", "wizard.gotoStep", "wizard.try.phase", "wizard.try.state",
+		"wizard.try.transcript", "wizard.try.missing.profile", "wizard.try.missing.server",
 		"wizard.try.missing.runtime", "wizard.try.missing.unauthenticated",
 		"wizard.try.missing.unpinned", "wizard.try.missing.mismatch",
 		"wizard.try.missing.model", "wizard.try.missing.modelFailed", "wizard.try.missing.stopped",

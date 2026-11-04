@@ -132,7 +132,6 @@ func (s *Service) ensureLocal(
 	profile.Fingerprint = paired.Fingerprint
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// Re-read the profile list after the network call so a concurrent pairing
 	// or selection is not overwritten.
 	profiles := replaceProfile(s.opts.Store.Snapshot().Config.Servers, profile)
@@ -144,11 +143,13 @@ func (s *Service) ensureLocal(
 		} else {
 			_ = s.opts.Tokens.Delete(profile.ID)
 		}
+		s.mu.Unlock()
 		return saved, err
 	}
-	delete(s.health, profile.ID)
-	s.pairingError = ""
-	return s.profileByIDLocked(profile.ID), nil
+	saved = s.finishPairingLocked(profile.ID)
+	s.mu.Unlock()
+	s.notifyPaired(saved)
+	return saved, nil
 }
 
 // localProfilePatch renders a Local Server profile save. activate also selects

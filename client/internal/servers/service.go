@@ -186,6 +186,10 @@ type Options struct {
 	// Server on a different major.minor is reported as an upgrade problem
 	// instead of an authentication one.
 	ClientVersion string
+	// OnPaired is called after a pairing saved a Device token and certificate
+	// pin. The CLI wires it to the running trust manager, so a transcriber
+	// built at startup learns a pin captured later without a rebuild.
+	OnPaired func(profileID, fingerprint string)
 }
 
 // Service is the Server-profile and Device-management service.
@@ -230,6 +234,23 @@ func New(opts Options) *Service {
 		opts.LANAddress = lanaddr.Address
 	}
 	return &Service{opts: opts, health: map[string]trust.Status{}}
+}
+
+// notifyPaired tells the process-level trust state about a freshly saved
+// Device token and pin. It runs after the service lock is released.
+func (s *Service) notifyPaired(profile Profile) {
+	if s.opts.OnPaired == nil {
+		return
+	}
+	s.opts.OnPaired(profile.ID, profile.Fingerprint)
+}
+
+// finishPairingLocked clears the cached health of a freshly paired profile and
+// returns its saved view. s.mu must be held.
+func (s *Service) finishPairingLocked(profileID string) Profile {
+	delete(s.health, profileID)
+	s.pairingError = ""
+	return s.profileByIDLocked(profileID)
 }
 
 // Config returns the current effective Client configuration. The shell uses it
@@ -532,7 +553,6 @@ func (s *Service) pairRemoteProfile(
 	profile.Fingerprint = paired.Fingerprint
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	// Re-read the profile list after the network call so a concurrent pairing
 	// or selection is not overwritten.
 	current := s.opts.Store.Snapshot().Config
@@ -553,11 +573,13 @@ func (s *Service) pairRemoteProfile(
 		} else {
 			_ = s.opts.Tokens.Delete(profile.ID)
 		}
+		s.mu.Unlock()
 		return Profile{}, err
 	}
-	delete(s.health, profile.ID)
-	s.pairingError = ""
-	return s.profileByIDLocked(profile.ID), nil
+	saved := s.finishPairingLocked(profile.ID)
+	s.mu.Unlock()
+	s.notifyPaired(saved)
+	return saved, nil
 }
 
 // LoadDevices refreshes the Device list of one Server profile.

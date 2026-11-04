@@ -177,3 +177,28 @@ func TestLocalServerReachableHasNoProbeWithoutALocalProfile(t *testing.T) {
 		t.Fatal("a Client without a Local profile must not probe a Local Server")
 	}
 }
+
+func TestRetryLocalPairingStopsAfterSuccess(t *testing.T) {
+	calls := 0
+	retryLocalPairing(context.Background(), 0, 5, func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return errors.New("the Server is not listening yet")
+		}
+		return nil
+	}, newTranscriberTestLogger(t))
+	if calls != 3 {
+		t.Fatalf("ensure calls = %d, want 3", calls)
+	}
+}
+
+func TestRetryLocalPairingGivesUpAfterTheAttempts(t *testing.T) {
+	calls := 0
+	retryLocalPairing(context.Background(), 0, 3, func(context.Context) error {
+		calls++
+		return errors.New("connection refused")
+	}, newTranscriberTestLogger(t))
+	if calls != 3 {
+		t.Fatalf("ensure calls = %d, want 3", calls)
+	}
+}

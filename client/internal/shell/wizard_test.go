@@ -678,6 +678,36 @@ func TestWizardWelcomeSummaryShowsValuesInBothLanguages(t *testing.T) {
 	}
 }
 
+func TestWizardWelcomeSummarySaysWhenNoModelIsInstalled(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	cases := []struct {
+		lang i18n.Lang
+		want string
+	}{
+		{lang: i18n.English, want: "Model: not installed"},
+		{lang: i18n.Russian, want: "Модель: не установлена"},
+	}
+	for _, tc := range cases {
+		view := wiz.View(wizard.Data{
+			Catalog: i18n.For(tc.lang),
+			Server:  trust.Status{State: trust.StateOnline},
+			Servers: servers.View{
+				ActiveID: "local",
+				Profiles: []servers.Profile{{ID: "local", Name: "Local Server", Active: true, AutoPair: true}},
+				Models: &servers.ModelsView{
+					Device: "cpu", State: "cold",
+					Models: []servers.Model{{Name: "base", Installed: false}},
+				},
+			},
+		})
+		html := shell.WizardHTML(view)
+		if !strings.Contains(html, tc.want) {
+			t.Errorf("%s welcome summary is missing %q: %s", tc.lang, tc.want, html)
+		}
+	}
+}
+
 func TestWizardModelRowShowsAShortActiveBadge(t *testing.T) {
 	wiz, _ := newWizardService(t)
 	_ = wiz.Open()

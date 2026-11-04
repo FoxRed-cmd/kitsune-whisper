@@ -536,6 +536,34 @@ func prepareTrust(
 	return trustBootstrap{cfg: ensured, manager: manager, tokens: tokens, store: store}
 }
 
+// retryLocalPairing heals a fresh headless start where the Local Server begins
+// listening after prepareTrust's single auto-pair attempt. The transcriber
+// resolves the Device token and pin per utterance, so learning them after
+// startup is enough. The desktop shell has its own retry alongside the health
+// probe, so this only runs for a headless Client.
+func retryLocalPairing(
+	ctx context.Context,
+	interval time.Duration,
+	attempts int,
+	ensure func(context.Context) error,
+	logger *logging.Logger,
+) {
+	for attempt := 0; attempt < attempts; attempt++ {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+		if err := ensure(ctx); err != nil {
+			logger.Debug("trust: Local Server pairing retry: %v", err)
+			continue
+		}
+		logger.Info("trust: paired the Local Server profile")
+		return
+	}
+	logger.Warning("trust: the Local Server profile is still not paired")
+}
+
 // fingerprintWriter persists a paired certificate fingerprint in the Server
 // profile. The settings store remains the only writer of the "client:" section.
 func fingerprintWriter(store *settings.Store) trust.PinWriter {
@@ -672,6 +700,14 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 	if launchErr != nil {
 		logger.Warning("Local Server: %v", launchErr)
 	}
+	if !so.gui {
+		if profile, ok := bootstrap.cfg.ActiveProfile(); ok && profile.AutoPair {
+			go retryLocalPairing(ctx, 2*time.Second, 15, func(ctx context.Context) error {
+				_, err := bootstrap.manager.Ensure(ctx, bootstrap.cfg)
+				return err
+			}, logger)
+		}
+	}
 
 	adapters, err := buildAdapters(cfg, logger, bootstrap.manager)
 	if err != nil {
@@ -730,6 +766,10 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 				Tokens:        bootstrap.tokens,
 				LocalServer:   localServer,
 				ClientVersion: Version,
+				// A background loopback pairing can finish after the runtime
+				// built its transcriber. Remembering the pin here lets the next
+				// utterance trust the Server without a runtime rebuild.
+				OnPaired: bootstrap.manager.RememberPin,
 			})
 		} else {
 			// Without a profile service the shell still probes the active
