@@ -2,7 +2,8 @@
 
 A release is a Git tag `v<major>.<minor>.<patch>` whose version matches the
 root `VERSION` file and the Server package. `.github/workflows/release.yml` then
-builds every artifact natively and publishes it with `checksums.txt`.
+builds every artifact natively and publishes it with `checksums.txt` and its
+detached signature `checksums.txt.sig`.
 
 The current release line is **1.0.0**.
 
@@ -55,13 +56,85 @@ The `verify-version` job runs first and every build job depends on it.
 | `deb` | `kitsune-whisper_<version>_amd64.deb` and the legacy package |
 | `rpm` | `kitsune-whisper-<version>-1.x86_64.rpm` and the legacy package |
 | `appimage` | `kitsune-whisper-<version>-x86_64.AppImage` and the legacy AppImage |
-| `release` | `install.sh`, `install.ps1`, `checksums.txt`, all of the above |
+| `release` | `install.sh`, `install.ps1`, `checksums.txt`, `checksums.txt.sig`, all of the above |
 
 `checksums.txt` is generated in the release job with `sha256sum` over every
 `kitsune-*` asset plus the two installer scripts. The installers and the Client's
 update check verify a download against it before running anything. `install.sh`
 is the Linux updater's verified asset; `install.ps1` is the pinned Windows
-bootstrap.
+bootstrap. The release job then signs `checksums.txt` with the offline release
+key and uploads the detached signature next to it.
+
+## Signing
+
+Every release carries `checksums.txt.sig`: a detached ECDSA P-256 / SHA-256
+signature over `checksums.txt`. OpenSSL writes it as a DER-encoded
+`ECDSA-Sig-Value` sequence, so .NET verifies it with
+`DSASignatureFormat.Rfc3279DerSequence`. Signing the checksum file rather than
+each archive still covers every asset, because the checksum file lists all of
+them.
+
+The public key is committed at
+[`packaging/keys/kitsune-release-public.pem`](../packaging/keys/kitsune-release-public.pem).
+The private key exists only as the repository secret `RELEASE_SIGNING_KEY` and
+as an offline backup; it is never committed. The release job fails before
+uploading anything when the secret is absent, when it is not the key that
+matches the committed public key, or when signing fails. No unsigned release is
+published.
+
+The job and the local helper (`scripts/sign-release-checksums.sh`) both verify
+the new signature against the committed public key immediately after signing,
+so a wrong or rotated secret cannot ship a signature that users cannot check.
+
+### Verify with OpenSSL
+
+```sh
+curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.0.0/checksums.txt
+curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.0.0/checksums.txt.sig
+curl -fsSLO https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/packaging/keys/kitsune-release-public.pem
+openssl dgst -sha256 -verify kitsune-release-public.pem \
+  -signature checksums.txt.sig checksums.txt
+```
+
+A valid signature prints `Verified OK`. OpenSSL's output is a DER sequence; do
+not ask it for the IEEE P1363 form.
+
+### Verify with .NET ECDsa on Windows
+
+PowerShell 7 (the version `install.ps1` requires):
+
+```powershell
+$key = [System.Security.Cryptography.ECDsa]::Create()
+$key.ImportFromPem((Get-Content -Raw .\kitsune-release-public.pem))
+$valid = $key.VerifyData(
+    [System.IO.File]::ReadAllBytes('checksums.txt'),
+    [System.IO.File]::ReadAllBytes('checksums.txt.sig'),
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence)
+if (-not $valid) { throw 'checksums.txt signature does not verify' }
+```
+
+`Rfc3279DerSequence` is required: the default
+`IeeeP1363FixedFieldConcatenation` expects a raw 64-byte `r || s` pair and
+rejects OpenSSL's DER signature.
+
+### Private key storage and rotation
+
+- Add or replace the secret from the private key file without printing it:
+  `gh secret set RELEASE_SIGNING_KEY < /secure/offline/release-signing-key.pem`.
+  Only maintainers with repository admin access can do this.
+- Keep two encrypted offline backups of the key, separate from the CI account.
+  Do not paste it into an issue, a chat, a commit, or a build log.
+- To rotate, generate a new P-256 keypair, commit the new public key, update the
+  secret, and cut a release. Each release installer pins the public key that was
+  current when it was built, so an old installer keeps verifying old releases
+  with the key in its own tag; moving forward requires the new release's
+  installer.
+- **Losing the key means no further releases can be signed with the pinned
+  key.** There is no recovery. Ship a new public key with a new installer
+  version (a minor release is enough), and tell users to fetch that installer
+  over a channel they already trust. Never publish an unsigned release as a
+  fallback.
 
 Docker images are published separately by `publish-server-image.yml`:
 `ghcr.io/foxred-cmd/kitsune-whisper-server:cpu` and `:gpu`, with
@@ -82,6 +155,15 @@ explicitly. It builds the GTK4 and GTK3 Clients, the Server bundle (when
 `.deb`, `.rpm`, and AppImage when their tools are present, then writes
 `checksums.txt`. Use `--no-server --no-wayland --no-deb --no-rpm --no-appimage`
 for a Client-only build.
+
+A manual publish must sign the same way CI does and upload the signature with
+the checksums:
+
+```sh
+scripts/sign-release-checksums.sh \
+  --key /secure/offline/release-signing-key.pem --checksums dist/checksums.txt
+gh release upload v1.0.0 dist/checksums.txt dist/checksums.txt.sig --clobber
+```
 
 Before tagging:
 
@@ -115,6 +197,8 @@ scripts/e2e-trust.sh --model small --report e2e-trust.md
       for GNOME Wayland, Windows, and a real CUDA host.
 - [ ] The artifacts install and dictate on clean Windows and Linux machines.
 - [ ] `checksums.txt` lists every published asset and both installer scripts.
+- [ ] `checksums.txt.sig` verifies against the committed public key with
+      OpenSSL, and the release is not published if it does not.
 - [ ] Documentation is current: install, configuration, pairing/revocation, LAN
       exposure, models, updates, and troubleshooting.
 - [ ] Docker smoke (optional, opt-in) passes for a packaging change.

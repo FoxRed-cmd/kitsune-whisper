@@ -18,7 +18,8 @@ name: Release
 #
 # The publish job also attaches install.sh (the Linux updater's verified asset)
 # and install.ps1 (the pinned Windows bootstrap), with checksums.txt covering
-# the whole release.
+# the whole release and checksums.txt.sig as its detached ECDSA P-256 /
+# SHA-256 signature. A release without a signature is never published.
 on:
   push:
     tags: ["v*"]
@@ -450,6 +451,28 @@ jobs:
           sha256sum kitsune-* install.sh install.ps1 > checksums.txt
           cat checksums.txt
 
+      # The private key is a repository secret with an offline backup; only
+      # the public key is committed (packaging/keys/kitsune-release-public.pem).
+      # An absent secret, a wrong key, or a failed signature fails the job here,
+      # before anything is uploaded.
+      - name: Sign the checksums
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_SIGNING_KEY:-}" ]]; then
+            echo "error: RELEASE_SIGNING_KEY is not set; refusing to publish unsigned artifacts" >&2
+            exit 1
+          fi
+          umask 077
+          key_file="$(mktemp)"
+          trap 'rm -f "$key_file"' EXIT
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$key_file"
+          scripts/sign-release-checksums.sh \
+            --key "$key_file" --checksums dist/checksums.txt
+          rm -f "$key_file"
+          trap - EXIT
+
       - uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
@@ -467,3 +490,4 @@ jobs:
             dist/install.sh
             dist/install.ps1
             dist/checksums.txt
+            dist/checksums.txt.sig
