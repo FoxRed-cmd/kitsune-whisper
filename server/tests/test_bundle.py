@@ -180,10 +180,13 @@ def test_layout_can_point_at_a_packaged_server_root(tmp_path: Path) -> None:
     assert paths.launcher == tmp_path / "home" / ".local" / "bin" / "kitsune-server"
 
 
-def test_windows_layout_uses_localappdata_and_a_cmd_launcher(tmp_path: Path) -> None:
+def test_windows_layout_uses_the_per_user_programs_directory(tmp_path: Path) -> None:
     paths = layout(tmp_path, "windows")
 
-    assert "AppData/Local" in paths.root.as_posix()
+    programs = tmp_path / "home" / "AppData" / "Local" / "Programs" / "kitsune-whisper"
+    assert paths.root == programs / "Server"
+    assert paths.bin_dir == programs / "bin"
+    assert paths.launcher == programs / "bin" / "kitsune-server.cmd"
     assert paths.launcher.name == "kitsune-server.cmd"
     assert paths.python.name == "python.exe"
     assert paths.pythonw.name == "pythonw.exe"

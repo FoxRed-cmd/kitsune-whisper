@@ -32,7 +32,7 @@ const (
 	// ChecksumsAsset is the release file that names every artifact's SHA-256.
 	ChecksumsAsset = "checksums.txt"
 	// DownloadLimit bounds one installer download. The Server bundle and the
-	// Windows setup are tens of megabytes; this leaves room without allowing a
+	// Windows Client are tens of megabytes; this leaves room without allowing a
 	// hostile response to fill the disk.
 	DownloadLimit = 512 << 20
 	// ChecksumLimit bounds checksums.txt.
@@ -198,12 +198,12 @@ func (s *Service) Check(ctx context.Context) (Info, error) {
 }
 
 // InstallerAsset is the release asset this platform can install. Windows runs
-// the per-user setup; Linux runs the same install.sh the release publishes.
+// the same install.ps1 the release publishes; Linux runs install.sh.
 func InstallerAsset(platform, arch string) (string, error) {
 	switch platform {
 	case "windows":
 		if arch == "amd64" {
-			return "kitsune-whisper_windows_amd64_setup.exe", nil
+			return "install.ps1", nil
 		}
 	case "linux":
 		if arch == "amd64" {
@@ -252,7 +252,13 @@ func (s *Service) Install(ctx context.Context, info Info) (string, error) {
 	if run == nil {
 		run = startDetached
 	}
-	if err := run(path, nil, launchEnv(s.opts.Platform, info.Tag)); err != nil {
+	var args []string
+	if s.opts.Platform == "windows" {
+		// The updater downloaded a script, not an executable: PowerShell runs
+		// it pinned to the release that was just verified.
+		args = []string{"-Version", info.Tag}
+	}
+	if err := run(path, args, launchEnv(s.opts.Platform, info.Tag)); err != nil {
 		return "", fmt.Errorf("update: launch %s: %w", path, err)
 	}
 	return path, nil
@@ -355,9 +361,8 @@ func (s *Service) downloadDir() string {
 	return filepath.Join(base, "kitsune-whisper", "updates")
 }
 
-// launchEnv pins the Linux installer to the release that was checked. The
-// Windows setup already carries its version and shows its own progress; it
-// stops the running Client and Server before replacing their files.
+// launchEnv pins the Linux installer to the release that was checked. Windows
+// passes the same tag as an argument because install.ps1 is a script.
 func launchEnv(platform, tag string) []string {
 	if platform == "windows" {
 		return nil

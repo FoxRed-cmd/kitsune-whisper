@@ -45,6 +45,23 @@ REMOVE_SERVER_DATA=0
 SERVER_OK=1
 TMP=""
 
+# -- runtime dependency identifiers ----------------------------------------
+# These identifiers are stable and machine-readable. The dependencies document
+# (#101) mirrors them and the release tests (#102) assert the two do not drift.
+DEP_GTK4="gtk4"
+DEP_WEBKITGTK="webkitgtk-6.0"
+DEP_ALSA="alsa"
+DEP_LIBX11="libx11"
+DEP_GLIBC_CLIENT="glibc-client"
+DEP_GLIBC_SERVER="glibc-server"
+DEP_WAYLAND_INJECTION="wayland-injection"
+
+# The Client is built on Ubuntu 24.04 and links the host's GTK/WebKit, so it
+# needs glibc 2.39. The Server ships a standalone Python runtime and runs on
+# the oldest supported distribution, Ubuntu 22.04 with glibc 2.35.
+GLIBC_CLIENT_FLOOR="2.39"
+GLIBC_SERVER_FLOOR="2.35"
+
 info() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -74,12 +91,13 @@ Usage: install.sh [options]
   --from DIR             install from release artifacts in DIR
   --force-config         overwrite an existing kitsune.yaml
   --dry-run              print the plan and change nothing
-  --uninstall            remove binaries and desktop entries; keep data
-  --uninstall --purge    also remove config, models, certificates, spool,
-                         logs, Devices, and wizard progress
+  --uninstall            remove binaries, bundle, registrations, menu and
+                         icons; keep config, models, pairing and logs
+  --uninstall --purge    also remove config, models, cache, state, logs,
+                         spool, wizard progress, and keyring tokens
   --remove-models        with --uninstall: delete downloaded models
   --remove-server-data   with --uninstall: delete certificates, Devices,
-                         the Server log, and its soft-stop marker
+                         logs, and soft-stop state
   -h, --help             show this help
 
 Environment: KITSUNE_VERSION, KITSUNE_ARTIFACTS_DIR
@@ -245,6 +263,109 @@ install_desktop_entry() {
   fi
 }
 
+# -- dependency reporting --------------------------------------------------
+#
+# These checks run after the selected binaries are in place. They only report:
+# a missing dependency never fails an install and never changes its status.
+# The README owns the package commands; this script deliberately prints none.
+
+find_ldconfig() {
+  if command -v ldconfig >/dev/null 2>&1; then
+    command -v ldconfig
+  elif [[ -x /sbin/ldconfig ]]; then
+    printf '%s\n' /sbin/ldconfig
+  else
+    return 1
+  fi
+}
+
+# KITSUNE_GLIBC_VERSION pins the detected version so tests do not depend on
+# the host. Users normally leave it unset.
+detect_glibc_version() {
+  if [[ -n "${KITSUNE_GLIBC_VERSION:-}" ]]; then
+    printf '%s\n' "$KITSUNE_GLIBC_VERSION"
+    return 0
+  fi
+  local version=""
+  if command -v getconf >/dev/null 2>&1; then
+    version="$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $NF}')"
+  fi
+  if [[ -z "$version" ]] && command -v ldd >/dev/null 2>&1; then
+    version="$(ldd --version 2>/dev/null | awk 'NR == 1 {print $NF}')"
+  fi
+  [[ -n "$version" ]] || return 1
+  printf '%s\n' "$version"
+}
+
+version_at_least() {
+  local have="$1" want="$2"
+  [[ -n "$have" && -n "$want" ]] || return 1
+  printf '%s\n%s\n' "$want" "$have" | sort -V -C 2>/dev/null
+}
+
+warn_dependency() {
+  local identifier="$1" detail="$2"
+  warn "dependency '$identifier' is missing: $detail See the README Dependencies section."
+}
+
+check_client_libraries() {
+  local ldconfig listing
+  ldconfig="$(find_ldconfig)" || return 0
+  listing="$("$ldconfig" -p 2>/dev/null || true)"
+  [[ -n "$listing" ]] || return 0
+
+  local checks=(
+    "$DEP_GTK4|libgtk-4.so.1|libgtk-4.so.1 was not found, so the Settings window falls back to the browser."
+    "$DEP_WEBKITGTK|libwebkitgtk-6.0.so.4|libwebkitgtk-6.0.so.4 was not found, so the Settings window falls back to the browser."
+    "$DEP_ALSA|libasound.so.2|libasound.so.2 was not found, so the Client cannot record audio."
+    "$DEP_LIBX11|libX11.so.6|libX11.so.6 was not found, so hotkeys and X11 injection will not load."
+  )
+  local entry identifier soname detail
+  for entry in "${checks[@]}"; do
+    IFS='|' read -r identifier soname detail <<< "$entry"
+    if ! grep -Fq -- "$soname" <<< "$listing"; then
+      warn_dependency "$identifier" "$detail"
+    fi
+  done
+}
+
+check_client_glibc() {
+  local version
+  version="$(detect_glibc_version)" || return 0
+  if version_at_least "$version" "$GLIBC_CLIENT_FLOOR"; then
+    return 0
+  fi
+  warn_dependency "$DEP_GLIBC_CLIENT" \
+    "this system has glibc $version, but the Client needs $GLIBC_CLIENT_FLOOR or newer."
+  if version_at_least "$version" "$GLIBC_SERVER_FLOOR"; then
+    warn "Only the Server can run on this system (glibc $version); install it with --server-only. See the README Dependencies section."
+  fi
+}
+
+check_server_glibc() {
+  local version
+  version="$(detect_glibc_version)" || return 0
+  if version_at_least "$version" "$GLIBC_SERVER_FLOOR"; then
+    return 0
+  fi
+  warn_dependency "$DEP_GLIBC_SERVER" \
+    "this system has glibc $version, but the Server needs $GLIBC_SERVER_FLOOR or newer."
+}
+
+check_injection_tool() {
+  local session="${XDG_SESSION_TYPE:-}"
+  if [[ -z "$session" && -n "${WAYLAND_DISPLAY:-}" ]]; then
+    session="wayland"
+  fi
+  # X11 injects through the internal XTEST path and needs no external tool.
+  [[ "$session" == "wayland" ]] || return 0
+  if command -v wtype >/dev/null 2>&1 || command -v ydotool >/dev/null 2>&1; then
+    return 0
+  fi
+  warn_dependency "$DEP_WAYLAND_INJECTION" \
+    "this Wayland session has neither wtype nor ydotool on PATH, so transcription will only reach the clipboard."
+}
+
 # -- uninstall -------------------------------------------------------------
 
 confirm() {
@@ -307,25 +428,49 @@ ask_what_to_delete() {
   fi
 }
 
-uninstall_all() {
-  ask_what_to_delete
-  info "Removing kitsune-whisper..."
+# remove_client_registration stops and forgets the login registration. The
+# unit and its hidden portal entry are removed even if the Client binary is
+# already gone, so no unit is left pointing at a removed executable.
+remove_client_registration() {
+  if [[ -x "$BIN_DIR/kitsune-client" ]]; then
+    "$BIN_DIR/kitsune-client" uninstall-autostart >/dev/null 2>&1 \
+      || warn "could not remove the Client autostart registration"
+  fi
+  rm -f "$SYSTEMD_DIR/kitsune-client.service" "$DESKTOP_FILE"
+}
+
+# remove_menu_entry removes the visible application-menu entry and its icons.
+remove_menu_entry() {
   if [[ -x "$BIN_DIR/kitsune-client" ]]; then
     "$BIN_DIR/kitsune-client" uninstall-desktop >/dev/null 2>&1 \
       || warn "could not remove the application-menu entry"
   fi
+  rm -f "$MENU_FILE" "$ICON_SVG" "$ICON_PNG"
+}
+
+# remove_server_registration stops and forgets the Server supervisor. The
+# launcher's own uninstall runs the supervisor cleanup; the unit and cached
+# task files are removed as a fallback when the launcher is already gone.
+remove_server_registration() {
   if [[ -x "$SERVER_LAUNCHER" ]]; then
     "$SERVER_LAUNCHER" uninstall >/dev/null 2>&1 \
       || warn "could not remove the Server bundle"
   fi
+  rm -f "$SYSTEMD_DIR/kitsune-server.service" "$CONFIG_DIR/kitsune-server-task.xml"
+  rm -rf "$SERVER_ROOT"
+}
+
+uninstall_all() {
+  ask_what_to_delete
+  info "Removing kitsune-whisper..."
+  remove_client_registration
+  remove_menu_entry
+  remove_server_registration
 
   if [[ "$REMOVE_SERVER_DATA" == 1 && "$PURGE" == 0 ]]; then
     reset_local_pairing
   fi
-  rm -f "$BIN_DIR/kitsune-client" "$SERVER_LAUNCHER" "$DESKTOP_FILE"
-  rm -f "$MENU_FILE" "$ICON_SVG" "$ICON_PNG"
-  rm -f "$SYSTEMD_DIR/kitsune-server.service"
-  rm -rf "$SERVER_ROOT"
+  rm -f "$BIN_DIR/kitsune-client" "$SERVER_LAUNCHER"
   rmdir "$LOCAL_LIB" 2>/dev/null || true
 
   if [[ "$REMOVE_MODELS" == 1 ]]; then
@@ -340,6 +485,9 @@ uninstall_all() {
   if [[ "$PURGE" == 1 ]]; then
     forget_keyring_tokens
     rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB" "$APP_DATA"
+    if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+      rm -f "$XDG_RUNTIME_DIR/kitsune-whisper.sock" "$XDG_RUNTIME_DIR/kitsune-whisper.lock"
+    fi
     info "kitsune-whisper purged (config, models, certificates, Devices, spool, logs, wizard)"
   else
     info "kitsune-whisper uninstalled (configuration, spool, wizard progress, and Device tokens kept)"
@@ -421,6 +569,16 @@ fi
 
 if [[ -x "$BIN_DIR/kitsune-client" ]]; then
   install_desktop_entry
+fi
+
+# Check the runtime surface now that the selected binaries are in place.
+if [[ "$INSTALL_CLIENT" == 1 ]]; then
+  check_client_libraries
+  check_client_glibc
+  check_injection_tool
+fi
+if [[ "$INSTALL_SERVER" == 1 && "$SERVER_OK" == 1 ]]; then
+  check_server_glibc
 fi
 
 if [[ "$SERVER_OK" == 0 ]]; then
