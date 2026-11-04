@@ -657,6 +657,21 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 
 	bootstrap := prepareTrust(ctx, cfg, so, logger)
 	cfg = bootstrap.cfg
+
+	// The Client owns the Local Server lifecycle. Start it before the shell's
+	// first health probe when the install and the Autostart mode permit it, so
+	// the probe can observe the Server coming up. A failure never blocks the
+	// window: it is logged and shown in the window, and the Server stays
+	// reported offline.
+	startupController := startup.Default(so.configPath)
+	localServer := localserver.Default()
+	launchErr := maybeStartLocalServer(
+		ctx, startupController.Status(), localServer, localServerReachable(cfg),
+	)
+	if launchErr != nil {
+		logger.Warning("Local Server: %v", launchErr)
+	}
+
 	adapters, err := buildAdapters(cfg, logger, bootstrap.manager)
 	if err != nil {
 		logger.Error("%v", err)
@@ -712,7 +727,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			serverService = servers.New(servers.Options{
 				Store:         bootstrap.store,
 				Tokens:        bootstrap.tokens,
-				LocalServer:   localserver.Default(),
+				LocalServer:   localServer,
 				ClientVersion: Version,
 			})
 		} else {
@@ -736,17 +751,18 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			clientLogPath = paths.LogFile()
 		}
 		sh = shell.New(shell.Options{
-			Runtime:        rt,
-			Desktop:        desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
-			Settings:       settingsService,
-			Servers:        serverService,
-			Wizard:         wizardService,
-			Spool:          newSpoolService(bootstrap.store, cfg, rt),
-			Startup:        startup.Default(so.configPath),
-			GnomeShortcuts: newGnomeShortcuts(),
-			LogPath:        clientLogPath,
-			ApplyConfig:    rt.Apply,
-			Send:           rt.Trigger,
+			Runtime:           rt,
+			Desktop:           desktopPort(wails.New(wails.Options{Version: Version, Logger: logger}), logger),
+			Settings:          settingsService,
+			Servers:           serverService,
+			Wizard:            wizardService,
+			Spool:             newSpoolService(bootstrap.store, cfg, rt),
+			Startup:           startupController,
+			ServerLaunchError: launchErr,
+			GnomeShortcuts:    newGnomeShortcuts(),
+			LogPath:           clientLogPath,
+			ApplyConfig:       rt.Apply,
+			Send:              rt.Trigger,
 			// The appearance screen previews the real pill on every edit.
 			PreviewIndicator: func(anchor string, offsetX, offsetY int) error {
 				return rt.PreviewIndicator(indicator.Placement{

@@ -403,6 +403,10 @@ type Options struct {
 	// CheckServer probes the active Server. The result is advisory and is
 	// rendered in the Tray and the Settings window. It is optional.
 	CheckServer func(context.Context) trust.Status
+	// ServerLaunchError is a launch-time failure to start the Local Server. Run
+	// shows it once the window exists, so the user sees why the Server is
+	// offline. It never stops the window from opening.
+	ServerLaunchError error
 	// CheckInterval is the slow health probe interval; 0 uses 30 seconds.
 	CheckInterval time.Duration
 	// RestartPollInterval is the delay between health probes after a Server
@@ -518,6 +522,14 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 		s.log.Warning("desktop shell is not available in this build; running headless")
 	} else {
 		s.open(s.opts.Desktop, hidden)
+	}
+
+	// A Local Server that launch could not start leaves the Server offline.
+	// Show the reason in the window instead of only in the log.
+	if s.opts.ServerLaunchError != nil {
+		s.pushMessages(nil, []string{
+			s.catalog().T("error.server.start", s.opts.ServerLaunchError.Error()),
+		})
 	}
 
 	go s.consume(updates)
