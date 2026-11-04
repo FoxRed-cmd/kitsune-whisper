@@ -522,7 +522,9 @@ function Install-Kitsune {
         Write-UninstallShim
         Register-UninstallEntry
         New-StartMenuShortcut
-        Write-WebView2Warning
+        if (-not $ServerOnly) {
+            Write-WebView2Warning
+        }
 
         Write-Step "installed to $InstallRoot"
         Write-Step 'nothing was started; the Server task is registered disabled'

@@ -252,11 +252,10 @@ a missing Evergreen Runtime produces a warning that points at the documented
 manual install. `install.ps1 -ClientOnly` and `install.ps1 -ServerOnly` select a
 single component. The uninstall entry is in **Apps & features**.
 
-The native Server bundle does not ship CUDA. On an NVIDIA host, Linux adds
-`--cuda`; on Windows, install `nvidia-cublas-cu12` into the bundle's `lib`
-directory as described in [`docs/install.md`](docs/install.md#windows). Without
-it the Server falls back to CPU. An existing CUDA directory survives an
-installer upgrade.
+The native Server bundle does not ship CUDA. On an NVIDIA host, install
+`nvidia-cublas-cu12` into the installed bundle's `lib` directory as described in
+[`docs/install.md`](docs/install.md#windows); without it the Server falls back to
+CPU. An existing CUDA directory survives a Windows installer upgrade.
 
 The Linux installer verifies every archive checksum, installs the Client, the
 native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**
