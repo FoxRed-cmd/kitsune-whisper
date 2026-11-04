@@ -1,9 +1,8 @@
 # Linux installer live check
 
 A manual, repeatable check of the all-in-one Linux installer
-(`install.sh`) and the `.deb` finisher. Run it on a disposable machine or with a
-backup of your user configuration; it installs user units and one system udev
-rule.
+(`install.sh`). Run it on a disposable machine or with a backup of your user
+configuration; it installs user units and one system udev rule.
 
 ## What it proves
 
@@ -50,31 +49,6 @@ Open the application menu and launch **kitsune-whisper**: Settings should appear
 with the fox icon in the window list and the Tray.
 
 Re-running `./install.sh --from dist` should not prompt for a password.
-
-## Package variants
-
-The same checks apply to the system packages and the AppImage:
-
-```sh
-# Fedora/RHEL
-sudo dnf install ./dist/kitsune-whisper-<version>-1.x86_64.rpm
-kitsune-whisper-setup
-rpm -q --requires kitsune-whisper     # gtk4, webkitgtk6.0
-
-# Debian/Ubuntu
-sudo apt install ./dist/kitsune-whisper_<version>_amd64.deb
-
-# AppImage (no system install)
-chmod +x dist/kitsune-whisper-<version>-x86_64.AppImage
-./dist/kitsune-whisper-<version>-x86_64.AppImage --version
-./dist/kitsune-whisper-<version>-x86_64.AppImage
-```
-
-For the AppImage, check that the bundled Server answers `/health` while the
-window is open, that `ydotool type "hello"` reaches a focused field, and that
-both children exit with the Client. The AppImage deliberately does not write
-the udev rule, so on a host without it the ydotoold child stays down and
-injection is clipboard-only.
 
 ## Dictation cycle
 

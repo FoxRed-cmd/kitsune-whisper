@@ -103,28 +103,3 @@ jobs:
               exit 1
             }
           }
-
-  packaging:
-    name: packaging (deb, rpm, appimage)
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: server
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: server/uv.lock
-
-      - name: Install rpmbuild and appimagetool
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rpm
-          sudo curl -fsSL -o /usr/local/bin/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          sudo chmod +x /usr/local/bin/appimagetool
-
-      - run: uv sync --frozen
-      - run: uv run pytest tests/test_installer.py
