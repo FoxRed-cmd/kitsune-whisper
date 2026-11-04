@@ -10,6 +10,7 @@ valid.
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -20,6 +21,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WINDOWS = REPO_ROOT / "packaging" / "windows"
 INSTALL_PS1 = REPO_ROOT / "install.ps1"
+RELEASE_PUBLIC_KEY = REPO_ROOT / "packaging" / "keys" / "kitsune-release-public.pem"
 BUILD_CLIENT = WINDOWS / "build-client.ps1"
 INNO_SCRIPT = WINDOWS / ("kitsune-whisper" + ".iss")
 BUILD_INSTALLER = WINDOWS / ("build-" + "installer.ps1")
@@ -37,6 +39,21 @@ INSTALL_ROOT = "'Programs\\kitsune-whisper'"
 
 def read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def embedded_public_key(source: str) -> str:
+    match = re.search(
+        r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None
+    return match.group(0).strip()
+
+
+def uninstall_shim(source: str) -> str:
+    """The standalone uninstaller the installer writes next to bin/."""
+    return source.split("$body = @'", 1)[1].split("'@", 1)[0]
 
 
 @pytest.fixture(scope="module")
@@ -84,10 +101,83 @@ def test_installer_downloads_and_verifies_both_archives(installer: str) -> None:
     # Local artifacts keep the installer testable and support an offline host.
     assert "KITSUNE_ARTIFACTS_DIR" in installer
     assert "-From" in installer
-    # Signature verification is deliberately #97's completion, not a stub here.
+
+
+def test_the_pinned_key_is_the_committed_release_key(installer: str) -> None:
+    assert embedded_public_key(installer) == read(RELEASE_PUBLIC_KEY).strip()
+
+
+def test_the_release_key_is_never_downloaded(installer: str) -> None:
+    key_function = installer.split("function Get-ReleasePublicKeyPem", 1)[1].split("function ", 1)[
+        0
+    ]
+    assert "return $ReleasePublicKeyPem" in key_function
+    assert "Invoke-WebRequest" not in key_function
+    assert "curl" not in key_function
+    # The environment override is explicitly a test seam, not a user option.
+    assert "installer test harness" in key_function
+
+
+def test_the_detached_signature_is_checked_with_dotnet_ecdsa(installer: str) -> None:
     assert "checksums.txt.sig" in installer
-    assert "ECDsa" in installer
-    assert "System.Security.Cryptography.ECDsa" not in installer
+    assert "[System.Security.Cryptography.ECDsa]::Create()" in installer
+    assert ".ImportFromPem(" in installer
+    # OpenSSL emits a DER ECDSA-Sig-Value; the .NET default is the raw P1363
+    # pair, so the format must be named explicitly.
+    assert "[System.Security.Cryptography.HashAlgorithmName]::SHA256" in installer
+    assert "[System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence" in installer
+    assert ".VerifyData(" in installer
+    assert "[System.IO.File]::ReadAllBytes(" in installer
+    assert "release signature verification failed" in installer
+
+
+def test_the_signature_is_checked_before_an_archive_is_downloaded_or_extracted(
+    installer: str,
+) -> None:
+    signature_check = installer.index("Assert-ReleaseSignature -ChecksumsPath")
+    asset_loop = installer.index("foreach ($asset in $assets)")
+    client_install = installer.index("Install-Client -Archive")
+    server_install = installer.index("Install-Server -Archive")
+    assert signature_check < asset_loop < client_install
+    assert signature_check < server_install
+    # The .sig is fetched next to checksums.txt, before the archive loop.
+    assert installer.index("$signature = Join-Path $Temp 'checksums.txt.sig'") < asset_loop
+    assert installer.index("$signature = Join-Path $Temp 'checksums.txt.sig'") < (
+        installer.index("Get-ReleaseAsset -Asset")
+    )
+
+
+def test_a_missing_or_tampered_signature_aborts_before_writing(installer: str) -> None:
+    assert "missing release signature" in installer
+    assert "release signature verification failed" in installer
+    # A local artifact directory is held to the same rule as a download.
+    assert "missing release signature: $signatureSource" in installer
+    signature = installer.split("function Assert-ReleaseSignature", 1)[1].split("function ", 1)[0]
+    assert "throw" in signature
+    assert "ImportFromPem" in signature
+    # The archives are only requested after the checksum file is trusted.
+    call = installer.index("Assert-ReleaseSignature -ChecksumsPath")
+    assert call < installer.index("Install-Client -Archive")
+    assert call < installer.index("Install-Server -Archive")
+
+
+def test_insecure_skips_only_the_signature_check(installer: str) -> None:
+    assert "[switch]$Insecure" in installer
+    assert "skipping the release signature check" in installer
+    # Insecure is an integrity opt-out, not a checksum opt-out.
+    assert "Assert-Checksum" in installer
+    assert "checksum mismatch" in installer
+    download_block = installer.split("# The signature covers checksums.txt", 1)[1].split(
+        "$assets = @()", 1
+    )[0]
+    insecure = download_block.split("if ($Insecure)", 1)[1].split("else", 1)[0]
+    assert "skipping the release signature check" in insecure
+    assert "Assert-ReleaseSignature" not in insecure
+    # The archive loop is outside the insecure branch and always asserts the
+    # checksum, so a tampered archive still aborts.
+    archive_loop = installer.split("foreach ($asset in $assets)", 1)[1]
+    assert "Get-ReleaseAsset" in archive_loop
+    assert "Assert-Checksum" in installer.split("function Get-ReleaseAsset", 1)[1]
 
 
 def test_apps_and_features_registers_a_working_uninstall_command(installer: str) -> None:
@@ -112,21 +202,90 @@ def test_apps_and_features_registers_a_working_uninstall_command(installer: str)
 
 
 def test_uninstall_shim_removes_our_files_and_keeps_user_data(installer: str) -> None:
-    shim = installer.split("$body = @'", 1)[1].split("'@", 1)[0]
+    shim = uninstall_shim(installer)
     assert "$PSScriptRoot" in shim
-    assert "$installRoot = $PSScriptRoot" in shim
+    assert "$installRoot = $PSScriptRoot" in shim or "InstallRoot" in shim
     assert "$uninstallKey" in shim
     assert "Remove-Item -LiteralPath $uninstallKey" in shim
     assert "uninstall-autostart" in shim
     assert "kitsune-server.cmd" in shim
     assert "schtasks.exe /Delete /TN 'kitsune-server'" in shim
     assert "schtasks.exe /Delete /TN 'kitsune-client'" in shim
+    # The cached task files and the HKCU Run fallback are removed even when the
+    # Client binary is already gone.
+    assert "autostart-task.xml" in shim
+    assert "Remove-ItemProperty" in shim
     assert "Remove-Item -LiteralPath $installRoot" in shim
     assert "configuration, models and pairing state were kept" in shim
-    # No interactive prompt, and purge boundaries stay with #97.
+    # The shim removes the whole install root, so a Client-only or Server-only
+    # tree needs no separate path.
+    assert "$installRoot" in shim
+    # No interactive prompt.
     assert "Read-Host" not in shim
-    assert "Purge" not in shim
     assert "Read-Host" not in installer
+
+
+def test_purge_and_partial_removals_match_the_linux_boundaries(installer: str) -> None:
+    shim = uninstall_shim(installer)
+    for switch in ("[switch]$Purge", "[switch]$RemoveModels", "[switch]$RemoveServerData"):
+        assert switch in shim, switch
+    # Uninstall removes the binaries, Server bundle, task registrations, menu
+    # shortcut, PATH entry and registry key. It keeps the data directories.
+    for removed in (
+        "Remove-Item -LiteralPath $installRoot",
+        "Remove-Item -LiteralPath $shortcut",
+        "Remove-Item -LiteralPath $uninstallKey",
+        "Remove-PathEntry",
+    ):
+        assert removed in shim, removed
+    # The default mode must not delete configuration, models, state or logs.
+    default_removal = shim.split("if ($Purge)", 1)[0]
+    assert "Remove-Item -LiteralPath $configDir" not in default_removal
+    assert "Remove-Item -LiteralPath $stateDir" not in default_removal
+    assert "Remove-Item -LiteralPath $modelDir" not in default_removal
+    # Purge removes every trace, including stored credentials.
+    purge = shim.split("if ($Purge)", 1)[1]
+    for removed in (
+        "$configDir",
+        "$stateDir",
+        "$modelDir",
+        "Remove-StoredCredentials",
+    ):
+        assert removed in purge, removed
+    assert "cmdkey" in shim
+    # --remove-server-data is narrower: certificates, Devices, logs and
+    # soft-stop state, not the Client cache or spool.
+    for server_data in (
+        "tls",
+        "devices.json",
+        "pairing.json",
+        "server.log",
+        "lifecycle.json",
+    ):
+        assert server_data in shim, server_data
+    assert "reset-local-pairing" in shim
+    # Removal never installs or removes packages, and never elevates.
+    lowered = shim.lower()
+    for forbidden in (
+        "sudo",
+        "runas",
+        "-verb ",
+        "winget",
+        "choco",
+        "scoop",
+        "msiexec",
+        "apt-get",
+        "dnf install",
+        "pacman",
+        "zypper",
+    ):
+        assert forbidden not in lowered, forbidden
+
+
+def test_purge_and_data_flags_require_uninstall(installer: str) -> None:
+    assert "only valid together with -Uninstall" in installer
+    for flag in ("$Purge", "$RemoveModels", "$RemoveServerData"):
+        assert flag in installer
 
 
 def test_user_path_is_extended_once_and_removed_on_uninstall(installer: str) -> None:
@@ -134,22 +293,68 @@ def test_user_path_is_extended_once_and_removed_on_uninstall(installer: str) -> 
     assert "SetEnvironmentVariable('Path'" in installer
     # Compare case-insensitively so the entry is never duplicated.
     assert "-ieq $BinDir" in installer
-    shim = installer.split("$body = @'", 1)[1].split("'@", 1)[0]
+    shim = uninstall_shim(installer)
     assert "-ine $bin" in shim
     assert "SetEnvironmentVariable('Path'" in shim
+    # Removing every duplicate, not just the first, is what makes the change
+    # reversible even when an older installer appended the entry twice.
+    assert "Where-Object { $_ -and ($_ -ine $bin) }" in shim
 
 
-def test_missing_webview2_only_warns_and_never_downloads(installer: str) -> None:
+def test_component_selection_installs_only_the_selected_tree(installer: str) -> None:
+    assert "[switch]$ClientOnly" in installer
+    assert "[switch]$ServerOnly" in installer
+    assert "'-ClientOnly and -ServerOnly are mutually exclusive'" in installer
+    # Neither flag means both components.
+    assert "if (-not $ServerOnly) {" in installer
+    assert "if (-not $ClientOnly) {" in installer
+    assert re.search(r"if \(-not \$ServerOnly\) \{\s*\$assets \+= \$ClientAsset", installer)
+    assert re.search(r"if \(-not \$ClientOnly\) \{\s*\$assets \+= \$ServerAsset", installer)
+    assert re.search(r"if \(-not \$ServerOnly\) \{\s*Install-Client", installer)
+    assert re.search(r"if \(-not \$ClientOnly\) \{\s*Install-Server", installer)
+    # A Server-only install must not create a Client configuration.
+    install_client = installer.split("function Install-Client", 1)[1].split("function ", 1)[0]
+    assert "Install-Config" in install_client
+    assert installer.count("Install-Config (") == 1
+    # The install plan names both components and what is skipped.
+    assert "client:    $clientPlan" in installer
+    assert "server:    $serverPlan" in installer
+    assert "'disabled'" in installer
+
+
+def test_missing_webview2_only_warns_for_a_client_install(installer: str) -> None:
     assert "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" in installer
     assert "Test-WebView2Installed" in installer
     assert "Write-Warning" in installer
     assert "WebView2" in installer
     assert "developer.microsoft.com/microsoft-edge/webview2" in installer
-    assert "docs/install.md#windows" in installer
+    # Warnings point at the README Dependencies section, the only place with
+    # package commands.
+    assert "README.md#dependencies" in installer
+    assert re.search(r"if \(-not \$ServerOnly\) \{\s*Write-WebView2Warning", installer)
     # No bootstrapper, no silent install, and no Microsoft download at all.
     assert "WebView2Setup" not in installer
     assert "MicrosoftEdgeWebView2" not in installer
     assert "/silent /install" not in installer
+    for forbidden in ("winget", "choco", "scoop", "msiexec", "Install-Package"):
+        assert forbidden not in installer.lower(), forbidden
+
+
+def test_other_windows_prerequisites_are_warned_about_after_install(
+    installer: str,
+) -> None:
+    assert "Write-DependencyWarning" in installer
+    assert "windows-64-bit" in installer
+    assert "windows-version" in installer
+    # Dependency reporting runs once the selected binaries are in place; a
+    # missing one never changes the exit status.
+    report = installer.rindex("Write-WindowsDependencyWarnings")
+    assert report > installer.index("Register-UninstallEntry")
+    assert report > installer.index("New-StartMenuShortcut")
+    function = installer.split("function Write-WindowsDependencyWarnings", 1)[1].split(
+        "function ", 1
+    )[0]
+    assert "exit 1" not in function
 
 
 def test_nothing_starts_at_logon_and_the_server_is_installed_no_start(
@@ -179,14 +384,34 @@ def test_the_installer_exposes_the_maintained_flags(installer: str) -> None:
     for flag in (
         "-Version",
         "-Uninstall",
+        "-Purge",
+        "-RemoveModels",
+        "-RemoveServerData",
         "-ClientOnly",
         "-ServerOnly",
         "-ForceConfig",
         "-DryRun",
         "-From",
+        "-Insecure",
     ):
         assert flag in installer, flag
     assert "KITSUNE_VERSION" in installer
+    # Every flag is described in the embedded help.
+    help_text = installer.split("<#", 1)[1].split("#>", 1)[0]
+    for flag in (
+        "-Version",
+        "-Uninstall",
+        "-Purge",
+        "-RemoveModels",
+        "-RemoveServerData",
+        "-ClientOnly",
+        "-ServerOnly",
+        "-ForceConfig",
+        "-DryRun",
+        "-From",
+        "-Insecure",
+    ):
+        assert flag in help_text, flag
     # Nothing to start after install, so nothing is launched in the Tray.
     assert "gui --hidden" not in installer
 
@@ -208,6 +433,9 @@ def test_release_workflow_publishes_scripts_and_archives_only() -> None:
     assert CLIENT_ASSET in text
     assert SERVER_ASSET in text
     assert "cp install.ps1 dist/install.ps1" in text
+    # The checksums the Windows installer pins are themselves signed.
+    assert "checksums.txt.sig" in text
+    assert "scripts/sign-release-checksums.sh" in text
 
 
 def test_ci_windows_job_parses_only_the_remaining_scripts() -> None:
