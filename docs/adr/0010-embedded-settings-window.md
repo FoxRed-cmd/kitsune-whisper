@@ -15,8 +15,8 @@ from embedded HTML/TS. The version is pinned exactly, because v3 is young and
 the UI boundary is kept narrow enough to replace the shell. On Windows this uses
 WebView2, bootstrapped per-user by the installer (no elevation). On Linux it
 uses GTK4 and WebKitGTK 6.0 by default, which the installer adds after one
-explicit `sudo` confirmation (the `.deb` declares them as dependencies;
-`install.sh` uses the distro package manager). A legacy GTK3 + WebKit2GTK 4.1
+explicit `sudo` confirmation (`install.sh` uses the distro package manager). A
+legacy GTK3 + WebKit2GTK 4.1
 build is published for older LTS distributions and selected by the installer.
 The same elevated step installs the `udev` `uaccess` rule for `/dev/uinput`, so
 Wayland text injection works through a bundled `ydotool` user service without

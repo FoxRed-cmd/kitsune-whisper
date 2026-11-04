@@ -49,10 +49,6 @@ Client's Local Server profile must use the same port; the installer writes both.
 `install.sh --cuda` on Linux. A GPU host without `nvidia-smi` is treated as
 CPU-only.
 
-**An AppImage will not start.** Make it executable (`chmod +x`), and use the
-legacy AppImage on hosts without GTK4/WebKitGTK 6.0. The AppImage does not
-install the `/dev/uinput` rule.
-
 ## Starting and the Tray
 
 **Nothing appears after login.** The Client starts hidden in the Tray; open
@@ -205,6 +201,5 @@ tokens. See [install.md](install.md#uninstall).
 
 Include the release (`kitsune-client --version`, `/health`), the platform and
 session type, the active profile, the exact command or click, and the copied
-diagnostics. For a packaging problem, say which artifact you installed (GTK4 or
-legacy, `.deb`/`.rpm`/AppImage, or the Windows setup) and whether it was a clean
-machine.
+diagnostics. For an installation problem, say which installer you used (the
+Linux one-liner or the Windows setup) and whether it was a clean machine.
