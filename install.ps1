@@ -167,8 +167,16 @@ function Get-ReleasePublicKeyPem {
     # pinned PEM above. The value is a path or the PEM text itself.
     $override = $env:KITSUNE_RELEASE_PUBLIC_KEY
     if ($override) {
-        if (Test-Path -LiteralPath $override -PathType Leaf) {
-            return Get-Content -LiteralPath $override -Raw
+        if ($override -match '-----BEGIN PUBLIC KEY-----') {
+            return $override
+        }
+        try {
+            if (Test-Path -LiteralPath $override -PathType Leaf) {
+                return Get-Content -LiteralPath $override -Raw
+            }
+        }
+        catch {
+            # Not a path and not PEM: let ImportFromPem report the bad key.
         }
         return $override
     }

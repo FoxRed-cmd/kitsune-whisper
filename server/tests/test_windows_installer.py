@@ -114,8 +114,10 @@ def test_the_release_key_is_never_downloaded(installer: str) -> None:
     assert "return $ReleasePublicKeyPem" in key_function
     assert "Invoke-WebRequest" not in key_function
     assert "curl" not in key_function
-    # The environment override is explicitly a test seam, not a user option.
+    # The environment override is explicitly a test seam, not a user option,
+    # and accepts either a path or the PEM text.
     assert "installer test harness" in key_function
+    assert "-----BEGIN PUBLIC KEY-----" in key_function
 
 
 def test_the_detached_signature_is_checked_with_dotnet_ecdsa(installer: str) -> None:
