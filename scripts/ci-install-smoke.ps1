@@ -82,7 +82,9 @@ function Get-NativeOutput {
         else { '' }
         Fail "$FilePath exited $($process.ExitCode): $err"
     }
-    return (Get-Content -LiteralPath $stdout -Raw).Trim()
+    $text = Get-Content -LiteralPath $stdout -Raw
+    if ($null -eq $text) { return '' }
+    return $text.Trim()
 }
 
 if (-not $env:LOCALAPPDATA) {

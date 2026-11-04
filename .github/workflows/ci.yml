@@ -157,7 +157,7 @@ jobs:
         run: |
           $version = (Get-Content VERSION -Raw).Trim()
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-          ./packaging/windows/build-client.ps1 -Version $version -Output dist/kitsune-client.exe
+          ./packaging/windows/build-client.ps1 -Version $version -Output dist/kitsune-client.exe -Console
           Copy-Item kitsune.example.yaml dist/
           Compress-Archive -Path dist/kitsune-client.exe, dist/kitsune.example.yaml `
             -DestinationPath "dist/kitsune-client_windows_amd64.zip" -Force
