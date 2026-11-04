@@ -192,7 +192,6 @@ type ServerLabels struct {
 	StartupModeClientHelp       string `json:"startupModeClientHelp"`
 	StartupModeServer           string `json:"startupModeServer"`
 	StartupModeServerHelp       string `json:"startupModeServerHelp"`
-	StartupUnavailable          string `json:"startupUnavailable"`
 
 	DiagnosticsTitle string `json:"diagnosticsTitle"`
 	DiagnosticsHelp  string `json:"diagnosticsHelp"`
@@ -523,7 +522,6 @@ func (s *Shell) serverLabels() ServerLabels {
 		StartupModeClientHelp:       catalog.T("startup.mode.clientHelp"),
 		StartupModeServer:           catalog.T("startup.mode.server"),
 		StartupModeServerHelp:       catalog.T("startup.mode.serverHelp"),
-		StartupUnavailable:          catalog.T("startup.unavailable"),
 
 		DiagnosticsTitle: catalog.T("diagnostics.title"),
 		DiagnosticsHelp:  catalog.T("diagnostics.help"),

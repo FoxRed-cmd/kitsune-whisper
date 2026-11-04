@@ -307,8 +307,9 @@ def run_server(
     processor = build_processor(config)
     app = create_app(
         config,
-        None,
-        processor,
+        # The ModelManager owns the loaded Transcriber; there is no fixed one.
+        transcriber=None,
+        processor=processor,
         cuda_device_count=cuda_devices,
         devices=devices,
         certificate=certificate,

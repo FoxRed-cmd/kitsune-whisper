@@ -318,7 +318,6 @@ var english = map[string]string{
 	"startup.mode.clientHelp":       "The Client starts hidden in the Tray; the local Server starts only when you ask it to.",
 	"startup.mode.server":           "Server only",
 	"startup.mode.serverHelp":       "Only the local Server starts, ready for other Clients.",
-	"startup.unavailable":           "Autostart needs an installed Client or local Server.",
 	"notice.startup.on":             "%s: autostart enabled.",
 	"notice.startup.off":            "Autostart disabled.",
 	"error.startup":                 "Could not change autostart: %s",

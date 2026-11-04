@@ -288,6 +288,7 @@ func (s *Service) View(data Data) View {
 		catalog = i18n.For(i18n.English)
 	}
 	state := s.State()
+	installed := s.installed()
 	labels := labelsFor(catalog)
 	view := View{
 		Enabled:        true,
@@ -295,7 +296,7 @@ func (s *Service) View(data Data) View {
 		Completed:      state.Completed,
 		SkippedAll:     state.SkippedAll,
 		Step:           state.Step,
-		StepCount:      len(AllSteps),
+		StepCount:      len(availableSteps(installed)),
 		Labels:         labels,
 		Version:        data.Version,
 		ProfileName:    profileName(data.Servers),
@@ -305,9 +306,9 @@ func (s *Service) View(data Data) View {
 		Hotkey:         data.Hotkey,
 		DeferredModel:  state.DeferredModel,
 	}
-	view.StepNumber = stepIndex(state.Step) + 1
+	view.StepNumber = availableStepNumber(state.Step, installed)
 	view.Progress = catalog.T("wizard.progress", view.StepNumber, view.StepCount)
-	view.Steps = stepViews(catalog, state, s.installed())
+	view.Steps = stepViews(catalog, state, installed)
 	view.ServerState = serverHealthLabel(catalog, data.Server)
 	view.ModelName, view.ModelState = ActiveModel(data)
 	if view.ModelState != "" {
@@ -435,6 +436,30 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		ErrorCUDAUnavailable: catalog.T("wizard.error.cudaUnavailable"),
 		ErrorNoProfile:       catalog.T("wizard.error.noProfile"),
 	}
+}
+
+// availableSteps are the steps this installation actually visits. The
+// progress count and position must describe that list, not AllSteps, or a
+// Client-only install would claim "step 4 of 7" on its last setup screen.
+func availableSteps(installed components.Set) []Step {
+	steps := make([]Step, 0, len(AllSteps))
+	for _, step := range AllSteps {
+		if stepAvailable(step, installed) {
+			steps = append(steps, step)
+		}
+	}
+	return steps
+}
+
+// availableStepNumber is the one-based position of step among availableSteps.
+// A step outside the flow (an old state file being normalized) reports 1.
+func availableStepNumber(step Step, installed components.Set) int {
+	for index, candidate := range availableSteps(installed) {
+		if candidate == step {
+			return index + 1
+		}
+	}
+	return 1
 }
 
 func stepViews(catalog i18n.Catalog, state State, installed components.Set) []StepView {

@@ -710,18 +710,37 @@ func startupHTML(view StartupView, labels ServerLabels) string {
 	return out.String()
 }
 
-// startupModeText returns the translated label and explanation of one mode.
-func startupModeText(labels ServerLabels, mode components.Mode) (label, help string) {
+// startupModeKeys maps an Autostart mode to its catalog keys. The rendered
+// selector and the change notice share this one mapping; each resolves the
+// keys through the translated table it already holds.
+func startupModeKeys(mode components.Mode) (labelKey, helpKey string) {
 	switch mode {
 	case components.ModeClientAndServer:
-		return labels.StartupModeClientServer, labels.StartupModeClientServerHelp
+		return "startup.mode.clientServer", "startup.mode.clientServerHelp"
 	case components.ModeClientOnly:
-		return labels.StartupModeClient, labels.StartupModeClientHelp
+		return "startup.mode.client", "startup.mode.clientHelp"
 	case components.ModeServerOnly:
-		return labels.StartupModeServer, labels.StartupModeServerHelp
+		return "startup.mode.server", "startup.mode.serverHelp"
 	default:
+		return "", ""
+	}
+}
+
+// startupModeText returns the translated label and explanation of one mode.
+func startupModeText(labels ServerLabels, mode components.Mode) (label, help string) {
+	labelKey, helpKey := startupModeKeys(mode)
+	if labelKey == "" {
 		return string(mode), ""
 	}
+	translated := map[string]string{
+		"startup.mode.clientServer":     labels.StartupModeClientServer,
+		"startup.mode.clientServerHelp": labels.StartupModeClientServerHelp,
+		"startup.mode.client":           labels.StartupModeClient,
+		"startup.mode.clientHelp":       labels.StartupModeClientHelp,
+		"startup.mode.server":           labels.StartupModeServer,
+		"startup.mode.serverHelp":       labels.StartupModeServerHelp,
+	}
+	return translated[labelKey], translated[helpKey]
 }
 
 // updatesHTML renders the release check and the verified installer action.
