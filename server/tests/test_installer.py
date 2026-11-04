@@ -10,10 +10,14 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
+import re
 import stat
 import subprocess
 import tarfile
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +25,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "install.sh"
+RELEASE_PUBLIC_KEY = REPO_ROOT / "packaging" / "keys" / "kitsune-release-public.pem"
 WAYLAND_BUILDER = REPO_ROOT / "scripts" / "build-wayland-tools.sh"
 
 HELP_FLAGS = (
@@ -28,13 +33,48 @@ HELP_FLAGS = (
     "--server-only",
     "--from",
     "--force-config",
+    "--force",
     "--dry-run",
     "--uninstall",
     "--purge",
     "--remove-models",
     "--remove-server-data",
+    "--version",
+    "--check",
+    "--insecure",
     "--help",
 )
+
+
+@dataclass(frozen=True)
+class ReleaseKey:
+    """A throwaway ECDSA P-256 keypair used to sign the fake artifact set."""
+
+    private: Path
+    public: Path
+
+
+def make_release_key(directory: Path) -> ReleaseKey:
+    directory.mkdir(parents=True, exist_ok=True)
+    private = directory / "private.pem"
+    public = directory / "public.pem"
+    subprocess.run(
+        ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(private)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["openssl", "ec", "-in", str(private), "-pubout", "-out", str(public)],
+        check=True,
+        capture_output=True,
+    )
+    return ReleaseKey(private=private, public=public)
+
+
+@pytest.fixture(scope="session")
+def release_key(tmp_path_factory: pytest.TempPathFactory) -> ReleaseKey:
+    return make_release_key(tmp_path_factory.mktemp("release-key"))
+
 
 RETIRED_FLAGS = (
     "--no-client",
@@ -48,6 +88,15 @@ RETIRED_FLAGS = (
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def tree_snapshot(root: Path) -> dict[str, str]:
+    """Every path under root with its content digest, for change-nothing checks."""
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        snapshot[relative] = digest(path) if path.is_file() else "<dir>"
+    return snapshot
 
 
 def write_tar(path: Path, files: dict[str, tuple[str, int]]) -> None:
@@ -66,18 +115,53 @@ def client_script() -> str:
 
 
 def server_runtime_script() -> str:
-    return '#!/bin/sh\necho "server: $*" >> "$CALL_LOG"\nexit ${FAKE_SERVER_EXIT:-0}\n'
+    return (
+        "#!/bin/sh\n"
+        'echo "server: $*" >> "$CALL_LOG"\n'
+        'if [ "${FAKE_SERVER_EXIT:-0}" != 0 ]; then exit "$FAKE_SERVER_EXIT"; fi\n'
+        # The real bootstrap.py leaves a launcher behind; the manifest records
+        # components from the installed tree, so the double must do the same.
+        'mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/kitsune-whisper/server"\n'
+        ': > "$HOME/.local/bin/kitsune-server"\n'
+        'chmod 0755 "$HOME/.local/bin/kitsune-server"\n'
+        "exit 0\n"
+    )
 
 
-def make_artifacts(tmp_path: Path, *, with_server: bool = False) -> Path:
-    """Build the artifact set the installer is allowed to consume.
+def sign_checksums(artifacts: Path, key: ReleaseKey) -> None:
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(key.private),
+            "-out",
+            str(artifacts / "checksums.txt.sig"),
+            str(artifacts / "checksums.txt"),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def make_artifacts(
+    tmp_path: Path,
+    key: ReleaseKey,
+    *,
+    with_server: bool = False,
+    version: str = "1.0.0",
+    name: str = "artifacts",
+) -> Path:
+    """Build and sign the artifact set the installer is allowed to consume.
 
     There is deliberately no Wayland helper archive: a request for one would
     fail the install, so a passing install proves none is fetched.
     """
-    artifacts = tmp_path / "artifacts"
+    artifacts = tmp_path / name
     artifacts.mkdir()
     template = "client:\n  hotkey: Ctrl+Shift+Space\n"
+    (artifacts / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     write_tar(
         artifacts / "kitsune-client_linux_amd64.tar.gz",
         {
@@ -90,15 +174,16 @@ def make_artifacts(tmp_path: Path, *, with_server: bool = False) -> Path:
             artifacts / "kitsune-server_linux_amd64.tar.gz",
             {
                 "bootstrap.py": ("import sys\n", 0o644),
-                "bundle.json": ('{"version": "0.1.0"}\n', 0o644),
+                "bundle.json": (f'{{"version": "{version}"}}\n', 0o644),
                 "lib/kitsune_server/__init__.py": ("", 0o644),
                 "runtime/bin/python3": (server_runtime_script(), 0o755),
             },
         )
     checksums = []
-    for archive in sorted(artifacts.iterdir()):
+    for archive in sorted(artifacts.glob("*.tar.gz")):
         checksums.append(f"{digest(archive)}  {archive.name}")
     (artifacts / "checksums.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+    sign_checksums(artifacts, key)
     return artifacts
 
 
@@ -127,7 +212,7 @@ def fake_commands(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def sandbox(tmp_path: Path) -> dict[str, Any]:
+def sandbox(tmp_path: Path, release_key: ReleaseKey) -> dict[str, Any]:
     home = tmp_path / "home"
     home.mkdir()
     fake_bin = fake_commands(tmp_path)
@@ -142,9 +227,11 @@ def sandbox(tmp_path: Path) -> dict[str, Any]:
         "CALL_LOG": str(tmp_path / "calls.log"),
         "SUDO_LOG": str(tmp_path / "sudo.log"),
         "SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
+        # Production pins the committed release key; tests pin a throwaway key.
+        "KITSUNE_RELEASE_PUBLIC_KEY": str(release_key.public),
     }
     (tmp_path / "runtime").mkdir()
-    return {"home": home, "env": env, "tmp": tmp_path}
+    return {"home": home, "env": env, "tmp": tmp_path, "release_key": release_key}
 
 
 def merged_env(sandbox: dict[str, Any], env: dict[str, str] | None) -> dict[str, str]:
@@ -191,6 +278,21 @@ def server_launcher(sandbox: dict[str, Any]) -> Path:
 
 def config_file(sandbox: dict[str, Any]) -> Path:
     return Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper" / "kitsune.yaml"
+
+
+def manifest_file(sandbox: dict[str, Any]) -> Path:
+    return Path(str(sandbox["env"]["XDG_STATE_HOME"])) / "kitsune-whisper" / "install.json"
+
+
+def read_manifest(sandbox: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(manifest_file(sandbox).read_text(encoding="utf-8"))
+
+
+def assert_nothing_installed(sandbox: dict[str, Any]) -> None:
+    home = Path(str(sandbox["home"]))
+    assert not (home / ".local").exists()
+    assert not manifest_file(sandbox).exists()
+    assert not config_file(sandbox).exists()
 
 
 def assert_nothing_privileged_ran(sandbox: dict[str, Any]) -> None:
@@ -279,7 +381,7 @@ def test_the_script_names_no_privileged_or_helper_step() -> None:
 
 
 def test_client_only_installs_the_client_and_stops_there(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
 
     completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
 
@@ -298,7 +400,7 @@ def test_client_only_installs_the_client_and_stops_there(sandbox, tmp_path):
 
 
 def test_server_only_installs_the_server_without_starting_it(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
     completed = run_installer(sandbox, "--server-only", "--from", str(artifacts))
 
@@ -316,7 +418,7 @@ def test_server_only_installs_the_server_without_starting_it(sandbox, tmp_path):
 
 
 def test_both_components_install_by_default(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
     completed = run_installer(sandbox, "--from", str(artifacts))
 
@@ -331,7 +433,7 @@ def test_both_components_install_by_default(sandbox, tmp_path):
 
 
 def test_client_only_and_server_only_are_mutually_exclusive(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
     completed = run_installer(sandbox, "--client-only", "--server-only", "--from", str(artifacts))
 
@@ -340,7 +442,7 @@ def test_client_only_and_server_only_are_mutually_exclusive(sandbox, tmp_path):
 
 
 def test_a_failed_server_install_is_reported(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
     completed = run_installer(
         sandbox,
@@ -354,7 +456,7 @@ def test_a_failed_server_install_is_reported(sandbox, tmp_path):
 
 
 def test_reinstall_keeps_an_existing_configuration(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
     config = config_file(sandbox)
     config.parent.mkdir(parents=True)
     config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
@@ -366,7 +468,7 @@ def test_reinstall_keeps_an_existing_configuration(sandbox, tmp_path):
 
 
 def test_force_config_overwrites_an_existing_configuration(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
     config = config_file(sandbox)
     config.parent.mkdir(parents=True)
     config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
@@ -378,7 +480,7 @@ def test_force_config_overwrites_an_existing_configuration(sandbox, tmp_path):
 
 
 def test_checksum_mismatch_stops_before_installing(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
     archive = artifacts / "kitsune-client_linux_amd64.tar.gz"
     archive.write_bytes(archive.read_bytes() + b"tampered")
 
@@ -386,14 +488,259 @@ def test_checksum_mismatch_stops_before_installing(sandbox, tmp_path):
 
     assert completed.returncode != 0
     assert "checksum" in completed.stderr.lower()
-    assert not client_binary(sandbox).exists()
+    assert_nothing_installed(sandbox)
+
+
+# -- release signature -----------------------------------------------------
+
+
+def test_the_pinned_key_is_the_committed_release_key() -> None:
+    source = INSTALL_SH.read_text(encoding="utf-8")
+    match = re.search(
+        r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----",
+        source,
+        re.DOTALL,
+    )
+    assert match is not None
+    assert match.group(0).strip() == RELEASE_PUBLIC_KEY.read_text(encoding="utf-8").strip()
+
+
+def test_a_valid_signature_allows_the_install(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "signature" in completed.stdout.lower()
+    assert client_binary(sandbox).is_file()
+
+
+def test_a_modified_checksums_file_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    checksums = artifacts / "checksums.txt"
+    checksums.write_text(checksums.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert "signature" in completed.stderr.lower()
+    assert_nothing_installed(sandbox)
+
+
+def test_a_missing_signature_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    (artifacts / "checksums.txt.sig").unlink()
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert ".sig" in completed.stderr
+    assert_nothing_installed(sandbox)
+
+
+def test_an_invalid_signature_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    (artifacts / "checksums.txt.sig").write_bytes(b"not a signature")
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert "signature" in completed.stderr.lower()
+    assert_nothing_installed(sandbox)
+
+
+def test_a_signature_from_another_key_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    sign_checksums(artifacts, make_release_key(tmp_path / "other-key"))
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert "signature" in completed.stderr.lower()
+    assert_nothing_installed(sandbox)
+
+
+def test_insecure_skips_only_the_signature_check(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    (artifacts / "checksums.txt.sig").unlink()
+
+    completed = run_installer(sandbox, "--client-only", "--insecure", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "insecure" in completed.stderr.lower()
+    assert client_binary(sandbox).is_file()
+
+    tampered = make_artifacts(tmp_path, sandbox["release_key"], name="tampered")
+    archive = tampered / "kitsune-client_linux_amd64.tar.gz"
+    archive.write_bytes(archive.read_bytes() + b"tampered")
+    rejected = run_installer(sandbox, "--client-only", "--insecure", "--from", str(tampered))
+
+    assert rejected.returncode != 0
+    assert "checksum" in rejected.stderr.lower()
+
+
+# -- manifest, version pinning, and the downgrade guard --------------------
+
+
+def test_manifest_records_version_components_and_timestamp(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True, version="1.2.3")
+
+    completed = run_installer(sandbox, "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = read_manifest(sandbox)
+    assert manifest["version"] == "1.2.3"
+    assert manifest["components"] == ["client", "server"]
+    timestamp = manifest["installed_at"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", timestamp)
+    datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+    assert str(manifest_file(sandbox)) in completed.stdout
+
+
+def test_version_flag_pins_the_manifest_version(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+
+    completed = run_installer(
+        sandbox, "--client-only", "--version", "2.0.0", "--from", str(artifacts)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "2.0.0"
+
+
+def test_reinstall_upgrades_in_place_and_keeps_configuration(sandbox, tmp_path):
+    older = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="older")
+    assert run_installer(sandbox, "--client-only", "--from", str(older)).returncode == 0
+    config = config_file(sandbox)
+    config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
+
+    newer = make_artifacts(tmp_path, sandbox["release_key"], version="1.1.0", name="newer")
+    completed = run_installer(sandbox, "--client-only", "--from", str(newer))
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "1.1.0"
+    assert "Alt+Space" in config.read_text(encoding="utf-8")
+
+
+def test_reinstalling_the_same_version_is_allowed(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "1.0.0"
+
+
+def test_downgrade_is_refused_without_force_and_allowed_with_force(sandbox, tmp_path):
+    newer = make_artifacts(tmp_path, sandbox["release_key"], version="2.0.0", name="newer")
+    assert run_installer(sandbox, "--client-only", "--from", str(newer)).returncode == 0
+
+    older = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="older")
+    refused = run_installer(sandbox, "--client-only", "--from", str(older))
+
+    assert refused.returncode != 0
+    assert "downgrade" in refused.stderr.lower()
+    assert read_manifest(sandbox)["version"] == "2.0.0"
+
+    forced = run_installer(sandbox, "--client-only", "--force", "--from", str(older))
+
+    assert forced.returncode == 0, forced.stderr
+    assert read_manifest(sandbox)["version"] == "1.0.0"
+
+
+def test_force_does_not_overwrite_configuration(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
+    config = config_file(sandbox)
+    config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--client-only", "--force", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Alt+Space" in config.read_text(encoding="utf-8")
+
+
+def test_an_unknown_local_version_skips_the_guard_and_says_so(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+    (artifacts / "VERSION").unlink()
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "cannot determine" in completed.stderr.lower()
+    assert read_manifest(sandbox)["version"] == "unknown"
+
+
+def test_a_local_version_falls_back_to_the_server_bundle_manifest(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True, version="3.2.1")
+    (artifacts / "VERSION").unlink()
+
+    completed = run_installer(sandbox, "--server-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "3.2.1"
+
+
+# -- check mode ------------------------------------------------------------
+
+
+def test_check_reports_versions_and_changes_nothing(sandbox, tmp_path):
+    available = make_artifacts(tmp_path, sandbox["release_key"], version="1.1.0", name="available")
+
+    before_install = run_installer(sandbox, "--check", "--from", str(available))
+
+    assert before_install.returncode == 0, before_install.stderr
+    assert "not installed" in before_install.stdout.lower()
+    assert "1.1.0" in before_install.stdout
+    assert_nothing_installed(sandbox)
+
+    installed = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="installed")
+    assert run_installer(sandbox, "--client-only", "--from", str(installed)).returncode == 0
+
+    snapshot = tree_snapshot(tmp_path)
+    checked = run_installer(sandbox, "--check", "--from", str(available))
+
+    assert checked.returncode == 0, checked.stderr
+    assert "1.0.0" in checked.stdout
+    assert "1.1.0" in checked.stdout
+    assert "client" in checked.stdout
+    assert tree_snapshot(tmp_path) == snapshot
+
+
+def test_check_works_when_the_script_is_piped(sandbox, tmp_path):
+    installed = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="installed")
+    assert run_installer(sandbox, "--client-only", "--from", str(installed)).returncode == 0
+    available = make_artifacts(tmp_path, sandbox["release_key"], version="1.1.0", name="available")
+
+    completed = run_piped(sandbox, "--check", "--from", str(available))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "1.0.0" in completed.stdout
+    assert "1.1.0" in completed.stdout
+
+
+def test_check_resolves_the_latest_release_tag(sandbox):
+    fake_bin = Path(str(sandbox["env"]["PATH"]).split(os.pathsep)[0])
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        '#!/bin/sh\nprintf \'{"tag_name": "v4.5.6"}\\n\'\n',
+        encoding="utf-8",
+    )
+    fake_curl.chmod(0o755)
+
+    completed = run_installer(sandbox, "--check")
+
+    assert completed.returncode == 0, completed.stderr
+    assert "4.5.6" in completed.stdout
+    assert_nothing_installed(sandbox)
 
 
 # -- dry run and piped invocations ----------------------------------------
 
 
 def test_dry_run_prints_the_plan_and_changes_nothing(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
     completed = run_installer(sandbox, "--dry-run", "--from", str(artifacts))
 
@@ -406,7 +753,7 @@ def test_dry_run_prints_the_plan_and_changes_nothing(sandbox, tmp_path):
 
 
 def test_dry_run_works_when_the_script_is_piped(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
     completed = run_piped(sandbox, "--dry-run", "--from", str(artifacts))
 
@@ -417,7 +764,7 @@ def test_dry_run_works_when_the_script_is_piped(sandbox, tmp_path):
 
 
 def test_a_component_can_be_installed_through_a_pipe(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
 
     completed = run_piped(sandbox, "--client-only", "--from", str(artifacts))
 
@@ -429,7 +776,7 @@ def test_a_component_can_be_installed_through_a_pipe(sandbox, tmp_path):
 
 
 def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
     assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
     home = Path(str(sandbox["home"]))
     config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper"
@@ -461,7 +808,7 @@ def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
 
 
 def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
     assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
     config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper"
     cache = Path(str(sandbox["env"]["XDG_CACHE_HOME"])) / "kitsune-whisper"

@@ -14,6 +14,14 @@ set -euo pipefail
 
 REPO="FoxRed-cmd/kitsune-whisper"
 VERSION="${KITSUNE_VERSION:-latest}"
+
+# The release key that signs checksums.txt. It is the same PEM committed at
+# packaging/keys/kitsune-release-public.pem; pinning it here means a compromised
+# download host cannot substitute both the checksums and their signature.
+RELEASE_PUBLIC_KEY_PEM='-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGh5umJxHjCLuQS4EVIkydw0zrLKU
+f+HckG02s6mF/HzNPpGCLIZ6RBotAeC5KTfg6B0mmMnLopxnc1WKln/kYQ==
+-----END PUBLIC KEY-----'
 BIN_DIR="$HOME/.local/bin"
 LOCAL_LIB="$HOME/.local/lib/kitsune-whisper"
 SERVER_ROOT="$LOCAL_LIB/server"
@@ -27,6 +35,7 @@ CONFIG_DIR="$CONFIG_ROOT/kitsune-whisper"
 CONFIG="$CONFIG_DIR/kitsune.yaml"
 CACHE_DIR="$CACHE_ROOT/kitsune-whisper"
 STATE_DIR="$STATE_ROOT/kitsune-whisper"
+MANIFEST="$STATE_DIR/install.json"
 SYSTEMD_DIR="$CONFIG_ROOT/systemd/user"
 DESKTOP_FILE="$DATA_ROOT/applications/io.github.FoxRed-cmd.kitsune-whisper.desktop"
 MENU_FILE="$DATA_ROOT/applications/kitsune-whisper.desktop"
@@ -37,7 +46,11 @@ FROM_DIR="${KITSUNE_ARTIFACTS_DIR:-}"
 CLIENT_ONLY=0
 SERVER_ONLY=0
 DRY_RUN=0
+FORCE=0
 FORCE_CONFIG=0
+CHECK=0
+INSECURE=0
+AVAILABLE_VERSION=""
 UNINSTALL=0
 PURGE=0
 REMOVE_MODELS=0
@@ -72,8 +85,14 @@ Usage: install.sh [options]
                          (neither flag installs both)
 
   --from DIR             install from release artifacts in DIR
+  --version VERSION      install VERSION instead of the latest release
+  --force                allow a downgrade or an overwrite of the manifest
   --force-config         overwrite an existing kitsune.yaml
+  --check                report installed versus available versions and
+                         installed components; change nothing
   --dry-run              print the plan and change nothing
+  --insecure             skip the release signature check; local development
+                         only, never for a download you do not control
   --uninstall            remove binaries and desktop entries; keep data
   --uninstall --purge    also remove config, models, certificates, spool,
                          logs, Devices, and wizard progress
@@ -82,7 +101,11 @@ Usage: install.sh [options]
                          the Server log, and its soft-stop marker
   -h, --help             show this help
 
+The install manifest is written to
+${XDG_STATE_HOME:-$HOME/.local/state}/kitsune-whisper/install.json.
+
 Environment: KITSUNE_VERSION, KITSUNE_ARTIFACTS_DIR
+Requires: tar, sha256sum, awk, openssl (openssl is not needed with --insecure)
 EOF
 }
 
@@ -90,12 +113,20 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --client-only) CLIENT_ONLY=1 ;;
     --server-only) SERVER_ONLY=1 ;;
+    --force) FORCE=1 ;;
     --force-config) FORCE_CONFIG=1 ;;
+    --check) CHECK=1 ;;
     --dry-run) DRY_RUN=1 ;;
+    --insecure) INSECURE=1 ;;
     --uninstall) UNINSTALL=1 ;;
     --purge) PURGE=1 ;;
     --remove-models) REMOVE_MODELS=1 ;;
     --remove-server-data) REMOVE_SERVER_DATA=1 ;;
+    --version)
+      shift
+      [[ $# -gt 0 ]] || die "--version needs a version"
+      VERSION="$1"
+      ;;
     --from)
       shift
       [[ $# -gt 0 ]] || die "--from needs a directory"
@@ -109,6 +140,14 @@ done
 
 if [[ "$CLIENT_ONLY" == 1 && "$SERVER_ONLY" == 1 ]]; then
   die "--client-only and --server-only are mutually exclusive"
+fi
+
+if [[ "$CHECK" == 1 && "$UNINSTALL" == 1 ]]; then
+  die "--check and --uninstall are mutually exclusive"
+fi
+
+if [[ "$VERSION" != "latest" && ! "$VERSION" =~ ^v?[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]; then
+  die "invalid version: $VERSION"
 fi
 
 INSTALL_CLIENT=1
@@ -148,14 +187,19 @@ fi
 fetch_asset() {
   local asset="$1"
   if [[ -n "$FROM_DIR" ]]; then
-    [[ -f "$FROM_DIR/$asset" ]] || die "missing release artifact: $FROM_DIR/$asset"
+    if [[ ! -f "$FROM_DIR/$asset" ]]; then
+      if [[ "$asset" == *.sig ]]; then
+        die "missing release signature: $FROM_DIR/$asset"
+      fi
+      die "missing release artifact: $FROM_DIR/$asset"
+    fi
     cp "$FROM_DIR/$asset" "$TMP/$asset"
   else
     local base
     if [[ "$VERSION" == "latest" ]]; then
       base="https://github.com/$REPO/releases/latest/download"
     else
-      base="https://github.com/$REPO/releases/download/$VERSION"
+      base="https://github.com/$REPO/releases/download/$(release_tag)"
     fi
     info "Downloading $asset ($VERSION)..."
     curl -fsSL "$base/$asset" -o "$TMP/$asset" \
@@ -172,6 +216,210 @@ verify_asset() {
   if [[ "$actual" != "$expected" ]]; then
     die "checksum mismatch for $asset (expected $expected, got $actual)"
   fi
+}
+
+# release_public_key_file exposes the pinned key as a file for openssl. The
+# KITSUNE_RELEASE_PUBLIC_KEY override exists only so the installer tests can
+# sign their fixture artifacts with a throwaway key; production pins the PEM
+# above. The override accepts either a path or the PEM text itself.
+release_public_key_file() {
+  local override="${KITSUNE_RELEASE_PUBLIC_KEY:-}"
+  local key_file="$TMP/release-public-key.pem"
+  if [[ -n "$override" ]]; then
+    if [[ -f "$override" ]]; then
+      cp "$override" "$key_file"
+    else
+      printf '%s\n' "$override" > "$key_file"
+    fi
+  else
+    printf '%s\n' "$RELEASE_PUBLIC_KEY_PEM" > "$key_file"
+  fi
+  printf '%s' "$key_file"
+}
+
+verify_release_signature() {
+  local key_file
+  key_file="$(release_public_key_file)"
+  if ! openssl dgst -sha256 -verify "$key_file" \
+      -signature "$TMP/checksums.txt.sig" "$TMP/checksums.txt" >/dev/null 2>&1; then
+    die "release signature verification failed: checksums.txt.sig does not match the pinned release key"
+  fi
+  info "Verified the release signature for checksums.txt"
+}
+
+# -- versions and the install manifest ------------------------------------
+
+release_tag() {
+  if [[ "$VERSION" == v* ]]; then
+    printf '%s' "$VERSION"
+  else
+    printf 'v%s' "$VERSION"
+  fi
+}
+
+version_number() {
+  local value="$1"
+  printf '%s' "${value#v}"
+}
+
+version_less() {
+  local first
+  [[ "$1" != "$2" ]] || return 1
+  first="$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)"
+  [[ "$first" == "$1" ]]
+}
+
+json_escape() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+# local_artifact_version reads the version an offline artifact directory
+# carries: a VERSION file, or the Server bundle's own manifest.
+local_artifact_version() {
+  local archive="$FROM_DIR/kitsune-server_linux_${ARCH}.tar.gz"
+  if [[ -f "$FROM_DIR/VERSION" ]]; then
+    tr -d '[:space:]' < "$FROM_DIR/VERSION" | head -n 1
+    return 0
+  fi
+  if [[ -f "$archive" ]] && command -v tar >/dev/null 2>&1; then
+    tar -xOf "$archive" bundle.json 2>/dev/null \
+      | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+      | head -n 1 || true
+  fi
+}
+
+# resolve_latest_version asks the GitHub release API for the tag, then falls
+# back to the redirect target of /releases/latest when the API is rate-limited.
+resolve_latest_version() {
+  local tag="" effective=""
+  command -v curl >/dev/null 2>&1 || return 0
+  tag="$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null \
+    | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n 1 || true)"
+  if [[ -z "$tag" ]]; then
+    effective="$(curl -fsSL --max-time 15 -o /dev/null -w '%{url_effective}' \
+      "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
+    if [[ "$effective" == *"/tag/"* ]]; then
+      tag="${effective##*/tag/}"
+    fi
+  fi
+  version_number "$tag"
+}
+
+resolve_available_version() {
+  local candidate=""
+  if [[ "$VERSION" != "latest" ]]; then
+    candidate="$(version_number "$VERSION")"
+  elif [[ -n "$FROM_DIR" ]]; then
+    candidate="$(local_artifact_version || true)"
+  else
+    candidate="$(resolve_latest_version || true)"
+  fi
+  AVAILABLE_VERSION="$(printf '%s' "$candidate" | tr -d '[:space:]')"
+}
+
+explain_unknown_version() {
+  if [[ -n "$AVAILABLE_VERSION" ]]; then
+    return 0
+  fi
+  if [[ -n "$FROM_DIR" ]]; then
+    warn "cannot determine the artifact version in $FROM_DIR; the downgrade guard is disabled"
+  else
+    warn "could not resolve the latest release version; the downgrade guard is disabled"
+  fi
+}
+
+manifest_version() {
+  [[ -f "$MANIFEST" ]] || return 0
+  sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$MANIFEST" \
+    | head -n 1
+}
+
+manifest_components() {
+  [[ -f "$MANIFEST" ]] || return 0
+  sed -n 's/.*"components"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p' "$MANIFEST" \
+    | tr -d '"' | tr ',' ' ' | tr -s ' ' | sed 's/^ *//; s/ *$//'
+}
+
+detect_components() {
+  local found=""
+  if [[ -x "$BIN_DIR/kitsune-client" ]]; then
+    found="client"
+  fi
+  if [[ -x "$SERVER_LAUNCHER" ]]; then
+    found="${found:+$found, }server"
+  fi
+  printf '%s' "$found"
+}
+
+guard_downgrade() {
+  local installed
+  installed="$(manifest_version)"
+  [[ -n "$installed" && "$installed" != "unknown" ]] || return 0
+  [[ -n "$AVAILABLE_VERSION" ]] || return 0
+  if version_less "$AVAILABLE_VERSION" "$installed"; then
+    if [[ "$FORCE" == 1 ]]; then
+      info "Downgrading from $installed to $AVAILABLE_VERSION (--force)"
+    else
+      die "refusing to downgrade from $installed to $AVAILABLE_VERSION; pass --force to install it anyway"
+    fi
+  fi
+}
+
+write_manifest() {
+  local json_components="" installed_at tmp_manifest
+  if [[ -x "$BIN_DIR/kitsune-client" ]]; then
+    json_components='"client"'
+  fi
+  if [[ -x "$SERVER_LAUNCHER" ]]; then
+    json_components="${json_components:+$json_components, }\"server\""
+  fi
+  [[ -n "$json_components" ]] || return 0
+
+  installed_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  install -d -m 0700 "$STATE_DIR"
+  tmp_manifest="$MANIFEST.tmp"
+  printf '{\n  "version": "%s",\n  "components": [%s],\n  "installed_at": "%s"\n}\n' \
+    "$(json_escape "${AVAILABLE_VERSION:-unknown}")" "$json_components" "$installed_at" \
+    > "$tmp_manifest"
+  chmod 0600 "$tmp_manifest"
+  mv "$tmp_manifest" "$MANIFEST"
+  info "Wrote the install manifest to $MANIFEST"
+}
+
+check_status() {
+  local installed components
+  resolve_available_version
+  installed="$(manifest_version)"
+  components="$(manifest_components)"
+  if [[ -z "$installed" ]]; then
+    if [[ -x "$BIN_DIR/kitsune-client" || -x "$SERVER_LAUNCHER" ]]; then
+      installed="unknown (no install manifest)"
+    else
+      installed="not installed"
+    fi
+  fi
+  if [[ -z "$components" ]]; then
+    components="$(detect_components)"
+  fi
+  [[ -n "$components" ]] || components="none"
+
+  info "Manifest: $MANIFEST"
+  info "Installed: $installed"
+  info "Components: $components"
+  if [[ -n "$AVAILABLE_VERSION" ]]; then
+    info "Available: $AVAILABLE_VERSION"
+  else
+    info "Available: unknown"
+  fi
+  explain_unknown_version
+  exit 0
 }
 
 # -- install steps ---------------------------------------------------------
@@ -355,6 +603,10 @@ if [[ "$UNINSTALL" == 1 ]]; then
   exit 0
 fi
 
+if [[ "$CHECK" == 1 ]]; then
+  check_status
+fi
+
 if [[ "$DRY_RUN" == 1 ]]; then
   info "kitsune-whisper install plan"
   if [[ "$INSTALL_CLIENT" == 1 ]]; then
@@ -368,6 +620,7 @@ if [[ "$DRY_RUN" == 1 ]]; then
     info "  Server:  skipped (--client-only)"
   fi
   info "  Config:  $CONFIG"
+  info "  Manifest: $MANIFEST"
   if [[ -n "$FROM_DIR" ]]; then
     info "  Source:  $FROM_DIR"
   else
@@ -380,6 +633,9 @@ fi
 need tar
 need sha256sum
 need awk
+if [[ "$INSECURE" != 1 ]]; then
+  need openssl
+fi
 if [[ -z "$FROM_DIR" ]]; then
   need curl
 fi
@@ -395,7 +651,22 @@ if [[ "$INSTALL_SERVER" == 1 ]]; then
   ASSETS+=("kitsune-server_linux_${ARCH}.tar.gz")
 fi
 
+# The signature covers checksums.txt, so verify it before trusting any digest
+# and before fetching or extracting an archive.
 fetch_asset checksums.txt
+if [[ "$INSECURE" == 1 ]]; then
+  warn "--insecure: skipping the release signature check"
+else
+  fetch_asset checksums.txt.sig
+  verify_release_signature
+fi
+
+# Resolve the version now, before any archive is unpacked, so a downgrade is
+# refused before it can replace a working install.
+resolve_available_version
+explain_unknown_version
+guard_downgrade
+
 for asset in "${ASSETS[@]}"; do
   fetch_asset "$asset"
 done
@@ -423,6 +694,8 @@ if [[ -x "$BIN_DIR/kitsune-client" ]]; then
   install_desktop_entry
 fi
 
+write_manifest
+
 if [[ "$SERVER_OK" == 0 ]]; then
   warn "the selected components were not all installed"
   exit 1
@@ -435,4 +708,8 @@ fi
 if [[ "$INSTALL_SERVER" == 1 ]]; then
   info "  Server: $SERVER_LAUNCHER (registered, not started)"
 fi
+if [[ -n "$AVAILABLE_VERSION" ]]; then
+  info "  Version: $AVAILABLE_VERSION"
+fi
+info "  Manifest: $MANIFEST"
 info "  Nothing was started or enabled; launch kitsune-whisper from the application menu."
