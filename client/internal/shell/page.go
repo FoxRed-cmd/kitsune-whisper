@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
@@ -658,9 +659,11 @@ func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
 	return state
 }
 
-// startupHTML renders the login autostart switches for the Client and the
-// local Server. The switches are plain toggles: Go enables or disables the
-// platform registration and re-renders the section.
+// startupHTML renders the single autostart switch with the mode selector
+// beneath it. The switch is the only state the platform holds; while it is off
+// the selector is read-only and shows the default mode, so turning the switch
+// on starts exactly what the user sees. Go changes the registrations and
+// re-renders the section.
 func startupHTML(view StartupView, labels ServerLabels) string {
 	if !view.Available {
 		return ""
@@ -669,14 +672,56 @@ func startupHTML(view StartupView, labels ServerLabels) string {
 	out.WriteString(`<section class="group" data-section="startup">`)
 	out.WriteString(`<h2>` + pageIcon("power") + escape(labels.StartupTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.StartupHelp) + `</p>`)
-	writeStartupToggle(&out, "client", labels.StartupClient, labels.StartupClientHelp, view.Client, true)
-	help := labels.StartupServerHelp
-	if !view.ServerAvailable {
-		help = labels.StartupServerUnavailable
+	out.WriteString(`<div class="field field-toggle" data-startup="switch">`)
+	out.WriteString(`<label class="toggle-row" for="startup-enabled">`)
+	out.WriteString(`<span class="toggle-label">` + escape(labels.StartupSwitch) + `</span>`)
+	input := `<input type="checkbox" class="switch" id="startup-enabled" data-startup-switch`
+	if view.Enabled {
+		input += ` checked`
 	}
-	writeStartupToggle(&out, "server", labels.StartupServer, help, view.Server, view.ServerAvailable)
+	out.WriteString(input + `>`)
+	out.WriteString(`</label>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`<fieldset class="field startup-modes" data-startup-modes`)
+	if !view.Enabled {
+		out.WriteString(` disabled`)
+	}
+	out.WriteString(`>`)
+	out.WriteString(`<legend>` + escape(labels.StartupMode) + `</legend>`)
+	for _, mode := range view.Modes {
+		label, help := startupModeText(labels, mode)
+		out.WriteString(`<label class="startup-mode">`)
+		input := `<input type="radio" name="startup-mode" value="` + escape(string(mode)) +
+			`" data-startup-mode="` + escape(string(mode)) + `"`
+		if mode == view.Mode {
+			input += ` checked`
+		}
+		out.WriteString(input + `>`)
+		out.WriteString(`<span class="startup-mode-text">`)
+		out.WriteString(`<span class="startup-mode-label">` + escape(label) + `</span>`)
+		if help != "" {
+			out.WriteString(`<span class="help">` + escape(help) + `</span>`)
+		}
+		out.WriteString(`</span>`)
+		out.WriteString(`</label>`)
+	}
+	out.WriteString(`</fieldset>`)
 	out.WriteString(`</section>`)
 	return out.String()
+}
+
+// startupModeText returns the translated label and explanation of one mode.
+func startupModeText(labels ServerLabels, mode components.Mode) (label, help string) {
+	switch mode {
+	case components.ModeClientAndServer:
+		return labels.StartupModeClientServer, labels.StartupModeClientServerHelp
+	case components.ModeClientOnly:
+		return labels.StartupModeClient, labels.StartupModeClientHelp
+	case components.ModeServerOnly:
+		return labels.StartupModeServer, labels.StartupModeServerHelp
+	default:
+		return string(mode), ""
+	}
 }
 
 // updatesHTML renders the release check and the verified installer action.
@@ -727,24 +772,6 @@ func updatesHTML(view UpdateView) string {
 	}
 	out.WriteString(`</section>`)
 	return out.String()
-}
-
-func writeStartupToggle(out *strings.Builder, component, label, help string, enabled, available bool) {
-	out.WriteString(`<div class="field field-toggle" data-startup="` + escape(component) + `">`)
-	out.WriteString(`<label class="toggle-row" for="startup-` + escape(component) + `">`)
-	out.WriteString(`<span class="toggle-label">` + escape(label) + `</span>`)
-	input := `<input type="checkbox" class="switch" id="startup-` + escape(component) +
-		`" data-startup-component="` + escape(component) + `"`
-	if enabled {
-		input += ` checked`
-	}
-	if !available {
-		input += ` disabled`
-	}
-	out.WriteString(input + `>`)
-	out.WriteString(`</label>`)
-	out.WriteString(`<p class="help">` + escape(help) + `</p>`)
-	out.WriteString(`</div>`)
 }
 
 // serverSettingsHTML renders the active Server's effective configuration as an
@@ -1287,6 +1314,15 @@ const pageHTML = `<!doctype html>
   .field .switch:checked { background-color:var(--accent); border-color:transparent; background-position:18px center; }
   .field .switch:disabled { opacity:.55; cursor:not-allowed; }
   .field-toggle { padding:10px 0; }
+  .startup-modes { border:0; margin:6px 0 0; padding:0; min-width:0; }
+  .startup-modes legend { padding:0; margin-bottom:5px; color:var(--muted); font-size:11.5px; }
+  .startup-modes:disabled { opacity:.55; }
+  .startup-mode { display:flex; align-items:flex-start; gap:8px; padding:7px 0; border-top:1px solid var(--line-soft); cursor:pointer; }
+  .startup-mode:first-of-type { border-top:none; }
+  .startup-mode input { margin:3px 0 0; flex:0 0 auto; accent-color:var(--accent); }
+  .startup-mode-text { display:flex; flex-direction:column; gap:2px; }
+  .startup-mode-label { font-weight:600; font-size:12.5px; }
+  .startup-mode .help { margin:0; }
   /* A miniature screen: the filled bar sits where the pill will appear. */
   .position-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; max-width:260px; margin-top:2px; }
   .position-preset { position:relative; height:44px; padding:0; border:1px solid var(--line); border-radius:7px; background:var(--card-2); color:var(--muted); }
@@ -1557,7 +1593,7 @@ const pageHTML = `<!doctype html>
   // Controls that save themselves on change follow Go: restoring a rejected
   // choice would contradict the failure message.
   function liveControl(el) {
-    if (el.closest("[data-startup-component], [data-log-level]")) return true;
+    if (el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")) return true;
     return el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
   }
   function markRendered(root) {
@@ -2083,15 +2119,28 @@ const pageHTML = `<!doctype html>
     if (!target || !target.closest) return;
     if (target.closest("[data-indicator-preview]")) syncIndicatorPreview(false);
   });
+  function startupSelectedMode() {
+    var checked = document.querySelector("[data-startup-mode]:checked");
+    return checked ? checked.dataset.startupMode : "";
+  }
   document.addEventListener("change", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
-    var startup = target.closest("[data-startup-component]");
-    if (startup) {
+    var startupSwitch = target.closest("[data-startup-switch]");
+    if (startupSwitch) {
       sendIntent({
         action: "set-startup",
-        component: startup.dataset.startupComponent,
-        enabled: startup.checked
+        enabled: startupSwitch.checked,
+        mode: startupSelectedMode()
+      });
+      return;
+    }
+    var startupMode = target.closest("[data-startup-mode]");
+    if (startupMode) {
+      sendIntent({
+        action: "set-startup",
+        enabled: true,
+        mode: startupMode.dataset.startupMode
       });
       return;
     }

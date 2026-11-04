@@ -91,3 +91,18 @@ func Uninstall(env Environment) error {
 		return fmt.Errorf("autostart: unsupported platform %q", env.GOOS)
 	}
 }
+
+// Remove deletes the login registration without stopping a Client that is
+// already running. The Autostart switch uses it when the user turns autostart
+// off, so the window that handled the click stays open. Uninstall, by contrast,
+// also stops a Client running under the unit.
+func Remove(env Environment) error {
+	switch env.GOOS {
+	case "windows":
+		return uninstallWindows(env)
+	case "linux":
+		return removeLinuxLogin(env)
+	default:
+		return fmt.Errorf("autostart: unsupported platform %q", env.GOOS)
+	}
+}

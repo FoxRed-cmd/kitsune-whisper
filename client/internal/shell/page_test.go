@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
@@ -386,21 +387,31 @@ func TestServersHTMLShowsASoftStoppedServerAsStopped(t *testing.T) {
 	}
 }
 
-func TestPageRendersStartupSwitchesAndTheUnifiedLogLevel(t *testing.T) {
+func TestPageRendersTheAutostartSwitchAndModeSelector(t *testing.T) {
 	view := managementView()
-	view.Startup = shell.StartupView{Available: true, Client: true, Server: false, ServerAvailable: false}
+	view.Startup = shell.StartupView{
+		Available:       true,
+		Enabled:         false,
+		Mode:            components.ModeClientAndServer,
+		Modes:           []components.Mode{components.ModeClientAndServer, components.ModeClientOnly},
+		ClientInstalled: true,
+		ServerInstalled: true,
+	}
 	view.Labels.StartupTitle = "Autostart"
-	view.Labels.StartupHelp = "Start both at login."
-	view.Labels.StartupClient = "Client at login"
-	view.Labels.StartupClientHelp = "Starts hidden."
-	view.Labels.StartupServer = "Server at login"
-	view.Labels.StartupServerHelp = "Starts the local Server."
+	view.Labels.StartupHelp = "Choose what starts at login."
+	view.Labels.StartupSwitch = "Start at login"
+	view.Labels.StartupMode = "What starts at login"
+	view.Labels.StartupModeClientServer = "Client and Server"
+	view.Labels.StartupModeClientServerHelp = "Starts both."
+	view.Labels.StartupModeClient = "Client only"
+	view.Labels.StartupModeClientHelp = "The Server starts on demand."
 	page := shell.SettingsHTML(view)
 	for _, want := range []string{
 		`data-section="startup"`,
 		`data-nav="startup"`,
-		`data-startup-component="client"`,
-		`data-startup-component="server"`,
+		`data-startup-switch`,
+		`data-startup-mode="client-server"`,
+		`data-startup-mode="client"`,
 		`id="diagnostics-log-level"`,
 		`<option value="info" selected>Info</option>`,
 	} {
@@ -408,14 +419,36 @@ func TestPageRendersStartupSwitchesAndTheUnifiedLogLevel(t *testing.T) {
 			t.Errorf("page missing %q", want)
 		}
 	}
-	if !strings.Contains(page, `id="startup-client" data-startup-component="client" checked`) {
-		t.Error("the Client switch is not enabled")
+	if strings.Contains(page, `data-startup-switch checked`) {
+		t.Error("a fresh install must render autostart switched off")
 	}
-	if strings.Contains(page, `id="startup-client" data-startup-component="client" checked disabled`) {
-		t.Error("the Client switch is disabled even though the controller manages it")
+	if !strings.Contains(page, `data-startup-modes disabled`) {
+		t.Error("the mode selector must be read-only while autostart is off")
 	}
-	if !strings.Contains(page, `id="startup-server" data-startup-component="server" disabled`) {
-		t.Error("the unavailable Server switch is not disabled")
+	if !strings.Contains(page, `value="client-server" data-startup-mode="client-server" checked`) {
+		t.Error("the selector does not default to Client and Server")
+	}
+	if strings.Contains(page, `data-startup-mode="server"`) {
+		t.Error("the page offers a mode whose Component is not installed")
+	}
+
+	view.Startup.Enabled = true
+	page = shell.SettingsHTML(view)
+	if !strings.Contains(page, `data-startup-switch checked`) {
+		t.Error("an enabled autostart switch is not checked")
+	}
+	if strings.Contains(page, `data-startup-modes disabled`) {
+		t.Error("the mode selector must be editable while autostart is on")
+	}
+
+	const hostile = `</fieldset><img src=x onerror="alert(1)">&`
+	view.Labels.StartupModeClient = hostile
+	page = shell.SettingsHTML(view)
+	if strings.Contains(page, hostile) {
+		t.Fatal("the mode selector embedded an unescaped label")
+	}
+	if !strings.Contains(page, "&lt;/fieldset&gt;") {
+		t.Fatal("the mode selector did not escape the label's angle brackets")
 	}
 }
 
@@ -599,7 +632,7 @@ func TestPageKeepsUnsavedEditsAcrossASettingsRefresh(t *testing.T) {
 		"function restoreFocus(",
 		// A control that saves itself on change must follow Go, not the page.
 		`el.dataset.path === "client.ui_language"`,
-		`el.closest("[data-startup-component], [data-log-level]")`,
+		`el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page does not keep unsaved edits: missing %q", want)
