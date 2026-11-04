@@ -68,7 +68,7 @@ nothing is downloaded at install time or when the Server starts.
 | Server launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-server.cmd` |
 | Server bundle | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\Server` |
 | Uninstall shim | — (re-run `install.sh`) | `%LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1` |
-| Install manifest | `~/.local/state/kitsune-whisper/install.json` | — (Apps & Features reads the bundle or Client version) |
+| Install manifest | `~/.local/state/kitsune-whisper/install.json` | `%LOCALAPPDATA%\kitsune-whisper\install.json` |
 | Config | `${XDG_CONFIG_HOME:-~/.config}/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
 | State (TLS, Devices, pairing, logs, soft-stop) | `${XDG_STATE_HOME:-~/.local/state}/kitsune-whisper` | `%LOCALAPPDATA%\kitsune-whisper` |
@@ -129,26 +129,26 @@ paths, config, manifest, and source it would use, plus
 
 ### Upgrade, manifest, check, and downgrade
 
-Every successful Linux install writes
-`~/.local/state/kitsune-whisper/install.json` with the version, the Components,
-and a UTC timestamp. Re-running the installer:
+Every successful install writes an install manifest with the version, the
+Components, and a UTC timestamp: Linux at
+`~/.local/state/kitsune-whisper/install.json`, Windows at
+`%LOCALAPPDATA%\kitsune-whisper\install.json`. Re-running the installer:
 
 - replaces the selected binaries and the Server bundle;
 - keeps `kitsune.yaml`, models, Devices, TLS certificates, Spool, and wizard
   progress;
-- runs `kitsune-client migrate-config` on an existing config, which adds new
-  keys and keeps the previous file as `kitsune.yaml.bak`;
-- refuses to install a version lower than the manifest's unless `--force` is
-  passed. If the available version cannot be resolved, it warns and disables
-  the downgrade guard.
+- runs `kitsune-client migrate-config` on an existing config on Linux, which
+  adds new keys and keeps the previous file as `kitsune.yaml.bak`;
+- refuses to install a version lower than the manifest's unless `--force` /
+  `-Force` is passed. An equal version is allowed. If the available version
+  cannot be resolved, it warns and disables the downgrade guard.
 
-Use `--check` to compare installed and available versions. There is no
-package-manager upgrade path; this manifest and the installer are the
-bookkeeping.
-
-Windows has no install manifest and no check mode. **Apps & Features** takes
-the display version from the Server bundle's `bundle.json` or the Client
-binary's file version, and the Windows script does not block a downgrade.
+Use `--check` (Linux) or `-Check` (Windows) to compare installed and available
+versions and list the installed Components; it changes nothing and works
+non-interactively. The available version comes from `--version` / `-Version`, a
+local `--from` / `-From` directory's `VERSION` file or Server `bundle.json`, or
+the release tag. There is no package-manager upgrade path; the manifest and the
+installer are the bookkeeping.
 
 ### Signature verification
 
@@ -206,6 +206,8 @@ and never registers autostart.
 | `-ClientOnly` | Install only the Client. |
 | `-ServerOnly` | Install only the Server bundle and launcher. |
 | `-From DIR` | Install from release artifacts already in `DIR` (offline). |
+| `-Check` | Report installed and available versions plus the installed Components; change nothing. |
+| `-Force` | Permit installing a version older than the recorded one. |
 | `-ForceConfig` | Overwrite an existing `kitsune.yaml` with the template. |
 | `-DryRun` | Print the plan and change nothing. |
 | `-Insecure` | Skip the release signature check (local development only; checksums are still verified). |
@@ -232,7 +234,9 @@ uninstall.ps1
 
 It adds `bin` to the **user** `PATH` once and writes an **Apps & Features**
 entry (`HKCU`, no elevation). It also creates a Start Menu shortcut that runs
-`kitsune-client.exe gui`.
+`kitsune-client.exe gui`. The install manifest is
+`%LOCALAPPDATA%\kitsune-whisper\install.json`; **Apps & Features** reads its
+version.
 
 Nothing is started and nothing is enabled:
 
@@ -254,9 +258,10 @@ restores it after replacing the bundle, so a CUDA-backed install keeps working
 across an upgrade. Installing the optional runtime is documented in
 [dependencies.md](dependencies.md#optional-cuda-runtime).
 
-The Windows script has no manifest, check mode, or downgrade guard. **Apps &
-Features** shows the version that was installed; re-running a lower release is
-allowed.
+Re-running a lower release is refused unless `-Force` is passed; an equal
+version is allowed. `-Check` reports the manifest path, the installed and
+available versions, and the installed Components without changing anything.
+**Apps & Features** shows the version recorded in the manifest.
 
 ### Offline installs with `-From`
 

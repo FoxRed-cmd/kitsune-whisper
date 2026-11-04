@@ -52,12 +52,15 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 ```
 
 ```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -Check
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -DryRun
 ```
 
-`--check` reports the installed and available versions plus the installed
-components, and changes nothing. `--dry-run` prints the install plan and changes
-nothing. To pass any flag through a piped Windows one-liner, wrap it as
+`--check` / `-Check` reports the installed and available versions plus the
+installed components, and changes nothing. `--dry-run` / `-DryRun` prints the
+install plan and changes nothing. Re-running the installer upgrades in place; a
+lower version is refused unless `--force` / `-Force` is passed. To pass any flag
+through a piped Windows one-liner, wrap it as
 `& ([scriptblock]::Create((irm …))) -Flag`.
 
 After installing the Client, launch **kitsune-whisper** from the application

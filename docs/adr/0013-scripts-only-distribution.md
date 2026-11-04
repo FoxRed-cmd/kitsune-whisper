@@ -50,8 +50,10 @@ is created with its logon trigger explicitly disabled, so it never fires by
 itself while `schtasks /Run` still works. That disabled supervisor registration
 is not an **Autostart registration**; it does not start anything at login.
 Starting the Local Server is the Client's job: on launch, when a Local Server is
-installed, the Client starts it. Autostart is a single off-by-default switch
-with three modes — Client + Server, Client only, Server only. Turning it on
+installed and the current mode permits it, the Client starts it. In Client only
+mode the Client starts no Local Server at launch, because the user chose to run
+only the Client. Autostart is a single off-by-default switch with three modes —
+Client + Server, Client only, Server only. Turning it on
 writes and enables the corresponding autostart entry; turning it off removes
 that entry rather than leaving a disabled login entry behind. The Server's
 supervisor registration may remain in place so that on-demand start still works,

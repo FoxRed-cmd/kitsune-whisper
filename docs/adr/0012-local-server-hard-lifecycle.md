@@ -54,8 +54,10 @@ A Remote Server uses the existing `/admin/stop`, `/admin/start`, and
   stops.
 - Start and Restart need the Server's supervisor registration. Without it the
   Client reports an actionable error instead of leaving the daemon down.
-- Login autostart stays a separate Startup switch. Stopping the Server does not
-  remove its supervisor registration, so it may return at the next login unless
-  the Autostart mode excludes the Server.
+- Stopping the Server does not remove its supervisor registration. Autostart is
+  a single off-by-default switch with three modes — Client and Server, Client
+  only, or Server only — as [ADR 0013](0013-scripts-only-distribution.md)
+  describes. A Server outside the selected mode stays registered for on-demand
+  start but is not an Autostart registration, so it does not return at login.
 - Docker deployments are Remote Server profiles and keep the soft-stop flag on
   the state volume.
