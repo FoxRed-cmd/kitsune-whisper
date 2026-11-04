@@ -1,7 +1,8 @@
 """Command-line entry point: serve the Server or manage its native bundle.
 
 The same binary serves the supervisor (``start`` in the foreground) and the
-user (``install``/``uninstall``/``status``/``stop``/``restart``). Release CI
+user (``install``/``uninstall``/``status``/``stop``/``restart``/``enable``/
+``disable``). Release CI
 assembles the bundle artifact with ``bundle build``. Command failures print one
 actionable ``error: ...`` line and exit non-zero; configuration errors keep the
 ``config error: ...`` form shared with startup.
@@ -107,6 +108,16 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=STOP_EPILOG,
     )
     commands.add_parser("restart", parents=[common], help="restart the supervised Server")
+    commands.add_parser(
+        "enable",
+        parents=[common],
+        help="enable the Server at login without starting it",
+    )
+    commands.add_parser(
+        "disable",
+        parents=[common],
+        help="disable the Server at login without stopping it",
+    )
     devices = commands.add_parser(
         "devices",
         parents=[common],
@@ -160,6 +171,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--wheelhouse",
         metavar="DIR",
         help="directory of resolved wheels installed into --runtime-url",
+    )
+    install.add_argument(
+        "--no-start",
+        action="store_true",
+        help="install the bundle and register the supervisor without enabling or starting it",
     )
     commands.add_parser(
         "uninstall",
@@ -322,6 +338,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _supervised(supervisor.stop, "stopped")
     if command == "restart":
         return _supervised(supervisor.restart, "restarted")
+    if command == "enable":
+        return _supervised(supervisor.enable, "autostart enabled")
+    if command == "disable":
+        return _supervised(supervisor.disable, "autostart disabled")
     if command == "devices":
         return _devices(args)
     if command == "pair":
@@ -392,7 +412,11 @@ def _status(args: argparse.Namespace) -> int:
     except supervisor.SupervisorError as exc:
         return _fail(str(exc))
     if state.installed:
-        print(f"supervisor: installed ({state.detail or 'unknown'})")
+        autostart = "enabled" if state.enabled else "disabled"
+        process = "running" if state.running else "stopped"
+        print(
+            f"supervisor: installed ({state.detail or 'unknown'}, autostart {autostart}, {process})"
+        )
     else:
         print("supervisor: not installed")
     print(f"config:     {_supervised_config_path(layout, manifest, args)}")
@@ -550,6 +574,7 @@ def _install(args: argparse.Namespace) -> int:
 
     from .server import PortInUseError
 
+    no_start = bool(getattr(args, "no_start", False))
     env = _supervisor_env()
     if env.os_name not in ("linux", "windows"):
         return _fail(f"the Server bundle supports Linux and Windows, not {env.os_name!r}")
@@ -562,13 +587,15 @@ def _install(args: argparse.Namespace) -> int:
     )
     try:
         # Replacing the runtime under a running Server would leave it serving
-        # from deleted files; stop it so the enable/start below picks up the
-        # upgrade. Both stops are idempotent, so no running check is needed.
+        # from deleted files; stop it so a later start picks up the upgrade.
+        # Both stops are idempotent, so no running check is needed.
         if supervisor.status(env).installed:
             supervisor.stop(env)
         # The same check startup runs, so a taken port fails the install with
-        # its actionable message instead of at the next login.
-        _port_check(config.bind_host, config.port)
+        # its actionable message instead of at the next login. A no-start
+        # install never binds the port, so it does not need the preflight.
+        if not no_start:
+            _port_check(config.bind_host, config.port)
         manifest = installer.install(source)
         supervisor.install(
             env,
@@ -577,10 +604,19 @@ def _install(args: argparse.Namespace) -> int:
                 user=_current_user(),
             ),
         )
+        if not no_start:
+            supervisor.enable(env)
+            supervisor.start(env)
     except (bundle.BundleError, supervisor.SupervisorError, PortInUseError, OSError) as exc:
         return _fail(str(exc))
     print(f"installed kitsune-server {manifest.version} to {layout.root}")
-    print(f"supervisor: registered to start at login ({env.os_name})")
+    if no_start:
+        print(
+            f"supervisor: registered but not started ({env.os_name}); "
+            "run 'kitsune-server start' to launch it"
+        )
+    else:
+        print(f"supervisor: registered, enabled, and started ({env.os_name})")
     print(f"configuration: {config_file or _default_config_path(layout)}")
     return 0
 

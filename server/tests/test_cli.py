@@ -46,7 +46,12 @@ def wiring(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Wiring:
             "XDG_CONFIG_HOME": str(home / ".config"),
         },
     )
-    runner = FakeRunner({"is-active": CommandResult(0, "active\n")})
+    runner = FakeRunner(
+        {
+            "is-active": CommandResult(0, "active\n"),
+            "is-enabled": CommandResult(0, "enabled\n"),
+        }
+    )
     environment = supervisor.Environment(
         os_name="linux",
         config_home=home / ".config",
@@ -151,7 +156,7 @@ def test_start_reports_a_port_conflict_as_one_actionable_line(
     assert len(error.strip().splitlines()) == 1
 
 
-def test_install_lays_out_the_bundle_and_enables_the_supervisor(
+def test_install_lays_out_the_bundle_and_starts_the_supervisor(
     tmp_path: Path, wiring: Wiring, capsys: pytest.CaptureFixture[str]
 ) -> None:
     artifact = build_artifact(tmp_path)
@@ -163,10 +168,66 @@ def test_install_lays_out_the_bundle_and_enables_the_supervisor(
     assert supervisor.unit_path(
         supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
     ).is_file()
-    assert any("enable --now" in command for command in wiring.runner.commands)
+    assert f"systemctl --user enable {supervisor.UNIT_NAME}" in wiring.runner.commands
+    assert f"systemctl --user start {supervisor.UNIT_NAME}" in wiring.runner.commands
     output = capsys.readouterr().out
     assert "installed" in output
     assert __version__ in output
+
+
+def test_install_without_start_leaves_a_registered_but_disabled_unit(
+    tmp_path: Path,
+    wiring: Wiring,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = build_artifact(tmp_path)
+    wiring.runner.replies["is-active"] = CommandResult(3, "inactive\n")
+    wiring.runner.replies["is-enabled"] = CommandResult(1, "disabled\n")
+    started: list[object] = []
+    monkeypatch.setattr(
+        server, "run_server", lambda *args, **kwargs: started.append((args, kwargs))
+    )
+
+    assert cli.main([*install_args(artifact), "--no-start"]) == 0
+
+    assert started == []
+    assert supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).is_file()
+    commands = wiring.runner.commands
+    assert f"systemctl --user enable {supervisor.UNIT_NAME}" not in commands
+    assert f"systemctl --user start {supervisor.UNIT_NAME}" not in commands
+    output = capsys.readouterr().out
+    assert "installed" in output
+
+    assert cli.main(["status"]) == 0
+    status = capsys.readouterr().out
+    assert "stopped" in status
+    assert "disabled" in status
+
+
+def test_install_no_start_does_not_require_a_free_port(
+    tmp_path: Path,
+    wiring: Wiring,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = build_artifact(tmp_path)
+
+    def taken(host: str, port: int) -> None:
+        raise server.PortInUseError(
+            f"server.port {port} is already in use on {host}; change server.port"
+        )
+
+    monkeypatch.setattr(cli, "_port_check", taken)
+
+    assert cli.main([*install_args(artifact), "--no-start"]) == 0
+
+    assert "installed" in capsys.readouterr().out
+    assert supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).is_file()
 
 
 def test_install_stops_a_running_server_before_replacing_the_bundle(
@@ -182,10 +243,20 @@ def test_install_stops_a_running_server_before_replacing_the_bundle(
     stop = f"systemctl --user stop {supervisor.UNIT_NAME}"
     assert stop in commands
     stop_index = commands.index(stop)
-    enable_index = next(
-        index for index, command in enumerate(commands) if "enable --now" in command
-    )
-    assert stop_index < enable_index
+    start_index = commands.index(f"systemctl --user start {supervisor.UNIT_NAME}")
+    assert stop_index < start_index
+
+
+def test_install_no_start_stops_an_installed_server_before_replacing(
+    tmp_path: Path, wiring: Wiring
+) -> None:
+    artifact = build_artifact(tmp_path)
+    cli.main(install_args(artifact))
+    wiring.runner.calls.clear()
+
+    assert cli.main([*install_args(artifact), "--no-start"]) == 0
+
+    assert f"systemctl --user stop {supervisor.UNIT_NAME}" in wiring.runner.commands
 
 
 def test_install_stops_an_installed_but_stopped_unit_before_replacing(
@@ -341,7 +412,8 @@ def test_install_checks_the_port_before_replacing_the_bundle(
     assert len(error.strip().splitlines()) == 1
     assert not wiring.paths.root.exists()
     assert not wiring.paths.launcher.exists()
-    assert not any("enable --now" in command for command in wiring.runner.commands)
+    assert f"systemctl --user enable {supervisor.UNIT_NAME}" not in wiring.runner.commands
+    assert f"systemctl --user start {supervisor.UNIT_NAME}" not in wiring.runner.commands
 
 
 def test_install_requires_a_checksummed_source(
@@ -456,6 +528,36 @@ def test_status_reports_the_bundle_and_supervisor(
     assert "bundle:" in output
     assert "supervisor:" in output
     assert "active" in output
+
+
+def test_enable_and_disable_toggle_autostart_without_reinstalling(
+    tmp_path: Path,
+    wiring: Wiring,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = build_artifact(tmp_path)
+    wiring.runner.replies["is-active"] = CommandResult(3, "inactive\n")
+    wiring.runner.replies["is-enabled"] = CommandResult(1, "disabled\n")
+    assert cli.main([*install_args(artifact), "--no-start"]) == 0
+    capsys.readouterr()
+
+    wiring.runner.replies["is-enabled"] = CommandResult(0, "enabled\n")
+    assert cli.main(["enable"]) == 0
+    assert f"systemctl --user enable {supervisor.UNIT_NAME}" in wiring.runner.commands
+    assert cli.main(["status"]) == 0
+    enabled_status = capsys.readouterr().out
+    assert "autostart enabled" in enabled_status
+    assert "stopped" in enabled_status
+
+    wiring.runner.calls.clear()
+    wiring.runner.replies["is-enabled"] = CommandResult(1, "disabled\n")
+    assert cli.main(["disable"]) == 0
+    assert f"systemctl --user disable {supervisor.UNIT_NAME}" in wiring.runner.commands
+    assert cli.main(["status"]) == 0
+    disabled_status = capsys.readouterr().out
+    assert "autostart disabled" in disabled_status
+    assert "stopped" in disabled_status
+    assert "daemon-reload" not in wiring.runner.commands
 
 
 def test_status_without_an_installation_says_so(
