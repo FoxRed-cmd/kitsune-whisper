@@ -1,11 +1,11 @@
 """The native Windows installer and its release wiring.
 
 The installer is a public seam: it is one PowerShell script that downloads the
-release archives, verifies their checksums, and writes a per-user installation.
-These tests read that script, the uninstall shim it generates, and the CI
-workflows on any host. Compiling and running it is release CI's job; when
-``pwsh`` is available the parser check also proves the scripts are syntactically
-valid.
+release checksums and archives, verifies the detached signature and every
+checksum, and writes a per-user installation. These tests read that script, the
+uninstall shim it generates, and the CI workflows on any host. Compiling and
+running it is release CI's job; when ``pwsh`` is available the parser check also
+proves the scripts are syntactically valid.
 """
 
 from __future__ import annotations

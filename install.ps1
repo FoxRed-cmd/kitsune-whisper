@@ -504,22 +504,27 @@ function Remove-StoredCredentials {
     if (-not (Test-Path -LiteralPath $cmdkey)) {
         return
     }
-    $ids = @('local')
-    $configFile = Join-Path $configDir 'kitsune.yaml'
-    if ($configDir -and (Test-Path -LiteralPath $configFile)) {
-        $yaml = Get-Content -LiteralPath $configFile -Raw
-        foreach ($match in [regex]::Matches($yaml, '(?m)^\s*-\s*id:\s*["'']?([A-Za-z0-9._-]+)')) {
-            $ids += $match.Groups[1].Value
+    try {
+        $ids = @('local')
+        $configFile = Join-Path $configDir 'kitsune.yaml'
+        if ($configDir -and (Test-Path -LiteralPath $configFile)) {
+            $yaml = Get-Content -LiteralPath $configFile -Raw
+            foreach ($match in [regex]::Matches($yaml, '(?m)^\s*-\s*id:\s*["'']?([A-Za-z0-9._-]+)')) {
+                $ids += $match.Groups[1].Value
+            }
+        }
+        foreach ($id in @($ids | Select-Object -Unique)) {
+            & $cmdkey ("/delete:kitsune-whisper:$id") 2>$null | Out-Null
+        }
+        $listing = & $cmdkey '/list' 2>$null
+        foreach ($line in @($listing)) {
+            if ($line -match 'kitsune-whisper:[^\s]+') {
+                & $cmdkey ("/delete:" + $Matches[0]) 2>$null | Out-Null
+            }
         }
     }
-    foreach ($id in @($ids | Select-Object -Unique)) {
-        & $cmdkey ("/delete:kitsune-whisper:$id") 2>$null | Out-Null
-    }
-    $listing = & $cmdkey '/list' 2>$null
-    foreach ($line in @($listing)) {
-        if ($line -match 'kitsune-whisper:[^\s]+') {
-            & $cmdkey ("/delete:" + $Matches[0]) 2>$null | Out-Null
-        }
+    catch {
+        Write-Verbose "could not clear stored credentials: $($_.Exception.Message)"
     }
 }
 
