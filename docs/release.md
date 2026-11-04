@@ -51,7 +51,6 @@ The `verify-version` job runs first and every build job depends on it.
 | `client-windows` | `kitsune-client_windows_amd64.zip` |
 | `server-bundle` | `kitsune-server_linux_amd64.tar.gz` |
 | `server-bundle-windows` | `kitsune-server_windows_amd64.tar.gz` |
-| `windows-installer` | `kitsune-whisper_windows_amd64_setup.exe` |
 | `wayland-tools` | `kitsune-wayland_linux_amd64.tar.gz` (`ydotool`, `ydotoold`, `wtype`) |
 | `release` | `install.sh`, `install.ps1`, `checksums.txt`, `checksums.txt.sig`, all of the above |
 

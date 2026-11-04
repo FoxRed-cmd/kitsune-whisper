@@ -1,9 +1,9 @@
 # Install, upgrade, and uninstall
 
 The Client is a single binary. The Linux one-line installer and the Windows
-setup executable also place the native per-user Server bundle (and, on Linux,
-the bundled Wayland helpers), so a fresh machine can dictate from the Tray
-without hand-assembling two projects. Both processes read the same
+`install.ps1` script also place the native per-user Server bundle (and, on
+Linux, the bundled Wayland helpers), so a fresh machine can dictate from the
+Tray without hand-assembling two projects. Both processes read the same
 `kitsune.yaml` (each reads only its own section).
 
 For the native bundle, `kitsune-server install` resolves the config file exactly
@@ -75,38 +75,44 @@ it (or when `nvidia-smi` finds no GPU) `server.device: auto` resolves to CPU.
 For the piped one-liner, pass it as
 `curl ... | bash -s -- --cuda`.
 
-Windows 10/11 (x64) — the per-user installer:
-
-Download `kitsune-whisper_windows_amd64_setup.exe` from the
-[latest release](https://github.com/FoxRed-cmd/kitsune-whisper/releases/latest)
-and run it. It needs **no administrator rights** and installs the Client with
-its Tray and Settings window, the native Server bundle, the Start Menu entry, and
-both per-user logon tasks (`kitsune-client` and `kitsune-server`). The Tasks page
-offers an optional desktop shortcut and a **CUDA runtime** download (~550 MB,
-checked by default). The CUDA task is skipped when no NVIDIA GPU is present;
-declining it installs a CPU-only Server. Without the runtime `server.device:
-auto` resolves to CPU even on a GPU host.
-
-The one-liner downloads the same setup, verifies its SHA-256 against
-`checksums.txt`, and runs it:
+Windows 10/11 (x64) — one per-user script:
 
 ```powershell
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
+It needs **no administrator rights** and installs the Client with its Tray and
+Settings window, the optional native Server bundle, a Start Menu shortcut, and
+an **Apps & features** entry under `%LOCALAPPDATA%\Programs\kitsune-whisper`.
+The Server's Task Scheduler registration is created disabled: nothing starts at
+login, and `schtasks /Run /TN kitsune-server` starts it on demand. Pass
+`-ClientOnly` or `-ServerOnly` to install one component; the default is both.
+The CUDA runtime is optional and documented below; an existing
+`Server\lib\nvidia` directory is kept across upgrades.
+
 Pin a release with `KITSUNE_VERSION=vX.Y.Z`, or pass `-Version vX.Y.Z` on
 Windows. Both installers drop a `kitsune.yaml` template **only if it does not
-already exist**, and register autostart. `install.ps1 -ForceConfig` overwrites an
-existing template; the setup itself never does.
+already exist**. `install.ps1 -ForceConfig` overwrites an existing template;
+`-DryRun` prints the plan and changes nothing, and `-From DIR` installs from
+local artifacts.
 
-WebView2 is bootstrapped **per user**: if the Evergreen Runtime is missing, the
-installer runs Microsoft's silent per-user bootstrapper. A machine that is
-offline (or whose WebView2 install fails) gets one clear message naming the
-manual download link instead of a broken Tray. The installer then checks
-`server.port` before registering the Server; a taken port stops that step with a
-line telling you to stop the other process or change `server.port` in
-`%APPDATA%\kitsune-whisper\kitsune.yaml`. The Server never picks a random port.
-The Client remains installed for a Remote Server if the local Server step fails.
+The installer never downloads WebView2. If the Evergreen Runtime is missing it
+warns and links to the manual download; install it from the Microsoft page
+named in the warning (or let Windows Update deliver it) before opening the
+embedded Settings window. The Client can still run headless.
+
+The Server bundle does not carry CUDA. To use an NVIDIA GPU, install
+`nvidia-cublas-cu12` into the installed bundle with its own runtime:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\kitsune-whisper\Server\runtime\python.exe" `
+  -m pip install --target `
+  "$env:LOCALAPPDATA\Programs\kitsune-whisper\Server\lib" nvidia-cublas-cu12
+```
+
+The download is ~550 MB. Without it, `server.device: auto` resolves to CPU.
+Re-running the installer keeps the directory; uninstall keeps it only if you do
+not remove the install tree.
 
 From source (requires a C toolchain — `malgo` uses cgo):
 
@@ -185,8 +191,9 @@ manual setup is still:
 
 | | Linux | Windows |
 | --- | --- | --- |
-| Client binary | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-client.exe` |
-| Server bundle | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\kitsune-whisper\Server` |
+| Client binary | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-client.exe` |
+| Server bundle | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\Server` |
+| Uninstall shim | — (the script removes itself) | `%LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1` |
 | Bundled Wayland helpers | `~/.local/lib/kitsune-whisper/wayland/bin` | — |
 | Config | `~/.config/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
@@ -277,9 +284,11 @@ application menu even after `uninstall-autostart`.
   running interactively with least privilege and restart-on-failure. If task
   registration is denied, it falls back to the
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `kitsune-whisper`.
-  The setup also registers `kitsune-server`, which runs the bundle's
-  `pythonw.exe` hidden (no console window) with restart-on-failure. Both tasks
-  are removed by autostart uninstall and by the setup's uninstaller.
+  The installer does not create this task: it belongs to the autostart switch.
+  The installer does register `kitsune-server`, which runs the bundle's
+  `pythonw.exe` hidden (no console window) with its logon trigger **disabled**;
+  nothing starts at login, while `schtasks /Run /TN kitsune-server` starts it on
+  demand. The uninstall shim removes that registration.
 
 The Linux installer also registers `kitsune-server.service` and
 `kitsune-ydotoold.service`. The Server unit starts at login (no
@@ -360,8 +369,9 @@ The Client checks GitHub Releases once at startup and from **Settings → Update
 or the Tray. It only shows the available version; downloading is an explicit
 action. The installer is fetched from the checked release, its SHA-256 is
 compared with `checksums.txt`, and only a verified file is launched. On Linux
-that file is the release's `install.sh`; on Windows it is the per-user setup.
-There is no silent or automatic installation.
+that file is the release's `install.sh`; on Windows it is `install.ps1`, which
+the Client runs with PowerShell 7 pinned to the checked version. There is no
+silent or automatic installation.
 
 ### Uninstall
 
@@ -379,22 +389,18 @@ curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything
 ```powershell
 # If you have the script locally:
 ./install.ps1 -Uninstall
-./install.ps1 -Uninstall -RemoveModels -RemoveServerData
-./install.ps1 -Uninstall -Purge
 
 # Or straight from the repository, matching the install one-liner:
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -Uninstall
 ```
 
-The Windows setup also registers itself in **Apps & features**; its uninstaller
-is `%LOCALAPPDATA%\kitsune-whisper\unins000.exe`. An interactive uninstall asks
-two separate questions: whether to delete downloaded models, and whether to
-delete Server data (certificates, Devices, logs, and the soft-stop marker).
-Configuration, Spool, and Device tokens are kept. A silent uninstall keeps
-everything unless `/REMOVEMODELS=1`, `/REMOVESERVERDATA=1`, or `/PURGE=1` is
-passed; `install.ps1 -Uninstall -Purge` removes all user data. Uninstall removes
-the Client, Tray, Server bundle, both logon tasks, the Start Menu entry, and any
-desktop shortcut.
+The installer registers itself in **Apps & features**; the uninstall command is
+the installed shim at
+`%LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1` and runs without
+prompts. Uninstall stops and removes the Server task, deletes the Client, Server
+bundle, Start Menu shortcut and PATH entry, and keeps `kitsune.yaml`, models and
+pairing state. Removing those data classes is a later installer revision; until
+then, delete `%APPDATA%\kitsune-whisper` and the model directory by hand.
 
 Linux uninstall stops and removes the Client, Server, and ydotool user units,
 their binaries, the bundled helpers, the application-menu entry, the icon, and
@@ -404,9 +410,8 @@ unless `--remove-models` or `--remove-server-data` is passed. It always keeps
 `kitsune.yaml`, Setup progress, Spool, and Device tokens. `--purge` removes the
 configuration, Device tokens (including the desktop keyring entries), models,
 certificates, Devices, Spool, logs, wizard progress, WebView storage, and, with
-`sudo`, the `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. On Windows
-`-Purge` removes config, Setup progress, Spool, logs, certificates, Devices, and
-the default model cache.
+`sudo`, the `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. Windows
+uninstall keeps configuration, models and pairing state.
 
 Removing Server data without a purge also forgets the Local Server profile's
 certificate pin and Device token (the Client runs its
@@ -682,10 +687,10 @@ RTX 4060) the default `small` model transcribes at ≈0.02–0.2× realtime — 
 instant. CPU-only hosts are **supported but slower**, at ≈0.6–0.7× realtime.
 
 - **GPU** - any recent NVIDIA driver. The Docker image ships the CUDA 12.3 /
-  cuDNN 9 runtime; the native bundle downloads cuBLAS separately (the Windows
-  setup's CUDA task, or `install.sh --cuda`). `compute_type: auto` resolves to
-  `float16`. On a low-VRAM GPU set `server.compute_type: int8_float16` to fit
-  the model.
+  cuDNN 9 runtime; the native bundle takes cuBLAS separately (the documented
+  `pip install --target` command for Windows, or `install.sh --cuda` on Linux).
+  `compute_type: auto` resolves to `float16`. On a low-VRAM GPU set
+  `server.compute_type: int8_float16` to fit the model.
 - **CPU** — `compute_type: auto` resolves to `int8`. For lower latency set
   `server.model` to `base` (the best accuracy↔speed trade for dictation, roughly
   2–3× faster than `small`) or `tiny` on the weakest hosts.

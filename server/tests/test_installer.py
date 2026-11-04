@@ -573,7 +573,6 @@ def test_release_workflow_publishes_every_artifact() -> None:
         "client-windows",
         "server-bundle",
         "server-bundle-windows",
-        "windows-installer",
         "wayland-tools",
         "release",
     }
@@ -584,7 +583,6 @@ def test_release_workflow_publishes_every_artifact() -> None:
         "kitsune-client_windows_amd64.zip",
         "kitsune-server_linux_amd64.tar.gz",
         "kitsune-server_windows_amd64.tar.gz",
-        "kitsune-whisper_windows_amd64_setup.exe",
         "kitsune-wayland_linux_amd64.tar.gz",
         "install.sh",
         "install.ps1",
@@ -592,8 +590,18 @@ def test_release_workflow_publishes_every_artifact() -> None:
     ):
         assert asset in text, asset
     assert "build-wayland-tools.sh" in text
-    assert "packaging/windows/build-installer.ps1" in text
     assert "sha256sum" in text
+
+    # The setup executable, its Inno definition, and the job that built it are
+    # gone: the Windows installer is the checked-out install.ps1.
+    for retired in (
+        "kitsune-whisper_windows_amd64_setup.exe",
+        "build-" + "installer.ps1",
+        "kitsune-whisper" + ".iss",
+        "windows-installer",
+        "inno" + "setup",
+    ):
+        assert retired not in text, retired
 
     # Distribution packages are gone: no jobs, builders, flags, or published
     # globs may quietly return.
