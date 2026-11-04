@@ -331,19 +331,14 @@ func (s *Shell) setStartup(enabled bool, mode string) {
 	s.pushMessages([]string{s.catalog().T("notice.startup.on", s.startupModeLabel(selected))}, nil)
 }
 
-// startupModeLabel translates one Autostart mode for a notice.
+// startupModeLabel translates one Autostart mode for a notice. It shares the
+// mode-to-key mapping with the rendered selector.
 func (s *Shell) startupModeLabel(mode components.Mode) string {
-	catalog := s.catalog()
-	switch mode {
-	case components.ModeClientAndServer:
-		return catalog.T("startup.mode.clientServer")
-	case components.ModeClientOnly:
-		return catalog.T("startup.mode.client")
-	case components.ModeServerOnly:
-		return catalog.T("startup.mode.server")
-	default:
+	labelKey, _ := startupModeKeys(mode)
+	if labelKey == "" {
 		return string(mode)
 	}
+	return s.catalog().T(labelKey)
 }
 
 // setLogLevel writes one level to both sides: client.log_level for this

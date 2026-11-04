@@ -42,10 +42,12 @@ new patch version instead.
 ## What CI builds
 
 `release.yml` runs natively on Linux and Windows because the Client uses cgo.
-The `verify-version` job runs first and every build job depends on it.
+The `verify-version` job runs first, `verify-docs` gates publication on the
+installer/document drift check, and every build job depends on `verify-version`.
 
 | Job | Artifact |
 | --- | --- |
+| `verify-docs` | none; fails the release when installer checks and `dependencies.md` disagree |
 | `client-linux` | `kitsune-client_linux_amd64.tar.gz` (GTK4 + WebKitGTK 6.0) |
 | `client-windows` | `kitsune-client_windows_amd64.zip` |
 | `server-bundle` | `kitsune-server_linux_amd64.tar.gz` |
@@ -81,7 +83,7 @@ Both jobs use throwaway keys and the `KITSUNE_RELEASE_PUBLIC_KEY` test seam.
 They never touch the production `RELEASE_SIGNING_KEY`. A drift between the
 identifiers in `install.sh` / `install.ps1` and the table in
 [`dependencies.md`](dependencies.md#what-the-installers-check) fails the normal
-`server` test job.
+`server` test job and the release's `verify-docs` job.
 
 ### What each archive contains
 

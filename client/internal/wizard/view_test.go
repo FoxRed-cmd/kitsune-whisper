@@ -231,6 +231,27 @@ func TestClientOnlyServerViewOffersRemoteOnly(t *testing.T) {
 	}
 }
 
+func TestClientOnlyProgressCountsOnlyAvailableSteps(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true})
+	_ = service.Open()
+	for i := 0; i < 3; i++ {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if service.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", service.Step())
+	}
+	view := service.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	// Welcome, Microphone, Hotkey, Server, Try: Hardware and Model are skipped.
+	if view.StepCount != 5 || view.StepNumber != 4 {
+		t.Fatalf("progress = %d of %d, want 4 of 5", view.StepNumber, view.StepCount)
+	}
+	if !strings.Contains(view.Progress, "4") || !strings.Contains(view.Progress, "5") {
+		t.Fatalf("progress text = %q", view.Progress)
+	}
+}
+
 func TestBothComponentsServerViewKeepsTheLocalOption(t *testing.T) {
 	service := newServiceWith(t, tempState(t), components.Set{Client: true, Server: true})
 	_ = service.Open()

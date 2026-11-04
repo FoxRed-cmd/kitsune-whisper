@@ -94,6 +94,26 @@ func TestDetectWindowsRequiresAQueryableTask(t *testing.T) {
 	}
 }
 
+func TestDefaultWindowsServerRootMatchesTheInstaller(t *testing.T) {
+	home := filepath.Join("C:", "Users", "kitsune")
+	local := filepath.Join(home, "AppData", "Local")
+	want := filepath.Join(local, "Programs", "kitsune-whisper", "Server")
+
+	if got := defaultServerRoot("windows", home, local); got != want {
+		t.Fatalf("defaultServerRoot(windows) = %q, want %q", got, want)
+	}
+	// Without LOCALAPPDATA the same %LOCALAPPDATA%\Programs layout is derived
+	// from the home directory instead of dropping the Programs component.
+	if got := defaultServerRoot("windows", home, ""); got != want {
+		t.Fatalf("defaultServerRoot(windows, no LOCALAPPDATA) = %q, want %q", got, want)
+	}
+	if got := defaultServerRoot("linux", home, local); got != filepath.Join(
+		home, ".local", "lib", "kitsune-whisper", "server",
+	) {
+		t.Fatalf("defaultServerRoot(linux) = %q", got)
+	}
+}
+
 func TestDetectIgnoresTheServerOnAnUnsupportedPlatform(t *testing.T) {
 	env := linuxEnv(t.TempDir())
 	env.GOOS = "plan9"

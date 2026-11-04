@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import re
 import shlex
 import tomllib
@@ -456,94 +457,28 @@ def test_dependencies_document_mirrors_the_installer_identifiers() -> None:
         assert f"`{floor}`" in dependencies, floor
 
 
-def _installer_dependency_surface() -> tuple[set[str], set[str], dict[str, str], str]:
-    """Parse the identifiers and floors the installers actually check.
+DRIFT_SCRIPT = REPO_ROOT / "scripts" / "check-dependency-drift.py"
 
-    Formatting tolerance is deliberate: the values are the contract, not the
-    spacing around the assignment. ``docs/dependencies.md`` is parsed by
-    :func:`_documented_dependency_surface`.
+
+def _load_drift_script() -> Any:
+    """Load the one drift implementation the release also runs.
+
+    Importing rather than re-parsing in the test is the point: a second copy
+    could drift from the script and let a bad release through.
     """
 
-    install_sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
-    install_ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
-
-    linux_ids = set(
-        re.findall(r'^\s*DEP_[A-Z0-9_]+\s*=\s*["\']([^"\']+)["\']', install_sh, re.MULTILINE)
-    )
-    windows_ids = set(
-        re.findall(
-            r'^\s*\$Dep[A-Za-z0-9_]+\s*=\s*["\']([^"\']+)["\']',
-            install_ps1,
-            re.MULTILINE,
-        )
-    )
-    floors = {
-        name.lower(): value
-        for name, value in re.findall(
-            r'^\s*GLIBC_(CLIENT|SERVER)_FLOOR\s*=\s*["\']([^"\']+)["\']',
-            install_sh,
-            re.MULTILINE,
-        )
-    }
-    minimum_build = re.search(r"^\s*\$MinimumWindowsBuild\s*=\s*(\d+)", install_ps1, re.MULTILINE)
-    assert minimum_build is not None
-    return linux_ids, windows_ids, floors, minimum_build.group(1)
-
-
-def _documented_dependency_surface() -> dict[str, str]:
-    """Parse the identifier table in the dependencies document.
-
-    The table is delimited by its heading and the next section, so package,
-    glibc and injection tables elsewhere in the document cannot leak into the
-    comparison. Each row maps the first column (backticks optional) to the last
-    column, which holds the minimum or fix.
-    """
-
-    text = (REPO_ROOT / "docs" / "dependencies.md").read_text(encoding="utf-8")
-    section = text.split("## What the installers check", 1)[1]
-    section = section.split("## Linux packages", 1)[0]
-
-    rows: dict[str, str] = {}
-    for line in section.splitlines():
-        line = line.strip()
-        if not line.startswith("|"):
-            continue
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) < 4:
-            continue
-        identifier = cells[0].strip("`").strip()
-        if not identifier or identifier == "Identifier" or set(identifier) <= set("-: "):
-            continue
-        rows[identifier] = cells[-1]
-    assert rows, "no identifiers parsed from docs/dependencies.md"
-    return rows
+    spec = importlib.util.spec_from_file_location("check_dependency_drift", DRIFT_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_dependency_document_matches_every_installer_identifier_and_floor() -> None:
     """An identifier or glibc floor cannot exist on only one side of the seam."""
 
-    linux_ids, windows_ids, floors, minimum_build = _installer_dependency_surface()
-    documented = _documented_dependency_surface()
-
-    installer_ids = linux_ids | windows_ids
-    assert documented.keys() == installer_ids, (
-        "installer identifiers missing from docs/dependencies.md: "
-        f"{sorted(installer_ids - documented.keys())}; "
-        "documented identifiers no installer checks: "
-        f"{sorted(documented.keys() - installer_ids)}"
-    )
-
-    assert floors.keys() == {"client", "server"}, floors
-    for component, identifier in (("client", "glibc-client"), ("server", "glibc-server")):
-        floor = floors[component]
-        assert f"`{floor}`" in documented[identifier], (
-            f"{identifier} documents {documented[identifier]!r}, but install.sh checks {floor!r}"
-        )
-
-    assert f"`{minimum_build}`" in documented["windows-version"], (
-        "docs/dependencies.md does not document the Windows build floor "
-        f"{minimum_build} that install.ps1 checks"
-    )
+    problems = _load_drift_script().drift_problems(REPO_ROOT)
+    assert problems == [], problems
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:

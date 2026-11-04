@@ -515,7 +515,8 @@ install_desktop_entry() {
 #
 # These checks run after the selected binaries are in place. They only report:
 # a missing dependency never fails an install and never changes its status.
-# The README owns the package commands; this script deliberately prints none.
+# The README (quick reference) and docs/dependencies.md (full matrix) own the
+# package commands; this script deliberately prints none.
 
 find_ldconfig() {
   if command -v ldconfig >/dev/null 2>&1; then
