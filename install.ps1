@@ -41,7 +41,7 @@ Install only the Server bundle and launcher. No Client, config or shortcut.
 .PARAMETER From
 Install from release artifacts in this directory (also
 KITSUNE_ARTIFACTS_DIR). The directory must contain checksums.txt and
-checksums.txt.sig.
+checksums.txt.sig (unless -Insecure).
 
 .PARAMETER ForceConfig
 Overwrite an existing %APPDATA%\kitsune-whisper\kitsune.yaml.
@@ -489,6 +489,9 @@ function Remove-StoredCredentials {
     # go-keyring files Windows tokens in Credential Manager as
     # "kitsune-whisper:<profile>". Read profile ids from the config while it
     # still exists, then sweep any target cmdkey lists for the same prefix.
+    if (-not $env:SystemRoot) {
+        return
+    }
     $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
     if (-not (Test-Path -LiteralPath $cmdkey)) {
         return
@@ -551,11 +554,7 @@ if ($RemoveServerData -and -not $Purge) {
     # Creating new Server data would invalidate the kept Client pin, so forget
     # the Local Server pairing while the Client can still do it.
     if (Test-Path -LiteralPath $client) {
-        $pairingArgs = @('reset-local-pairing')
-        if ($configDir) {
-            $pairingArgs += @('--config', (Join-Path $configDir 'kitsune.yaml'))
-        }
-        $null = Start-Process -FilePath $client -ArgumentList $pairingArgs `
+        $null = Start-Process -FilePath $client -ArgumentList @('reset-local-pairing') `
             -Wait -PassThru -NoNewWindow
     }
     if ($stateDir) {
