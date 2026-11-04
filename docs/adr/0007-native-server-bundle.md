@@ -12,18 +12,18 @@ elevation, and every Server dependency (`ctranslate2`, `av`, `onnxruntime`,
 
 The primary install is therefore a **native per-user bundle**: a pinned Python
 runtime plus the Server package under the user's lib directory, run as an
-OS-supervised background process. The installer detects NVIDIA and offers the
-optional CUDA wheels on demand; Whisper weights download separately through the
-Model catalog. This replaces the single static `small` default from ADR 0003
-with a per-device recommendation in that catalog; GPU is still recommended and
-CPU still supported. The Docker images stay as the supported deployment for a
-dedicated host (for example the GPU desktop) and expose the same API, auth, and
-config as the native Server.
+OS-supervised background process. The documentation offers an optional CUDA path
+on top of that runtime; the installer itself downloads nothing. Whisper weights
+download separately through the Model catalog. This replaces the single static
+`small` default from ADR 0003 with a per-device recommendation in that catalog;
+GPU is still recommended and CPU still supported. The Docker images stay as the
+supported deployment for a dedicated host (for example the GPU desktop) and
+expose the same API, auth, and config as the native Server.
 
-> **Amended by the Linux `.deb`/`.rpm`:** a system package may place the
-> read-only bundle under `/usr/lib/kitsune-whisper/server` and set
-> `KITSUNE_SERVER_ROOT`; configuration, state, and models stay per user. The
-> per-user bundle remains the default for `install.sh` and Windows.
+> **The earlier Linux `.deb`/`.rpm` amendment is superseded by
+> [ADR 0013](0013-scripts-only-distribution.md):** distribution packages are
+> removed, so the per-user bundle is the only native install on both platforms;
+> configuration, state and models stay per user.
 
 ## Considered options
 
