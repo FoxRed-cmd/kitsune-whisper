@@ -74,12 +74,13 @@ Usage: install.sh [options]
   --from DIR             install from release artifacts in DIR
   --force-config         overwrite an existing kitsune.yaml
   --dry-run              print the plan and change nothing
-  --uninstall            remove binaries and desktop entries; keep data
-  --uninstall --purge    also remove config, models, certificates, spool,
-                         logs, Devices, and wizard progress
+  --uninstall            remove binaries, bundle, registrations, menu and
+                         icons; keep config, models, pairing and logs
+  --uninstall --purge    also remove config, models, cache, state, logs,
+                         spool, wizard progress, and keyring tokens
   --remove-models        with --uninstall: delete downloaded models
   --remove-server-data   with --uninstall: delete certificates, Devices,
-                         the Server log, and its soft-stop marker
+                         logs, and soft-stop state
   -h, --help             show this help
 
 Environment: KITSUNE_VERSION, KITSUNE_ARTIFACTS_DIR
@@ -307,25 +308,49 @@ ask_what_to_delete() {
   fi
 }
 
-uninstall_all() {
-  ask_what_to_delete
-  info "Removing kitsune-whisper..."
+# remove_client_registration stops and forgets the login registration. The
+# unit and its hidden portal entry are removed even if the Client binary is
+# already gone, so no unit is left pointing at a removed executable.
+remove_client_registration() {
+  if [[ -x "$BIN_DIR/kitsune-client" ]]; then
+    "$BIN_DIR/kitsune-client" uninstall-autostart >/dev/null 2>&1 \
+      || warn "could not remove the Client autostart registration"
+  fi
+  rm -f "$SYSTEMD_DIR/kitsune-client.service" "$DESKTOP_FILE"
+}
+
+# remove_menu_entry removes the visible application-menu entry and its icons.
+remove_menu_entry() {
   if [[ -x "$BIN_DIR/kitsune-client" ]]; then
     "$BIN_DIR/kitsune-client" uninstall-desktop >/dev/null 2>&1 \
       || warn "could not remove the application-menu entry"
   fi
+  rm -f "$MENU_FILE" "$ICON_SVG" "$ICON_PNG"
+}
+
+# remove_server_registration stops and forgets the Server supervisor. The
+# launcher's own uninstall runs the supervisor cleanup; the unit and cached
+# task files are removed as a fallback when the launcher is already gone.
+remove_server_registration() {
   if [[ -x "$SERVER_LAUNCHER" ]]; then
     "$SERVER_LAUNCHER" uninstall >/dev/null 2>&1 \
       || warn "could not remove the Server bundle"
   fi
+  rm -f "$SYSTEMD_DIR/kitsune-server.service" "$CONFIG_DIR/kitsune-server-task.xml"
+  rm -rf "$SERVER_ROOT"
+}
+
+uninstall_all() {
+  ask_what_to_delete
+  info "Removing kitsune-whisper..."
+  remove_client_registration
+  remove_menu_entry
+  remove_server_registration
 
   if [[ "$REMOVE_SERVER_DATA" == 1 && "$PURGE" == 0 ]]; then
     reset_local_pairing
   fi
-  rm -f "$BIN_DIR/kitsune-client" "$SERVER_LAUNCHER" "$DESKTOP_FILE"
-  rm -f "$MENU_FILE" "$ICON_SVG" "$ICON_PNG"
-  rm -f "$SYSTEMD_DIR/kitsune-server.service"
-  rm -rf "$SERVER_ROOT"
+  rm -f "$BIN_DIR/kitsune-client" "$SERVER_LAUNCHER"
   rmdir "$LOCAL_LIB" 2>/dev/null || true
 
   if [[ "$REMOVE_MODELS" == 1 ]]; then
@@ -340,6 +365,9 @@ uninstall_all() {
   if [[ "$PURGE" == 1 ]]; then
     forget_keyring_tokens
     rm -rf "$CONFIG_DIR" "$CACHE_DIR" "$STATE_DIR" "$LOCAL_LIB" "$APP_DATA"
+    if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+      rm -f "$XDG_RUNTIME_DIR/kitsune-whisper.sock" "$XDG_RUNTIME_DIR/kitsune-whisper.lock"
+    fi
     info "kitsune-whisper purged (config, models, certificates, Devices, spool, logs, wizard)"
   else
     info "kitsune-whisper uninstalled (configuration, spool, wizard progress, and Device tokens kept)"

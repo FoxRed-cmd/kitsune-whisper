@@ -197,8 +197,7 @@ def assert_nothing_privileged_ran(sandbox: dict[str, Any]) -> None:
     assert read_log(sandbox, "sudo.log") == ""
     assert read_log(sandbox, "systemctl.log") == ""
     calls = read_log(sandbox, "calls.log")
-    assert "install-autostart" not in calls
-    assert "uninstall-autostart" not in calls
+    assert "client: install-autostart" not in calls
 
 
 def assert_no_helpers_installed(sandbox: dict[str, Any]) -> None:
@@ -257,6 +256,9 @@ def test_retired_flags_are_rejected(sandbox, flag):
 def test_the_script_names_no_privileged_or_helper_step() -> None:
     source = INSTALL_SH.read_text(encoding="utf-8")
     body = "\n".join(line for line in source.splitlines() if not line.startswith("#!"))
+    # Uninstall legitimately names the Client's own `uninstall-autostart`
+    # command; installing autostart is still forbidden.
+    body = body.replace("uninstall-autostart", "")
     for forbidden in (
         "sudo",
         "pkexec",
@@ -493,6 +495,247 @@ def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):
     assert (cache / "models" / "small.bin").is_file()
     assert (config / "kitsune.yaml").is_file()
     assert_nothing_privileged_ran(sandbox)
+
+
+def xdg_dir(sandbox: dict[str, Any], name: str) -> Path:
+    return Path(str(sandbox["env"][name]))
+
+
+def removal_paths(sandbox: dict[str, Any]) -> dict[str, Path]:
+    """Every path either removal mode may touch, or must deliberately keep."""
+    home = Path(str(sandbox["home"]))
+    data = xdg_dir(sandbox, "XDG_DATA_HOME")
+    config = xdg_dir(sandbox, "XDG_CONFIG_HOME")
+    cache = xdg_dir(sandbox, "XDG_CACHE_HOME")
+    state = xdg_dir(sandbox, "XDG_STATE_HOME")
+    runtime = xdg_dir(sandbox, "XDG_RUNTIME_DIR")
+    app_id = "io.github.FoxRed-cmd.kitsune-whisper"
+    return {
+        "client": home / ".local" / "bin" / "kitsune-client",
+        "launcher": home / ".local" / "bin" / "kitsune-server",
+        "bin_dir": home / ".local" / "bin",
+        "local_lib": home / ".local" / "lib" / "kitsune-whisper",
+        "server_root": home / ".local" / "lib" / "kitsune-whisper" / "server",
+        "config_dir": config / "kitsune-whisper",
+        "config_root": config,
+        "cache_dir": cache / "kitsune-whisper",
+        "state_dir": state / "kitsune-whisper",
+        "app_data": data / app_id,
+        "client_unit": config / "systemd" / "user" / "kitsune-client.service",
+        "server_unit": config / "systemd" / "user" / "kitsune-server.service",
+        "server_task": config / "kitsune-whisper" / "kitsune-server-task.xml",
+        "menu": data / "applications" / "kitsune-whisper.desktop",
+        "portal": data / "applications" / f"{app_id}.desktop",
+        "icon_svg": data / "icons" / "hicolor" / "scalable" / "apps" / f"{app_id}.svg",
+        "icon_png": data / "icons" / "hicolor" / "256x256" / "apps" / f"{app_id}.png",
+        "runtime_socket": runtime / "kitsune-whisper.sock",
+        "runtime_lock": runtime / "kitsune-whisper.lock",
+    }
+
+
+def seed_component_files(sandbox: dict[str, Any]) -> dict[str, Path]:
+    """Write what a real Client and Server install leave behind.
+
+    The fake artifacts only exercise the installer's commands, so the files the
+    real Client binary and bundle launcher would create are written here.
+    """
+    paths = removal_paths(sandbox)
+    paths["launcher"].write_text(
+        '#!/bin/sh\necho "server: $*" >> "$CALL_LOG"\nexit 0\n', encoding="utf-8"
+    )
+    paths["launcher"].chmod(0o755)
+    paths["server_root"].mkdir(parents=True, exist_ok=True)
+    (paths["server_root"] / "bundle.json").write_text("{}\n", encoding="utf-8")
+    for key in ("client_unit", "server_unit", "menu", "portal"):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text("[Unit]\n", encoding="utf-8")
+    for key in ("icon_svg", "icon_png"):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text("icon", encoding="utf-8")
+    return paths
+
+
+def seed_user_data(paths: dict[str, Path]) -> dict[str, Path]:
+    files = {
+        "config": paths["config_dir"] / "kitsune.yaml",
+        "tokens": paths["config_dir"] / "tokens" / "local.json",
+        "wizard": paths["config_dir"] / "wizard.json",
+        "model": paths["cache_dir"] / "models" / "small.bin",
+        "spool": paths["cache_dir"] / "spool" / "failed.wav",
+        "client_log": paths["cache_dir"] / "client.log",
+        "certificate": paths["state_dir"] / "tls" / "server.crt",
+        "devices": paths["state_dir"] / "devices.json",
+        "server_log": paths["state_dir"] / "server.log",
+        "webview": paths["app_data"] / "Cache" / "data",
+    }
+    for path in files.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    return files
+
+
+def install_both_components(sandbox: dict[str, Any], tmp_path: Path) -> None:
+    artifacts = make_artifacts(tmp_path, with_server=True)
+    completed = run_installer(sandbox, "--from", str(artifacts))
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_uninstall_removes_our_files_and_keeps_user_data(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    paths = seed_component_files(sandbox)
+    kept = seed_user_data(paths)
+
+    completed = run_installer(sandbox, "--uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    for name in (
+        "client",
+        "launcher",
+        "server_root",
+        "client_unit",
+        "server_unit",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+    ):
+        assert not paths[name].exists(), name
+    for name, path in kept.items():
+        assert path.is_file(), name
+    calls = read_log(sandbox, "calls.log")
+    assert "client: uninstall-autostart" in calls
+    assert "client: uninstall-desktop" in calls
+    assert "server: uninstall" in calls
+    assert "secret-tool" not in calls
+    assert_nothing_privileged_ran(sandbox)
+
+
+def test_purge_removes_every_trace_and_leaves_other_files(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    paths = seed_component_files(sandbox)
+    seed_user_data(paths)
+    for key in ("runtime_socket", "runtime_lock"):
+        paths[key].write_text("x", encoding="utf-8")
+
+    other_tool = paths["bin_dir"] / "other-tool"
+    other_tool.write_text("x", encoding="utf-8")
+    other_config = paths["config_root"] / "other-app" / "settings"
+    other_config.parent.mkdir(parents=True, exist_ok=True)
+    other_config.write_text("x", encoding="utf-8")
+    other_unit = paths["config_root"] / "systemd" / "user" / "other.service"
+    other_unit.write_text("x", encoding="utf-8")
+    other_data = paths["app_data"].parent / "other-app" / "file"
+    other_data.parent.mkdir(parents=True, exist_ok=True)
+    other_data.write_text("x", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--uninstall", "--purge")
+
+    assert completed.returncode == 0, completed.stderr
+    for name in (
+        "client",
+        "launcher",
+        "local_lib",
+        "config_dir",
+        "cache_dir",
+        "state_dir",
+        "app_data",
+        "client_unit",
+        "server_unit",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+        "runtime_socket",
+        "runtime_lock",
+    ):
+        assert not paths[name].exists(), name
+    for path in (other_tool, other_config, other_unit, other_data):
+        assert path.is_file(), path
+    assert paths["bin_dir"].is_dir()
+    calls = read_log(sandbox, "calls.log")
+    assert "secret-tool clear service kitsune-whisper username local" in calls
+    assert "secret-tool clear service kitsune-whisper username work" in calls
+    assert_nothing_privileged_ran(sandbox)
+
+
+def test_uninstall_falls_back_to_registration_files_without_the_commands(sandbox, tmp_path):
+    paths = removal_paths(sandbox)
+    for key in (
+        "client_unit",
+        "server_unit",
+        "server_task",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+    ):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text("x", encoding="utf-8")
+    paths["server_root"].mkdir(parents=True, exist_ok=True)
+    (paths["server_root"] / "bundle.json").write_text("{}\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    for key in (
+        "server_root",
+        "client_unit",
+        "server_unit",
+        "server_task",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+    ):
+        assert not paths[key].exists(), key
+    assert read_log(sandbox, "calls.log") == ""
+    assert_nothing_privileged_ran(sandbox)
+
+
+def test_removal_is_idempotent(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    seed_component_files(sandbox)
+
+    assert run_installer(sandbox, "--uninstall").returncode == 0
+    assert run_installer(sandbox, "--uninstall").returncode == 0
+    assert run_installer(sandbox, "--uninstall", "--purge").returncode == 0
+    assert run_installer(sandbox, "--uninstall", "--purge").returncode == 0
+
+
+def test_removal_calls_no_package_manager_and_no_system_tool(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    seed_component_files(sandbox)
+    log = tmp_path / "system-commands.log"
+    fake_bin = Path(str(sandbox["env"]["PATH"]).split(":")[0])
+    for name in ("apt-get", "dnf", "pacman", "zypper", "apk", "udevadm", "modprobe"):
+        script = fake_bin / name
+        script.write_text(f'#!/bin/sh\necho "{name} $*" >> "{log}"\nexit 0\n', encoding="utf-8")
+        script.chmod(0o755)
+
+    assert run_installer(sandbox, "--uninstall").returncode == 0
+    assert run_installer(sandbox, "--uninstall", "--purge").returncode == 0
+
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+    assert read_log(sandbox, "sudo.log") == ""
+    assert read_log(sandbox, "systemctl.log") == ""
+
+
+def test_piped_uninstall_keeps_data_unless_purge_is_explicit(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    paths = seed_component_files(sandbox)
+    kept = seed_user_data(paths)
+
+    completed = run_piped(sandbox, "--uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    for name, path in kept.items():
+        assert path.is_file(), name
+
+    completed = run_piped(sandbox, "--uninstall", "--purge")
+
+    assert completed.returncode == 0, completed.stderr
+    for name in ("config_dir", "cache_dir", "state_dir", "app_data"):
+        assert not paths[name].exists(), name
 
 
 # -- release pipeline ------------------------------------------------------
