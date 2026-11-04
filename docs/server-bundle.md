@@ -22,10 +22,10 @@ the soft-stop flag (`/state/kitsune-whisper/lifecycle.json`), and the log
 
 | Piece | Linux | Windows |
 | --- | --- | --- |
-| Bundle root | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\kitsune-whisper\Server` |
+| Bundle root | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\Server` |
 | Runtime | `<root>/runtime/bin/python3` | `<root>\runtime\python.exe` (`pythonw.exe` for the supervisor) |
 | Resolved environment | `<root>/lib` | `<root>\lib` |
-| Launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-server.cmd` |
+| Launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-server.cmd` |
 | Manifest | `<root>/bundle.json` | `<root>\bundle.json` |
 | Bootstrap (archive only) | `bootstrap.py` | `bootstrap.py` |
 | Configuration | `$XDG_CONFIG_HOME/kitsune-whisper/kitsune.yaml` (default `~/.config/…`) | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
@@ -83,12 +83,14 @@ directory (the python-build-standalone layout), and filled with
 (`--no-index --find-links`). Downloads, extraction, and pip are injectable, so
 the packaging tests run offline in temporary directories.
 
-`install` writes the supervisor entry disabled, then enables and starts it.
-Pass `--no-start` to install the bundle and register the supervisor without
-enabling or launching anything; `kitsune-server enable` and
-`kitsune-server disable` toggle the login registration later without
-reinstalling. Re-run `install` to upgrade: a running Server is stopped, the
-bundle root is replaced, and configuration and models are left alone.
+`install` writes the supervisor entry disabled, then enables and starts it when
+run directly. Pass `--no-start` to install the bundle and register the
+supervisor without enabling or launching anything; **the release installers
+always pass `--no-start`**, so installing never enables or starts the Server.
+`kitsune-server enable` and `kitsune-server disable` toggle the login
+registration later without reinstalling. Re-run `install` to upgrade: a running
+Server is stopped, the bundle root is replaced, and configuration and models
+are left alone.
 
 `install` resolves the effective config file the same way startup does
 (`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user config) and
@@ -194,12 +196,14 @@ reports the model, device, readiness, and a `gpu`
 block: `{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
 comes from CTranslate2, imported lazily; the resolved device honours
 `server.device`, so a GPU machine can still report `device: cpu`. CPU-only hosts
-are fully supported. CUDA wheels are an optional download: Windows installs
-`nvidia-cublas-cu12` into the bundle's `lib/` with its own runtime (the
-documented `pip install --target` command), and `install.sh --cuda` does the
-same on Linux. `detect_cuda_devices` only reports CUDA after cuBLAS actually
-loads, so a GPU host without the runtime resolves to CPU instead of failing on
-the first transcription. Neither installer downloads the runtime unless asked.
+are fully supported. CUDA wheels are an optional, documented download:
+`nvidia-cublas-cu12` is installed into the bundle's `lib/` with the bundle's own
+runtime, on both Linux and Windows. The command and the Windows upgrade
+behaviour are in
+[dependencies.md](dependencies.md#optional-cuda-runtime).
+`detect_cuda_devices` only reports CUDA after cuBLAS actually loads, so a GPU
+host without the runtime resolves to CPU instead of failing on the first
+transcription. Neither installer downloads or installs the runtime.
 
 ## Building the artifact (release CI)
 
@@ -215,9 +219,9 @@ The command copies the runtime tree to `runtime/`, every child of each
 site-packages directory to `lib/`, writes `bundle.json` and `bootstrap.py`, and
 archives the four at the archive root. Publish the archive with a `sha256sum`
 entry; `install --artifact` verifies it before extracting. Publish natively per
-platform; CUDA wheels and models are never bundled. The installers download
-`nvidia-cublas-cu12` into the installed `lib/` on request, and the Server falls
-back to CPU when it is absent.
+platform; CUDA wheels and models are never bundled. CUDA is an optional manual
+step documented in [dependencies.md](dependencies.md#optional-cuda-runtime);
+the Server falls back to CPU when it is absent.
 
 Release CI builds the matching Windows bundle with
 `--platform windows` from a standalone Python tree that contains both
@@ -231,5 +235,7 @@ a corrupted download never replaces a working Server.
 task XML on Windows, removes the launcher, and deletes the bundle root. On
 Windows the task is ended before anything is deleted: a running `pythonw.exe`
 holds files inside the bundle. It is idempotent and preserves `kitsune.yaml`
-and `server.download_root` (models). A future installer offers a separate purge
-step for those (see the spec's uninstall stories).
+and `server.download_root` (models). The release installers run this as part of
+`--uninstall` / `-Uninstall`; `--purge` / `-Purge` additionally removes
+configuration, models, certificates, pairing state, logs, and tokens. See
+[install.md](install.md#uninstall-and-purge).

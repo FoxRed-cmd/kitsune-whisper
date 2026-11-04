@@ -47,20 +47,39 @@ The `verify-version` job runs first and every build job depends on it.
 | Job | Artifact |
 | --- | --- |
 | `client-linux` | `kitsune-client_linux_amd64.tar.gz` (GTK4 + WebKitGTK 6.0) |
-| | `kitsune-client_linux_amd64-legacy.tar.gz` (GTK3 + WebKit2GTK 4.1) |
 | `client-windows` | `kitsune-client_windows_amd64.zip` |
 | `server-bundle` | `kitsune-server_linux_amd64.tar.gz` |
 | `server-bundle-windows` | `kitsune-server_windows_amd64.tar.gz` |
 | `release` | `install.sh`, `install.ps1`, `checksums.txt`, `checksums.txt.sig`, all of the above |
 
-`checksums.txt` is generated in the release job with `sha256sum` over every
-`kitsune-*` asset plus the two installer scripts. The installers and the Client's
-update check verify a download against it before running anything. `install.sh`
-is the Linux updater's verified asset; `install.ps1` is the pinned Windows
-bootstrap. The release job then signs `checksums.txt` with the offline release
-key and uploads the detached signature next to it.
+The installers consume the GTK4 + WebKitGTK 6.0 Client archive. A host without
+those libraries still installs and runs headless, with Settings in the browser.
 
-## Signing
+The two installers are the only installation artifacts. They download the
+Client and Server archives from the same release and verify them against the
+signed checksum file. No distribution package or desktop bundle is produced.
+
+### What each archive contains
+
+| Artifact | Contents |
+| --- | --- |
+| `kitsune-client_linux_amd64.tar.gz` | `kitsune-client`, `kitsune.example.yaml` |
+| `kitsune-client_windows_amd64.zip` | `kitsune-client.exe`, `kitsune.example.yaml` |
+| `kitsune-server_linux_amd64.tar.gz` | `runtime/`, `lib/`, `bootstrap.py`, `bundle.json` |
+| `kitsune-server_windows_amd64.tar.gz` | `runtime/` (`python.exe`, `pythonw.exe`), `lib/`, `bootstrap.py`, `bundle.json` |
+
+## Checksums and signature
+
+`checksums.txt` is generated in the release job with `sha256sum` over every
+`kitsune-*` archive plus `install.sh` and `install.ps1`. Both installers verify
+the signature over `checksums.txt` before trusting any digest, and every archive
+against that file before extraction.
+
+The release job then signs `checksums.txt` with the offline release key and
+uploads the detached signature next to it. A release without a signature is
+never published.
+
+### Signing
 
 Every release carries `checksums.txt.sig`: a detached ECDSA P-256 / SHA-256
 signature over `checksums.txt`. OpenSSL writes it as a DER-encoded
@@ -74,8 +93,7 @@ The public key is committed at
 The private key exists only as the repository secret `RELEASE_SIGNING_KEY` and
 as an offline backup; it is never committed. The release job fails before
 uploading anything when the secret is absent, when it is not the key that
-matches the committed public key, or when signing fails. No unsigned release is
-published.
+matches the committed public key, or when signing fails.
 
 The job and the local helper (`scripts/sign-release-checksums.sh`) both verify
 the new signature against the committed public key immediately after signing,
@@ -144,10 +162,11 @@ scripts/build-linux-artifacts.sh --output dist
 ```
 
 Without `--version` it reads the root `VERSION`; release CI passes the tag
-explicitly. It builds the GTK4 and GTK3 Clients, the Server bundle (when
+explicitly. It builds the Linux Client and the Server bundle (when
 `KITSUNE_SERVER_RUNTIME`, `KITSUNE_SERVER_SITE_PACKAGES`, and
 `KITSUNE_SERVER_PYTHON` point at a resolved runtime), then writes
-`checksums.txt`. Use `--no-server` for a Client-only build.
+`checksums.txt`. The builder can produce a Client-only or Server-only set when
+asked; release CI uses its own selective jobs.
 
 A manual publish must sign the same way CI does and upload the signature with
 the checksums:
@@ -175,6 +194,11 @@ scripts/e2e-live.sh --profile local-cpu --report e2e-cpu.md
 scripts/e2e-trust.sh --model small --report e2e-trust.md
 ```
 
+The Python suite includes the documentation assertions that keep the
+dependency identifiers in
+[`dependencies.md`](dependencies.md#what-the-installers-check) in sync with
+`install.sh` and `install.ps1`.
+
 ## Release checklist
 
 - [ ] `VERSION`, `server/pyproject.toml`, and `__init__.py` all say the new
@@ -188,18 +212,33 @@ scripts/e2e-trust.sh --model small --report e2e-trust.md
 - [ ] The manual matrix in
       [verification/manual-matrix.md](verification/manual-matrix.md) is executed
       for GNOME Wayland, Windows, and a real CUDA host.
-- [ ] The artifacts install and dictate on clean Windows and Linux machines.
+- [ ] A clean Linux install runs `install.sh` with no `sudo`, no package-manager
+      call, no udev rule, and no enabled or started unit; `--dry-run` and
+      `--check` change nothing.
+- [ ] A clean Windows install runs `install.ps1` without administrator rights,
+      creates no startable logon task, and appears in Apps & Features.
+- [ ] The installers place exactly the selected Components; the Client starts
+      an installed Local Server on launch; autostart is off until switched on.
+- [ ] The first-run wizard downloads the model with progress; the Server starts
+      without a model and downloads nothing on its own.
 - [ ] `checksums.txt` lists every published asset and both installer scripts.
 - [ ] `checksums.txt.sig` verifies against the committed public key with
       OpenSSL, and the release is not published if it does not.
-- [ ] Documentation is current: install, configuration, pairing/revocation, LAN
-      exposure, models, updates, and troubleshooting.
+- [ ] Uninstall keeps configuration, models, and pairing state; purge removes
+      every trace we created and no package the user installed; a user-added
+      udev rule is documented as a manual removal.
+- [ ] `docs/dependencies.md` lists every package and injection tool for the
+      supported distributions and both platforms.
+- [ ] Documentation is current: install, dependencies, configuration,
+      pairing/revocation, LAN exposure, models, updates, and troubleshooting.
 - [ ] Docker smoke (optional, opt-in) passes for a packaging change.
 
 ## Rollback
 
 - **Client or Server:** reinstall the previous release. The installer keeps
   `kitsune.yaml`, models, Devices, and TLS, and `migrate-config` is additive.
+  On Linux a lower version needs `--force`; the Windows installer does not
+  block it.
 - **Docker:** pin the previous `vX.Y.Z-cpu` / `vX.Y.Z-gpu` image tag.
 - **A bad tag:** do not move it. Ship a patch release. Delete a draft release
   only if nothing was published.

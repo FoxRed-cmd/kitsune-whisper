@@ -18,6 +18,108 @@ audio never leaves your network.
   API) — over HTTP.
 - All read one `kitsune.yaml` (each process reads only its own section).
 
+## Quick Start
+
+There is exactly one installation path per platform. The script installs the
+Client, the native Server bundle, or both as your own files, verifies the
+release signature and checksums, and stops there: **nothing is elevated,
+started, enabled, or registered for autostart**. Re-running the same command
+upgrades in place; configuration, models, and pairing survive.
+
+### Linux
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
+```
+
+### Windows (PowerShell 7+)
+
+```powershell
+irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
+```
+
+Both components are installed by default. Install one with
+`--client-only` / `--server-only` on Linux, or `-ClientOnly` / `-ServerOnly` on
+Windows. Pin a release with `--version vX.Y.Z` (Linux) or `-Version vX.Y.Z`
+(Windows), or with `KITSUNE_VERSION`.
+
+Every flag is discoverable before anything changes:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --help
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --check
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --dry-run
+```
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -DryRun
+```
+
+`--check` reports the installed and available versions plus the installed
+components, and changes nothing. `--dry-run` prints the install plan and changes
+nothing. To pass any flag through a piped Windows one-liner, wrap it as
+`& ([scriptblock]::Create((irm …))) -Flag`.
+
+After installing the Client, launch **kitsune-whisper** from the application
+menu (Linux) or Start menu (Windows). The Client starts the Local Server when
+one is installed. A Server-only install has no menu entry; drive it with
+`kitsune-server` or leave it for another Client. Autostart is off until you turn
+it on in **Settings → Startup**. The first-run wizard downloads the Whisper
+model with progress; **nothing is downloaded at install time or when the Server
+starts**.
+
+You do **not** need Python, pip, a virtual environment, or Docker to install or
+run kitsune-whisper. Docker remains an alternative for a dedicated Server host.
+See [Dependencies](#dependencies) for the complete list.
+
+## Dependencies
+
+The installers install our binaries and nothing else. They check the runtime
+surface and warn — a missing dependency never fails an install whose binaries
+were written. Warnings point here; the full per-distribution matrix, exact
+commands, and the removal steps for a rule you added are in
+[`docs/dependencies.md`](docs/dependencies.md).
+
+| Platform | Need | Without it |
+| --- | --- | --- |
+| Linux Client | GTK4 + WebKitGTK 6.0 | Settings opens in your browser instead of the embedded window |
+| Linux Client | ALSA (`libasound.so.2`) | the Client cannot record |
+| Linux Client | X11 (`libX11.so.6`) | hotkeys and X11 injection do not load |
+| Linux Client | glibc `2.39` | the Client cannot run; a glibc `2.35` host can still run the Server |
+| Linux Server | glibc `2.35` | the Server cannot run |
+| Wayland Client | `wtype` (wlroots) or `ydotool` (GNOME/KDE, wlroots) | transcription only reaches the clipboard |
+| Wayland Client | `/dev/uinput` access for `ydotool` | `ydotool` cannot inject; clipboard-only |
+| Windows Client | Microsoft Edge WebView2 Runtime | Settings and the Tray cannot open |
+| Windows | Windows 10 build 17763+ (1809), 64-bit | the release artifacts do not run |
+
+Quick package commands (the full matrix has every manager and notes):
+
+| Manager | GTK4 + WebKitGTK 6.0 + ALSA + X11 |
+| --- | --- |
+| apt (Debian/Ubuntu) | `sudo apt install libgtk-4-1 libwebkitgtk-6.0-4 libasound2 libx11-6` |
+| dnf (Fedora) | `sudo dnf install gtk4 webkitgtk6.0 alsa-lib libX11` |
+| pacman (Arch) | `sudo pacman -S --needed gtk4 webkitgtk-6.0 alsa-lib libx11` |
+| zypper (openSUSE) | `sudo zypper install libgtk-4-1 libwebkitgtk-6_0-4 libasound2 libX11-6` |
+
+On Wayland also install `wl-clipboard` and the injection tool for your session:
+`wtype` on wlroots, `ydotool` on GNOME/KDE Plasma. Give `ydotool` access to
+`/dev/uinput` with either a `uaccess` udev rule or an `input`-group rule plus
+group membership; the exact commands, and how to remove a rule you added, are
+in [dependencies.md](docs/dependencies.md#granting-uinput-access). The
+installer never writes such a rule.
+
+**Uninstall keeps configuration, models, and pairing state.** `--purge` /
+`-Purge` removes every trace we created: configuration, models, certificates,
+Device tokens, logs, Spool, and wizard progress. Neither command removes a
+package you installed yourself, and neither removes a udev rule you added — that
+is a manual step. The Linux and Windows uninstall commands and the exact
+boundaries are in [install.md](docs/install.md#uninstall-and-purge).
+
+Windows specifics: the build is unsigned, so SmartScreen may ask you to confirm
+the first run; no Visual C++ redistributable is needed; and no scheduled task
+runs at logon. CUDA is an optional documented step on both platforms
+([dependencies.md](docs/dependencies.md#optional-cuda-runtime)).
+
 ## Architecture
 
 The **Client** and **Server** talk HTTP over your LAN; the optional **LLM
@@ -146,18 +248,24 @@ sequenceDiagram
     end
 ```
 
-## Quickstart (NVIDIA GPU)
+## Docker Server on a dedicated host
 
-The fast path on an NVIDIA host: Docker runs the **Server** (CUDA) plus a bundled
-llama.cpp **sidecar** for local Refine/Summarize, and the Go **Client** runs on
-your desktop. Nothing is compiled and nothing leaves the machine.
-
-Prerequisite: a recent NVIDIA driver and **`nvidia-container-toolkit`** (Linux) or
-Docker Desktop with WSL2 GPU passthrough (Windows) — see
-[GPU prerequisites](#gpu-prerequisites). CPU-only and external-endpoint setups
-are in [`docs/install.md`](docs/install.md).
+The native per-user bundle is the default Server on a laptop or desktop that
+also runs the Client. Docker remains supported for a **dedicated** host — for
+example a GPU machine that stays on and serves other Clients. The two
+deployments run the same Server code, API, TLS, Device tokens, Admin API, and
+Model catalog; only storage differs.
 
 ### 1. Server + local LLM (Docker)
+
+The fast path on an NVIDIA host: Docker runs the **Server** (CUDA) plus an
+optional llama.cpp **sidecar** for local Refine/Summarize, and the Go **Client**
+runs on your desktop. Nothing is compiled and nothing leaves the machine.
+
+Prerequisite: a recent NVIDIA driver and **`nvidia-container-toolkit`** (Linux)
+or Docker Desktop with WSL2 GPU passthrough (Windows) — see
+[GPU prerequisites](#gpu-prerequisites). CPU-only and external-endpoint setups
+are in [`docs/install.md`](docs/install.md).
 
 ```sh
 mkdir -p config
@@ -170,7 +278,7 @@ read-only file mount would break config writes. The image sets
 `KITSUNE_CONFIG=/config/kitsune.yaml`, which `docker exec` also inherits, so
 pairing inside the container reads the same file as the Server.
 
-Turn the feature on in `config/kitsune.yaml` — the Server master switch
+Turn processing on in `config/kitsune.yaml` — the Server master switch
 (`server.processing.enabled` is `false` by default). A request then opts in with
 its `refine` / `summarize` form fields; the Client does not send them, so this is
 for direct API users:
@@ -192,16 +300,17 @@ The Server reads `/config/kitsune.yaml` (mounted from the directory above), so
 restart it after later file edits (`docker compose restart server-gpu`). Hot
 settings such as `log_level` can also be changed from the Admin API/Settings
 window without a restart; the Server writes them back into
-`config/kitsune.yaml`. The Client
-reads the `client:` section from its own config (see [step 2](#2-client)); you can
-point it at this same file instead with `--config ./config/kitsune.yaml` or
+`config/kitsune.yaml`. The Client reads the `client:` section from its own
+config; you can point it at this same file instead with
+`--config ./config/kitsune.yaml` or
 `KITSUNE_CONFIG=$PWD/config/kitsune.yaml`.
 
-The first run downloads the Whisper `small` model and the Qwen3 GGUF into the
-shared `kitsune-models` volume; later runs reuse them. The Server listens on
-`https://localhost:8765` with a self-signed certificate (the `-k` flag below
-accepts it; the Client pins the fingerprint instead), and the sidecar is
-reachable on the compose network as `llama` — which the Server services are
+The Server downloads **no model when it starts**. Use the first-run wizard or
+**Settings → Models** to download the Whisper model (and the sidecar's Qwen3
+GGUF) into the shared `kitsune-models` volume; later runs reuse them. The Server
+listens on `https://localhost:8765` with a self-signed certificate (the `-k`
+flag below accepts it; the Client pins the fingerprint instead), and the sidecar
+is reachable on the compose network as `llama` — which the Server services are
 already pointed at.
 
 Every transcription and management request needs a Device token. The loopback
@@ -229,70 +338,27 @@ curl -k https://localhost:8765/health
 
 A Server that has not loaded a model answers `loaded: false` with
 `model_state: "cold"` and an empty `model`, and `POST /transcribe` returns
-`503` until the wizard downloads a model. The native per-user install does not
-have this limitation: the Client auto-pairs over loopback on the same machine.
+`503 model_unavailable` until the wizard downloads a model.
 
 ### 2. Client
 
-```sh
-# Linux: Client, Tray, local Server bundle, and Wayland helpers in one command
-curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
-```
+Install the Client on the machine with the microphone and display. Installing
+both components is the default; for a Docker Server use the Client alone
+(`--client-only` / `-ClientOnly`) as described in [Quick Start](#quick-start).
 
-```powershell
-# Windows (PowerShell 7+): native per-user install, Tray, local Server bundle
-irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
-```
-
-The Windows one-liner downloads `kitsune-client_windows_amd64.zip` and
-`kitsune-server_windows_amd64.tar.gz`, verifies both against `checksums.txt`,
-and installs them under `%LOCALAPPDATA%\Programs\kitsune-whisper`. It needs no
-administrator rights, installs nothing at login, and never downloads WebView2:
-a missing Evergreen Runtime produces a warning that points at the documented
-manual install. `install.ps1 -ClientOnly` and `install.ps1 -ServerOnly` select a
-single component. The uninstall entry is in **Apps & features**.
-
-The native Server bundle does not ship CUDA. On an NVIDIA host, install
-`nvidia-cublas-cu12` into the installed bundle's `lib` directory as described in
-[`docs/install.md`](docs/install.md#windows); without it the Server falls back to
-CPU. An existing CUDA directory survives a Windows installer upgrade.
-
-The Linux installer verifies every archive checksum, installs the Client, the
-native Server, and the bundled `ydotool`/`wtype`, and registers systemd **user**
-units for all three. It asks for `sudo` once to install GTK/WebKitGTK and the
-udev `uaccess` rule, then never again. Docker remains the supported deployment
-for a dedicated GPU host; the one-liner installs both parts locally by default.
-On Ubuntu 24.04+/Fedora 40+ the default build is GTK4/WebKitGTK 6.0; older LTS
-hosts automatically get the GTK3/WebKit2GTK 4.1 build.
-
-Declining elevation still installs a working headless Client: Settings open in
-the browser and Wayland injection stays clipboard-only until you re-run with
-`sudo`. Both installers drop a `kitsune.yaml` template **only if absent**. The
-active Server profile is `local` by default:
-
-```yaml
-client:
-  servers:
-    - id: local
-      name: Local Server
-      url: https://localhost:8765
-      fingerprint: ""
-      auto_pair: true
-  active_server: local
-```
-
-On the same machine the Client auto-pairs with the Local Server over loopback:
-it receives a Device token, stores it in the OS keychain (or a `0600` file), and
+The Client stores its Device token in the OS keychain (or a `0600` file) and
 pins the certificate fingerprint into the profile. A Remote Server is added in
 **Settings → Servers and Devices** with its address and a one-time Pairing code;
-the same screen lists and revokes trusted Devices (the Local Client's own
-Device is read-only while the Local Server profile is active). Tokens never
-appear in this file or in the logs.
+the same screen lists and revokes trusted Devices. Tokens never appear in
+`kitsune.yaml` or in the logs.
 
-Restart the Client service after editing (`systemctl --user restart
-kitsune-client.service` on Linux; `Stop-ScheduledTask`/`Start-ScheduledTask
--TaskName kitsune-client` on Windows). Re-run the installer to upgrade;
-`--uninstall` / `-Uninstall` removes it. See [`docs/install.md`](docs/install.md).
+Restart the Client after editing `kitsune.yaml`: use **Restart** in the Tray, or
+relaunch it. If you turned autostart on, the registration exists and can be
+restarted with `systemctl --user restart kitsune-client.service` (Linux) or
+`Stop-ScheduledTask`/`Start-ScheduledTask -TaskName kitsune-client` (Windows).
+Re-run the installer to upgrade; `--uninstall` / `-Uninstall` removes it, and
+`--purge` / `-Purge` also removes user data. See
+[`docs/install.md`](docs/install.md).
 
 ### 3. Dictate
 
@@ -320,12 +386,12 @@ The defaults are `client.hotkey: Ctrl+Shift+Space` and
 
 ## Server (Docker for a dedicated host)
 
-For a laptop or desktop that already runs the Client, install the native
-per-user bundle instead: its unit or task starts and restarts it, and running
-it needs no system Python and no Docker. Installing it is a Python command, so
-a host without Python needs a bootstrap interpreter (the release installers
-own that; see [the native Server bundle](docs/server-bundle.md)). `install`
-pins the config file it resolves into the supervisor, so the Client and the
+For a laptop or desktop that already runs the Client, the native per-user bundle
+is the default: the Client starts it on launch and can restart it, and running
+it needs no system Python and no Docker. The bundle carries its own pinned
+runtime and a `bootstrap.py`, so the installer works on a host with no system
+Python (see [the native Server bundle](docs/server-bundle.md)). `install` pins
+the config file it resolves into the supervisor, so the Client and the
 supervised Server read the same `kitsune.yaml`; `kitsune-server status` prints
 the pinned path, and Windows log output goes to
 `%LOCALAPPDATA%\kitsune-whisper\server.log`.
@@ -414,7 +480,8 @@ docker compose --profile gpu build
 
 ## Documentation
 
-- [`docs/install.md`](docs/install.md) — install, paths, autostart, upgrade/uninstall, hardware.
+- [`docs/install.md`](docs/install.md) — installers, paths, flags, autostart, upgrade/uninstall, hardware.
+- [`docs/dependencies.md`](docs/dependencies.md) — the full dependency matrix, glibc floors, injection tools, uinput, CUDA.
 - [`docs/configuration.md`](docs/configuration.md) — the full `kitsune.yaml` reference.
 - [`docs/security.md`](docs/security.md) — TLS, Device tokens, pairing, revocation, LAN exposure.
 - [`docs/models.md`](docs/models.md) — model catalog, download/activate/delete, idle unload, CUDA.
@@ -445,8 +512,9 @@ paths — through [`scripts/e2e_live.py`](scripts/e2e_live.py). The authenticate
 slice, `scripts/e2e-trust.sh` / `.ps1`, adds local and remote pairing, Device
 revocation, manual Server switch, soft-stop/start, supervised restart, and Spool
 recovery. See `docs/verification/e2e-live-slice.md` and
-`docs/verification/manual-matrix.md`. The Linux installer's one-sudo, `uaccess`,
-bundled-helper, and full-cycle checks are recorded in
+`docs/verification/manual-matrix.md`. The Linux installer's no-sudo,
+no-autostart, signature, component, upgrade, and uninstall/purge checks are
+recorded in
 [`docs/verification/linux-installer.md`](docs/verification/linux-installer.md).
 
 ### Releases
@@ -455,11 +523,11 @@ The current release line is **1.0.0**. The root [`VERSION`](VERSION),
 `server/pyproject.toml`, and `server/kitsune_server/__init__.py` carry the same
 version, and release CI refuses a tag that does not match.
 
-Tagging `v*` runs `.github/workflows/release.yml`: it builds the GTK4 and GTK3
-Clients, the native Server bundles, the bundled Wayland helpers, and the Windows
-Client zip on native runners, then attaches them with `install.sh`, `install.ps1`,
-and `checksums.txt` to the GitHub Release. `publish-server-image.yml` publishes
-the Server images to GHCR.
+Tagging `v*` runs `.github/workflows/release.yml`: it builds the Linux and
+Windows Clients and the native Server bundles on native runners, then attaches
+them with `install.sh`, `install.ps1`, `checksums.txt`, and the detached
+`checksums.txt.sig` signature to the GitHub Release. `publish-server-image.yml`
+publishes the Server images to GHCR.
 See [`docs/release.md`](docs/release.md) for the checklist.
 
 ## License
