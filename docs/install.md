@@ -1,464 +1,413 @@
 # Install, upgrade, and uninstall
 
-The Client is a single binary. The Linux one-line installer and the Windows
-`install.ps1` script also place the native per-user Server bundle (and, on
-Linux, the bundled Wayland helpers), so a fresh machine can dictate from the
-Tray without hand-assembling two projects. Both processes read the same
-`kitsune.yaml` (each reads only its own section).
+kitsune-whisper has exactly one installation path per platform: a per-user
+script that downloads the release, verifies it, and places our files under your
+own profile. It installs **no packages**, asks for no administrator rights, and
+starts nothing. Re-run the same command to upgrade; `kitsune.yaml`, models, and
+pairing state survive.
 
-For the native bundle, `kitsune-server install` resolves the config file exactly
-as startup would (`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user
-config) and pins that absolute path into the unit or task with `--config`. The
-supervised Server therefore reads the same file the Client sees. Create the file
-before installing; when no file exists, no path is pinned and the Server keeps
-its own discovery. `kitsune-server status` prints the path that is actually
-pinned.
+- Linux: `curl -fsSL …/install.sh | bash`
+- Windows: `irm …/install.ps1 | iex`
 
-## Client
+The scripts spend most of their work on the **Components** you selected — the
+Client, the native Server bundle, or both. Runtime libraries are your
+responsibility; the scripts check and warn, and
+[`dependencies.md`](dependencies.md) owns the exact packages.
 
-### Requirements
+## Which components
 
-- **Windows 10/11 (x64)** or **Linux (x64)** with a working microphone.
-- A reachable Server, named by the active Server profile in `client.servers`.
-  The Linux installer puts the Local Server on the same machine by default.
-- **Desktop shell**: GTK4 and WebKitGTK 6.0 on Linux, WebView2 on Windows. The
-  headless `run` role does not need either.
-- **Linux**: a systemd user session for autostart. X11 is first-class; Wayland is
-  best-effort but works out of the box through the bundled helpers (see
-  [Wayland](#wayland-injection-is-set-up-for-you)).
+| Selection | Linux | Windows | Result |
+| --- | --- | --- | --- |
+| Both (default) | no flag | no flag | Client + native Server bundle |
+| Client only | `--client-only` | `-ClientOnly` | Client; no Server bundle, task/unit, or launcher |
+| Server only | `--server-only` | `-ServerOnly` | Server bundle and launcher; no Client, config template, or shortcut |
 
-The default Linux build is **GTK4 + WebKitGTK 6.0** (Ubuntu 24.04+, Fedora 40+,
-and current Arch). A **GTK3 + WebKit2GTK 4.1** build is published for older LTS
-distributions; the installer selects it when those are the only libraries the
-host has.
+The two component flags are mutually exclusive. A Client-only install is the
+right choice when the Server runs on another machine or in Docker. A
+Server-only install is the right choice for a host that only serves
+transcriptions.
 
-### Install
+## Quick install
 
-Linux — the all-in-one installer:
+Linux:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash
 ```
 
-It downloads the Client, the native Server bundle, and the bundled Wayland
-helpers, verifies every SHA-256 against `checksums.txt`, installs them under your
-home directory, registers three systemd **user** units, and adds
-**kitsune-whisper** to the application menu with the fox icon. It asks for
-`sudo` at most once:
-
-- install the GTK/WebKitGTK runtime packages the selected build needs;
-- write the udev `uaccess` rule and the `modules-load.d` entry for
-  `/dev/uinput`, so the bundled `ydotoold` can inject text without adding you to
-  a group or asking you to log out and back in.
-
-Nothing else runs as root during install. Re-running never asks for packages or
-the rule again; if a current desktop session somehow missed the ACL, the
-installer reapplies the rule once. Declining elevation with `--no-elevate` (or by
-answering the prompt with no): the Client still installs and dictates, Settings
-open in your browser instead of an embedded window, and Wayland injection stays
-clipboard-only ("press Ctrl+V") until you re-run with elevation.
-
-Useful installer options:
-
-```sh
-install.sh --no-server        # Client and Wayland helpers only
-install.sh --no-wayland       # skip the bundled helpers and the ydotoold unit
-install.sh --gui gtk3         # force the legacy build (auto by default)
-install.sh --cuda             # download the NVIDIA CUDA runtime (~550 MB)
-install.sh --from ./release   # install verified artifacts from a directory
-install.sh --dry-run          # print the plan and change nothing
-```
-
-The native Server bundle does not carry CUDA. On an NVIDIA host, `--cuda`
-downloads `nvidia-cublas-cu12` into the bundle and restarts the Server; without
-it (or when `nvidia-smi` finds no GPU) `server.device: auto` resolves to CPU.
-For the piped one-liner, pass it as
-`curl ... | bash -s -- --cuda`.
-
-Windows 10/11 (x64) — one per-user script:
+Windows (PowerShell 7 or newer):
 
 ```powershell
 irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1 | iex
 ```
 
-It needs **no administrator rights** and installs the Client with its Tray and
-Settings window, the optional native Server bundle, a Start Menu shortcut, and
-an **Apps & features** entry under `%LOCALAPPDATA%\Programs\kitsune-whisper`.
-The Server's Task Scheduler registration is created disabled: nothing starts at
-login, and `schtasks /Run /TN kitsune-server` starts it on demand. Pass
-`-ClientOnly` or `-ServerOnly` to install one component; the default is both.
-The CUDA runtime is optional and documented below; an existing
-`Server\lib\nvidia` directory is kept across upgrades.
-
-Pin a release with `KITSUNE_VERSION=vX.Y.Z`, or pass `-Version vX.Y.Z` on
-Windows. Both installers drop a `kitsune.yaml` template **only if it does not
-already exist**. `install.ps1 -ForceConfig` overwrites an existing template;
-`-DryRun` prints the plan and changes nothing, and `-From DIR` installs from
-local artifacts.
-
-The installer never downloads WebView2. If the Evergreen Runtime is missing it
-warns and links to the manual download; install it from the Microsoft page
-named in the warning (or let Windows Update deliver it) before opening the
-embedded Settings window. The Client can still run headless.
-
-The Server bundle does not carry CUDA. To use an NVIDIA GPU, install
-`nvidia-cublas-cu12` into the installed bundle with its own runtime:
-
-```powershell
-& "$env:LOCALAPPDATA\Programs\kitsune-whisper\Server\runtime\python.exe" `
-  -m pip install --target `
-  "$env:LOCALAPPDATA\Programs\kitsune-whisper\Server\lib" nvidia-cublas-cu12
-```
-
-The download is ~550 MB. Without it, `server.device: auto` resolves to CPU.
-Re-running the installer keeps the directory; uninstall keeps it only if you do
-not remove the install tree.
-
-From source (requires a C toolchain — `malgo` uses cgo):
+To pass a flag through a pipe, Linux uses `bash -s --`:
 
 ```sh
-cd client && go build -tags "desktop purego" -o kitsune-client ./cmd/kitsune-client
-./kitsune-client install-autostart   # optional
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh \
+  | bash -s -- --client-only --version v1.2.3
 ```
 
-On Windows, build through the packaging script instead of calling `go build`
-directly. cgo forces Go's external linker, which ignores `-H=windowsgui`; the
-script passes the GUI subsystem to the C linker and adds the icon and version
-resources generated from the SVG brand asset:
+Windows cannot pass parameters to `iex` directly; wrap the downloaded script:
 
 ```powershell
-$env:CC = 'zig cc'   # or a gcc on PATH
-./packaging/windows/build-client.ps1 -Version v1.0.0
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -ClientOnly -Version v1.2.3
 ```
 
-`dist\kitsune-client.exe` is then a GUI executable: double-clicking it does not
-open a console, and Explorer shows the kitsune-whisper icon.
+After installing, launch **kitsune-whisper** from the application menu or Start
+menu. The Client starts an installed Local Server on launch. Autostart is off;
+turn it on in **Settings → Startup** if you want the selected Components to
+start at login. The first-run wizard downloads the model with progress —
+nothing is downloaded at install time or when the Server starts.
 
-The `desktop` tag adds the Wails Settings window and Tray; on Linux `purego`
-loads GTK4 and WebKitGTK 6.0 at runtime instead of linking their development
-headers. Add `gtk3` to build the legacy GTK3 + WebKit2GTK 4.1 variant
-(`-tags "desktop purego gtk3"`). Leave both tags off to build the headless
-Client, which keeps the `run` role and every one-shot command but has no window
-or Tray.
+## What gets installed
 
-### Wayland injection is set up for you
-
-On **Windows and X11** the Client synthesizes the paste itself — nothing extra.
-On **Wayland** the compositor gives no unprivileged way to inject a keystroke,
-so the Client shells out to a helper. The Linux installer bundles and supervises
-both helpers, so a fresh install needs no manual `ydotool` setup:
-
-- **`ydotoold`** runs as a systemd user unit (`kitsune-ydotoold.service`) with a
-  socket in your `$XDG_RUNTIME_DIR` and access to `/dev/uinput` through the
-  `uaccess` rule. This is the universal path (GNOME, KDE, wlroots).
-- **`wtype`** is installed for wlroots compositors, where it needs no
-  privileges.
-- With `client.wayland_tool: auto` the Client tries `wtype` first (wlroots) and
-  then `ydotool` (everywhere). If neither works it leaves the transcription on
-  the clipboard and logs a "press Ctrl+V" hint.
-
-Verify with a text field focused:
-
-```sh
-ydotool type "hello"            # types text
-ydotool key 29:1 47:1 47:0 29:0 # Ctrl+V
-```
-
-If `ydotoold` is not running, `ydotool` fails instantly; the Client detects this
-and degrades to clipboard-only (the error is in
-`~/.cache/kitsune-whisper/client.log`). Force a specific helper with
-`client.wayland_tool` (`wtype`|`ydotool`|`none`). See
-[Wayland support and known limitations](wayland.md) for the full session matrix.
-
-If you build from source or deliberately skip the helpers (`--no-wayland`), the
-manual setup is still:
-
-1. Install `ydotool` from your distribution (or build it from
-   <https://github.com/ReimuNotMoe/ydotool>) and `wtype` where available.
-2. Grant `/dev/uinput` access. The release installer's rule is
-   `KERNEL=="uinput", SUBSYSTEM=="misc", TAG+="uaccess",
-   OPTIONS+="static_node=uinput"` in
-   `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules`. A group-based
-   alternative is `GROUP="input", MODE="0660"` plus membership in `input` (that
-   one needs a re-login).
-3. Run `ydotoold` in your user session so its socket lands in
-   `$XDG_RUNTIME_DIR` (the path `ydotool` looks in by default), for example
-   `ydotoold &` or a systemd user unit. If it runs elsewhere, point the Client's
-   environment at the socket with `YDOTOOL_SOCKET=/path/to/.ydotool_socket`.
-4. Verify with the two commands above.
-
-### Where things go
-
-| | Linux | Windows |
+| Piece | Linux | Windows |
 | --- | --- | --- |
-| Client binary | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-client.exe` |
+| Client | `~/.local/bin/kitsune-client` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-client.exe` |
+| Server launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-server.cmd` |
 | Server bundle | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\Server` |
-| Uninstall shim | — (the script removes itself) | `%LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1` |
-| Bundled Wayland helpers | `~/.local/lib/kitsune-whisper/wayland/bin` | — |
-| Config | `~/.config/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
+| Uninstall shim | — (re-run `install.sh`) | `%LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1` |
+| Install manifest | `~/.local/state/kitsune-whisper/install.json` | — (Apps & Features reads the bundle or Client version) |
+| Config | `${XDG_CONFIG_HOME:-~/.config}/kitsune-whisper/kitsune.yaml` | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
 | Setup progress | `~/.config/kitsune-whisper/wizard.json` | `%APPDATA%\kitsune-whisper\wizard.json` |
-| Spool | `~/.cache/kitsune-whisper/spool` | `%LOCALAPPDATA%\kitsune-whisper\spool` |
-| Models | `~/.cache/kitsune-whisper/models` | `server.download_root` |
-| Client log | `~/.cache/kitsune-whisper/client.log` | `%LOCALAPPDATA%\kitsune-whisper\client.log` |
-| Server state | `~/.local/state/kitsune-whisper` (TLS, Devices, pairing, log, soft-stop) | `%LOCALAPPDATA%\kitsune-whisper` |
-| udev rule | `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` | — |
+| State (TLS, Devices, pairing, logs, soft-stop) | `${XDG_STATE_HOME:-~/.local/state}/kitsune-whisper` | `%LOCALAPPDATA%\kitsune-whisper` |
+| Cache, Spool, Client log | `${XDG_CACHE_HOME:-~/.cache}/kitsune-whisper` | `%LOCALAPPDATA%\kitsune-whisper` |
+| Models | `~/.cache/kitsune-whisper/models` by default | `%USERPROFILE%\.cache\kitsune-whisper\models` by default |
 
-An explicit `--config PATH`, `KITSUNE_CONFIG`, or a `./kitsune.yaml` in the
-current directory overrides the default config location. Validate a config
-without starting:
+`server.download_root` moves the model directory. `--config PATH`,
+`$KITSUNE_CONFIG`, or a `./kitsune.yaml` in the current directory overrides the
+default config location. `kitsune-client --check-config` prints the effective
+Client section without starting anything; `kitsune-server --check-config` does
+the same for the Server.
 
-```sh
-kitsune-client --check-config
-kitsune-client --version
-```
+Both installers write a `kitsune.yaml` template **only when no file exists**.
+They never overwrite values (use `--force-config` / `-ForceConfig` if you
+explicitly want the template back).
 
-### First dictation
+## Linux installer
 
-Once a Server is reachable at the active profile (`client.active_server`), start the Client:
+### Flags
 
-```sh
-kitsune-client gui              # Settings window plus the Tray
-kitsune-client gui --hidden     # start in the Tray without a window
-kitsune-client run              # headless: hotkeys and the control socket only
-```
+| Flag | Effect |
+| --- | --- |
+| `--client-only` | Install only the Client. |
+| `--server-only` | Install only the Server bundle. |
+| `--version VERSION` | Install a pinned release instead of the latest one. |
+| `--from DIR` | Install from release artifacts already in `DIR` (offline). |
+| `--force` | Permit installing a version older than the recorded one. |
+| `--force-config` | Overwrite an existing `kitsune.yaml` with the template. |
+| `--check` | Print installed and available versions and the installed Components; change nothing. |
+| `--dry-run` | Print the plan and change nothing. |
+| `--insecure` | Skip the release signature check (local development only; checksums are still verified). |
+| `--uninstall` | Remove binaries, bundle, registrations, menu entry, and icons; keep user data. |
+| `--purge` | With `--uninstall`: also remove configuration, models, cache, state, logs, Spool, wizard progress, and keyring tokens. |
+| `--remove-models` | With `--uninstall`: delete downloaded models. |
+| `--remove-server-data` | With `--uninstall`: delete certificates, Devices, logs, and soft-stop state. |
+| `-h`, `--help` | Print usage. Works under `curl | bash -s -- --help`. |
 
-Press **Ctrl+Shift+Space** to start and stop recording; **Ctrl+Shift+Q** cancels
-without injecting. On GNOME Wayland, open Settings → Dictation and click
-**Add shortcuts to GNOME** if the portal does not deliver the hotkeys; the
-Client then uses GNOME custom shortcuts and keeps them in sync with these
-values. Closing the Settings window hides it to the Tray; **Quit** in the
-Tray stops the Client and releases its hotkeys, microphone, control socket, and
-single-instance lock. **Restart** re-executes the Client.
+The script embeds its help text, so `--help` does not need the script to be a
+readable file. `--purge`, `--remove-models`, and `--remove-server-data` are
+only valid with `--uninstall`; `--check` and `--uninstall` are mutually
+exclusive.
 
-The autostart desktop entry, the systemd unit, and the Windows logon task all
-launch `gui --hidden`, so dictation is available from login without a window.
-The visible **kitsune-whisper** menu entry also launches `gui`, so a second click
-asks the running instance to show Settings and exits. Only one long-lived Client
-may run per user session. The Tray is best-effort — on a desktop without
-AppIndicator support, `kitsune-client settings` still opens the window on a
-running desktop Client.
+Environment: `KITSUNE_VERSION` (same as `--version`) and
+`KITSUNE_ARTIFACTS_DIR` (same as `--from`).
 
-Handy subcommands:
-
-```sh
-kitsune-client settings             # open Settings on the running Client
-kitsune-client record --seconds 5   # capture once and print the text
-kitsune-client transcribe-file f.wav  # transcribe an existing WAV
-kitsune-client spool list           # utterances saved by failed dictations
-kitsune-client toggle               # external trigger (Wayland compositor bind)
-```
-
-See [Configuration](configuration.md) for the full `kitsune.yaml` reference and
-[Wayland support and known limitations](wayland.md) for the Linux session matrix.
-
-### Autostart
-
-The client runs in the logged-in **user session**, never as a system/SCM
-service — a service cannot see the user's hotkeys or clipboard
-(`docs/adr/0001-client-runs-in-user-session.md`). The installers register
-autostart by calling the installed binary:
+### Checking before changing anything
 
 ```sh
-kitsune-client install-autostart      # optional --config PATH pins a config
-kitsune-client uninstall-autostart
-kitsune-client install-desktop        # Linux menu entry + icon
-kitsune-client uninstall-desktop
+./install.sh --check
+./install.sh --dry-run
+./install.sh --dry-run --server-only --from ./release
 ```
 
-The generated unit, task, and autostart desktop entry run `gui --hidden`: the
-Client starts in the Tray with no window, and the hotkey is available
-immediately. `install-desktop` is separate from login autostart: it writes the
-visible `kitsune-whisper.desktop` launcher and the scalable fox icon under
-`~/.local/share/icons/hicolor`, so the client can always be opened from the
-application menu even after `uninstall-autostart`.
+`--check` prints the manifest path, the installed version, the installed
+Components, and the available version. `--dry-run` prints which Components,
+paths, config, manifest, and source it would use, plus
+`Privilege escalation: none; autostart registration: none`.
 
-- **Linux** — a systemd **user** unit at
-  `~/.config/systemd/user/kitsune-client.service`, `WantedBy`/`After`
-  `graphical-session.target`, `Restart=on-failure`. No linger (linger would start
-  it at boot with no display). The installer also writes the
-  `io.github.FoxRed-cmd.kitsune-whisper.desktop` file the Wayland
-  GlobalShortcuts portal needs, installs the matching icon, and adds a
-  drop-in that puts the bundled `ydotool`/`wtype` directory on the unit's
-  `PATH`.
-- **Windows** — a per-user **Task Scheduler** task `kitsune-client` at logon,
-  running interactively with least privilege and restart-on-failure. If task
-  registration is denied, it falls back to the
-  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` value `kitsune-whisper`.
-  The installer does not create this task: it belongs to the autostart switch.
-  The installer does register `kitsune-server`, which runs the bundle's
-  `pythonw.exe` hidden (no console window) with its logon trigger **disabled**;
-  nothing starts at login, while `schtasks /Run /TN kitsune-server` starts it on
-  demand. The uninstall shim removes that registration.
+### Upgrade, manifest, check, and downgrade
 
-The Linux installer also registers `kitsune-server.service` and
-`kitsune-ydotoold.service`. The Server unit starts at login (no
-`graphical-session.target` dependency; it serves the network) and restarts on
-failure. The ydotool unit starts with the graphical session.
+Every successful Linux install writes
+`~/.local/state/kitsune-whisper/install.json` with the version, the Components,
+and a UTC timestamp. Re-running the installer:
 
-Settings → Startup enables and disables these registrations on both platforms
-without uninstalling them: `systemctl --user enable|disable` on Linux and
-`schtasks /Change /ENABLE|/DISABLE` on Windows. The Client switch also covers
-the HKCU Run fallback and recreates a missing registration from the running
-binary. The Server switch stays unavailable when the session has no local
-Server registration (a Remote-only setup).
+- replaces the selected binaries and the Server bundle;
+- keeps `kitsune.yaml`, models, Devices, TLS certificates, Spool, and wizard
+  progress;
+- runs `kitsune-client migrate-config` on an existing config, which adds new
+  keys and keeps the previous file as `kitsune.yaml.bak`;
+- refuses to install a version lower than the manifest's unless `--force` is
+  passed. If the available version cannot be resolved, it warns and disables
+  the downgrade guard.
 
-### Managing the running client
+Use `--check` to compare installed and available versions. There is no
+package-manager upgrade path; this manifest and the installer are the
+bookkeeping.
 
-`kitsune-client gui --hidden` (or the headless `kitsune-client run`) is a
-long-lived foreground process: started from a terminal it holds the terminal
-until you stop it, so prefer the installed autostart. On Linux that is a systemd
-**user** unit:
+Windows has no install manifest and no check mode. **Apps & Features** takes
+the display version from the Server bundle's `bundle.json` or the Client
+binary's file version, and the Windows script does not block a downgrade.
+
+### Signature verification
+
+Both scripts download `checksums.txt` first, verify its detached
+`checksums.txt.sig` with the release public key pinned inside the script
+(ECDSA P-256 / SHA-256), and only then trust any archive digest. A missing or
+invalid signature aborts the install.
+
+- Linux uses `openssl dgst -sha256 -verify`, so `openssl` must be on `PATH`
+  unless `--insecure` is passed.
+- Windows uses .NET `ECDsa.VerifyData` with
+  `DSASignatureFormat.Rfc3279DerSequence`, available in PowerShell 7.
+
+`--insecure` / `-Insecure` skips only the signature check; every archive is
+still verified against `checksums.txt`. It exists for local development with
+locally signed artifacts and never for a download you do not control.
+
+### Offline installs with `--from`
+
+Copy the release artifacts into a directory and point the installer at it:
 
 ```sh
-systemctl --user status kitsune-client.service          # running? last log lines
-systemctl --user restart kitsune-client.service         # after editing kitsune.yaml
-systemctl --user stop kitsune-client.service            # stop now, keep autostart
-systemctl --user disable --now kitsune-client.service   # stop and don't start at login
-systemctl --user enable --now kitsune-client.service    # re-enable and start
-journalctl --user -u kitsune-client.service -e          # the service log
+./install.sh --from ./release --client-only
+./install.sh --from ./release --version v1.2.3
 ```
 
-The Server and the injection daemon have their own units:
+The directory must contain `checksums.txt`, `checksums.txt.sig` (unless
+`--insecure`), and the selected archives. The Linux script also reads a
+`VERSION` file, or the Server bundle's `bundle.json`, to learn the artifact
+version for the downgrade guard. The local path is absolute-resolved before
+use; no network access is needed.
 
-```sh
-systemctl --user status kitsune-server.service          # local Server
-systemctl --user restart kitsune-server.service         # after editing server settings
-systemctl --user status kitsune-ydotoold.service        # Wayland injection daemon
-journalctl --user -u kitsune-server.service -e          # Server log
+### Nothing runs at install time
+
+The Linux installer never invokes `sudo` or any package manager, never writes a
+udev rule or a `modules-load.d` entry, never enables or starts a systemd unit,
+and never registers autostart.
+
+- The Server bundle is installed through its own `bootstrap.py` with
+  `--no-start`: the unit file is written and `daemon-reload` is run, but the
+  unit is not enabled or started.
+- The Client binary is placed in `~/.local/bin`, the visible menu entry and
+  icons are written, and the per-user desktop caches are refreshed. No
+  `kitsune-client.service` is written until you enable autostart.
+- Missing runtime libraries produce warnings after the files are in place. They
+  never turn a successful install into a failure; the exit status stays zero.
+
+## Windows installer
+
+### Parameters
+
+| Parameter | Effect |
+| --- | --- |
+| `-Version VERSION` | Install a pinned release instead of the latest one. |
+| `-ClientOnly` | Install only the Client. |
+| `-ServerOnly` | Install only the Server bundle and launcher. |
+| `-From DIR` | Install from release artifacts already in `DIR` (offline). |
+| `-ForceConfig` | Overwrite an existing `kitsune.yaml` with the template. |
+| `-DryRun` | Print the plan and change nothing. |
+| `-Insecure` | Skip the release signature check (local development only; checksums are still verified). |
+| `-Uninstall` | Remove binaries, bundle, tasks, shortcut, PATH entry, and Apps & Features entry; keep user data. |
+| `-Purge` | With `-Uninstall`: also remove configuration, models, cache/state, certificates, pairing state, logs, Spool, stored tokens, and the install directory. |
+| `-RemoveModels` | With `-Uninstall`: delete downloaded models only. |
+| `-RemoveServerData` | With `-Uninstall`: delete Server certificates, Devices, logs, and soft-stop state. |
+
+`-Purge`, `-RemoveModels`, and `-RemoveServerData` are only valid with
+`-Uninstall`; `-ClientOnly` and `-ServerOnly` are mutually exclusive.
+`Get-Help .\install.ps1` prints the comment-based help when you have the script
+locally. Environment: `KITSUNE_VERSION` and `KITSUNE_ARTIFACTS_DIR`.
+
+### Layout and behaviour
+
+The script installs under `%LOCALAPPDATA%\Programs\kitsune-whisper`:
+
+```text
+bin\kitsune-client.exe
+bin\kitsune-server.cmd
+Server\
+uninstall.ps1
 ```
 
-`kitsune-server status` also prints the bundle version and the config file the
-supervisor pinned; `kitsune-server start|stop|restart` drive the same unit
-without the full `systemctl` line.
+It adds `bin` to the **user** `PATH` once and writes an **Apps & Features**
+entry (`HKCU`, no elevation). It also creates a Start Menu shortcut that runs
+`kitsune-client.exe gui`.
 
-On Windows it is the Task Scheduler task `kitsune-client`:
+Nothing is started and nothing is enabled:
+
+- The Server bundle's Task Scheduler task is created with its logon trigger
+  **disabled**. `schtasks /Run /TN kitsune-server` still starts it on demand.
+- The installer never creates a Client logon task. The Client's autostart switch
+  does that later, and only when you turn it on.
+- It never downloads WebView2, a Visual C++ redistributable, or CUDA. A missing
+  WebView2 runtime produces a warning that links to the Microsoft download;
+  see [dependencies.md](dependencies.md#windows-dependencies).
+- The build is unsigned, so SmartScreen may ask for confirmation on first run.
+
+### Upgrade and CUDA
+
+Re-run the script to upgrade in place. Configuration, models, certificates,
+pairing state, and the uninstall entry are preserved. If an existing CUDA
+runtime is present under `Server\lib\nvidia`, the installer copies it aside and
+restores it after replacing the bundle, so a CUDA-backed install keeps working
+across an upgrade. Installing the optional runtime is documented in
+[dependencies.md](dependencies.md#optional-cuda-runtime).
+
+The Windows script has no manifest, check mode, or downgrade guard. **Apps &
+Features** shows the version that was installed; re-running a lower release is
+allowed.
+
+### Offline installs with `-From`
 
 ```powershell
-Get-ScheduledTask -TaskName kitsune-client        # state
-Start-ScheduledTask   -TaskName kitsune-client
-Stop-ScheduledTask    -TaskName kitsune-client
-Disable-ScheduledTask -TaskName kitsune-client    # don't start at logon
-Enable-ScheduledTask  -TaskName kitsune-client
+.\install.ps1 -From .\release -ClientOnly
 ```
 
-`kitsune-client uninstall-autostart` removes the registration on either platform.
-Configuration is read at startup, so restart the service after editing
-`kitsune.yaml`. To trigger the running client by hand (the external trigger), run
-`kitsune-client toggle`; the client's own log — selected backend, Wayland
-fallbacks, injections — is at `~/.cache/kitsune-whisper/client.log`
-(`%LOCALAPPDATA%\kitsune-whisper\client.log` on Windows).
+The directory must contain `checksums.txt`, `checksums.txt.sig` (unless
+`-Insecure`), and the selected archives. The script verifies the signature and
+every checksum before extracting anything.
 
-### Upgrade
+### Remove from Apps & Features
 
-Re-run the installer. It replaces the Client binary, refreshes the units and the
-`.desktop` file, and replaces the Server bundle while keeping `kitsune.yaml`,
-models, Devices, and TLS certificates. The Server unit restarts on failure and
-the Client service is restarted after the upgrade.
+The installed `uninstall.ps1` is the uninstall command stored in **Apps &
+Features**. It runs without prompts and works when the Client or Server is
+already partly gone. You can also use the downloaded script:
 
-The installer also runs `kitsune-client migrate-config` against an existing
-`kitsune.yaml`. It adds the new `client.servers` and `client.active_server`
-keys, turns a legacy `client.server_url` into one active Server profile, and
-fills the desktop-release defaults that are missing. User values, comments,
-and the `server:` section are never overwritten; the previous file is kept as
-`kitsune.yaml.bak`. Legacy `client.refine` and `client.summarize` keys are
-accepted with a warning and are never sent to a Server.
+```powershell
+.\install.ps1 -Uninstall
+.\install.ps1 -Uninstall -Purge
+```
 
-### Updates
+## Uninstall and purge
 
-The Client checks GitHub Releases once at startup and from **Settings → Updates**
-or the Tray. It only shows the available version; downloading is an explicit
-action. The installer is fetched from the checked release, its SHA-256 is
-compared with `checksums.txt`, and only a verified file is launched. On Linux
-that file is the release's `install.sh`; on Windows it is `install.ps1`, which
-the Client runs with PowerShell 7 pinned to the checked version. There is no
-silent or automatic installation.
+Both platforms keep **configuration, models, certificates, pairing state,
+logs, Spool, and wizard progress** on a plain uninstall, so reinstalling is
+cheap. Nothing is stopped or removed from a package manager: the installers
+never installed packages.
 
-### Uninstall
+### Linux
 
 ```sh
-# Linux
-curl -fsSL .../install.sh | bash -s -- --uninstall          # keeps config and user data
-curl -fsSL .../install.sh | bash -s -- --uninstall --remove-models
-curl -fsSL .../install.sh | bash -s -- --uninstall --remove-server-data
-curl -fsSL .../install.sh | bash -s -- --uninstall --purge  # removes everything, including the udev rule
+# Keep configuration, models, certificates, Devices, logs, and tokens.
+curl -fsSL …/install.sh | bash -s -- --uninstall
 
-# From a checkout, use the script directly:
+# Also delete downloaded models.
+./install.sh --uninstall --remove-models
+
+# Also delete certificates, Devices, logs, and soft-stop state.
+./install.sh --uninstall --remove-server-data
+
+# Remove every trace we created.
 ./install.sh --uninstall --purge
 ```
 
-```powershell
-# If you have the script locally:
-./install.ps1 -Uninstall
+Uninstall removes the Client binary, Server bundle and launcher, systemd user
+units and the hidden portal `.desktop` file, the visible menu entry and icons,
+the install manifest, and the autostart registration. It does **not** remove
+`~/.local/bin` itself, your shell configuration (the installer never wrote it),
+any package you installed, or a udev rule you added.
 
-# Or straight from the repository, matching the install one-liner:
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.ps1))) -Uninstall
+`--remove-server-data` also forgets the Local Server certificate pin and Device
+token while the Client still exists, so the next install pairs with the
+regenerated certificate instead of reporting that it changed. Remote profiles
+are left alone.
+
+`--purge` removes:
+
+- `kitsune.yaml` and the whole config directory, including `wizard.json` and
+  fallback token files;
+- models, cache, state, logs, Spool, and the runtime socket/lock;
+- certificates, Devices, pairing state, and soft-stop state;
+- Device tokens in the desktop keyring (via `secret-tool`) when available;
+- the WebView app-data directory and the Server bundle.
+
+It does not remove a package you installed, a udev rule you added, or files in
+`~/.local/bin` that are not ours. Removing a user-added `/dev/uinput` rule is a
+manual step; the commands are in
+[dependencies.md](dependencies.md#removing-a-rule-you-added).
+
+### Windows
+
+```powershell
+# Keep configuration, models, certificates, pairing state, and logs.
+.\install.ps1 -Uninstall
+
+# Also delete downloaded models.
+.\install.ps1 -Uninstall -RemoveModels
+
+# Also delete Server certificates, Devices, logs, and soft-stop state.
+.\install.ps1 -Uninstall -RemoveServerData
+
+# Remove every trace we created.
+.\install.ps1 -Uninstall -Purge
 ```
 
-The installer registers itself in **Apps & features**; the uninstall command is
-the installed shim at
-`%LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1` and runs without
-prompts. Uninstall stops and removes the Server task, deletes the Client, Server
-bundle, Start Menu shortcut and PATH entry, and keeps `kitsune.yaml`, models and
-pairing state. Removing those data classes is a later installer revision; until
-then, delete `%APPDATA%\kitsune-whisper` and the model directory by hand.
+Uninstall stops the Client, removes the Client and Server tasks, the Server
+bundle, the Start Menu shortcut, the user `PATH` entry, and the Apps & Features
+entry. It keeps `%APPDATA%\kitsune-whisper` and the model directory.
 
-Linux uninstall stops and removes the Client, Server, and ydotool user units,
-their binaries, the bundled helpers, the application-menu entry, the icon, and
-autostart's hidden portal `.desktop` file. On a terminal it asks separately
-about downloaded models and Server data; without a terminal it keeps both
-unless `--remove-models` or `--remove-server-data` is passed. It always keeps
-`kitsune.yaml`, Setup progress, Spool, and Device tokens. `--purge` removes the
-configuration, Device tokens (including the desktop keyring entries), models,
-certificates, Devices, Spool, logs, wizard progress, WebView storage, and, with
-`sudo`, the `/etc/udev/rules.d/70-kitsune-whisper-uinput.rules` rule. Windows
-uninstall keeps configuration, models and pairing state.
+`-RemoveServerData` forgets the Local Server pairing while the Client still
+exists, then removes `tls`, `devices.json`, `pairing.json`, `server.log`, and
+`lifecycle.json`. `-Purge` additionally removes configuration, models, state,
+cache, the whole model cache, stored credentials from Credential Manager, and
+the install directory. It does not remove a system component such as WebView2
+or any package you installed.
 
-Removing Server data without a purge also forgets the Local Server profile's
-certificate pin and Device token (the Client runs its
-`reset-local-pairing` command before it is removed). The next install therefore
-pairs with the newly generated certificate automatically instead of reporting
-that the certificate changed. Remote Server profiles are left untouched.
+## After install
 
-If a Server certificate changes outside the uninstaller — for example after a
-manually deleted state directory — **Settings → Servers and Devices** shows a
-**Pair again** action on the affected profile. For the Local Server it replaces
-the old pin in one click; for a Remote Server it asks for a fresh Pairing code
-and then pins the certificate presented in that connection.
+### First run and the wizard
 
-## Server
+Launch the Client. The setup wizard configures the microphone, hotkey, hardware,
+and model, and (when no Local Server is installed) offers a Remote Server
+address plus Pairing code instead of a dead end. Its model step downloads the
+chosen model from the Model catalog with progress and can be deferred. Nothing
+is fetched at install time, and the Server downloads nothing when it starts.
 
-The Server has two deployments. The **native per-user bundle** needs neither
-Docker nor a system Python at runtime and is supervised by a systemd user unit
-or a per-user Task Scheduler task; see [server-bundle.md](server-bundle.md) for
-its layout, install sources, commands, and uninstall behaviour. The **Docker
-image** remains the supported deployment for a dedicated host.
+### Autostart
 
-Installing the bundle needs no system Python and no Docker: the release archive
-carries its own pinned runtime and a `bootstrap.py` that prepends the sibling
-`lib/` and runs `kitsune-server install`. The Linux one-line installer uses that
-bootstrap, so a host with no Python still installs.
-`kitsune-server install --artifact` remains the reference implementation for a
-host that already has Python.
+Autostart is a single switch, off by default, with three modes: **Client +
+Server**, **Client only**, and **Server only**. Only modes whose Components are
+installed are offered.
 
-The native bundle reads the same user config file the Client does
-(`~/.config/kitsune-whisper/kitsune.yaml`,
-`%APPDATA%\kitsune-whisper\kitsune.yaml` on Windows). `install` pins the file it
-found; `status` prints the pinned path. The Docker deployment reads the mounted
-`config/kitsune.yaml` instead (see [Docker](#docker)).
+- Turning it on writes and enables the matching systemd user unit (Linux) or
+  per-user Task Scheduler task (Windows).
+- Turning it off removes the registration rather than leaving a disabled login
+  entry. The Server's supervisor registration stays in place so on-demand
+  start still works, but it never fires at login while autostart is off.
+- The Client starts the Local Server on launch when one is installed and the
+  mode is not **Client only**.
 
-The native Server writes a log next to the user's state data — on Windows
-`%LOCALAPPDATA%\kitsune-whisper\server.log`, on Linux
-`~/.local/state/kitsune-whisper/server.log`. A hidden Windows start has no
-console, so this file is where a failed start (a taken port, an unreadable
-config, a model that cannot load) is diagnosed. In Docker the log is on the
-state volume at `/state/kitsune-whisper/server.log`.
+The low-level per-command registration commands still exist for scripts:
+`kitsune-client install-autostart` / `uninstall-autostart`,
+`kitsune-client install-desktop` / `uninstall-desktop`, and
+`kitsune-server enable` / `disable`. Day-to-day use belongs in
+**Settings → Startup**.
 
-### Docker
+## Server bundle
 
-The Docker image is the supported deployment for a dedicated host (for example
-a GPU desktop that stays on). It runs the same Server code, API, TLS, Device
-tokens, Admin API, and Model catalog as the native bundle; the difference is
-where configuration and state live.
+The native Server bundle is a pinned standalone Python runtime plus the Server
+package and its resolved dependencies, placed under the user's library
+directory and supervised by a systemd user unit or a per-user Task Scheduler
+task. It needs no system Python and no Docker at runtime.
+
+The release installer calls the archive's `bootstrap.py`:
+
+```sh
+./runtime/bin/python3 -s ./bootstrap.py install \
+  --no-start \
+  --artifact ./kitsune-server_linux_amd64.tar.gz --sha256 <hex>
+```
+
+`--no-start` installs the bundle and registers the supervisor without enabling
+or starting it. See [the native Server bundle](server-bundle.md) for layout,
+commands, the supervisor boundary, and uninstall details.
+
+## Docker
+
+The Docker image is the supported deployment for a **dedicated** Server host.
+It runs the same Server code, API, TLS, Device tokens, Admin API, and Model
+catalog as the native bundle; only configuration and state locations differ.
 
 ```sh
 mkdir -p config
@@ -478,9 +427,9 @@ image sets `KITSUNE_CONFIG=/config/kitsune.yaml`. Two consequences:
   even though it does not inherit the image `CMD`.
 
 The container always listens on `8765`; the host port defaults to `8765` and
-can be changed without touching compose by putting `KITSUNE_HOST_PORT=9000` in
-a `.env` file next to `compose.yaml`. Keep the internal port at 8765: the image
-sets `KITSUNE_SERVER_PORT=8765` and the healthcheck reads it.
+can be changed by putting `KITSUNE_HOST_PORT=9000` in a `.env` file next to
+`compose.yaml`. Keep the internal port at 8765: the image sets
+`KITSUNE_SERVER_PORT=8765` and the healthcheck reads it.
 
 | Store | Container | Contents | Survives |
 | --- | --- | --- | --- |
@@ -494,7 +443,7 @@ on the state volume instead of the container filesystem. The certificate pair
 and Device store are pinned explicitly to `/state` as well, which keeps the
 fingerprint and the Device allow-list stable across recreation.
 
-#### Pair a Client
+### Pair a Client
 
 Wait until `/health` answers, then generate a one-time code inside the
 container:
@@ -518,7 +467,7 @@ docker exec <container> kitsune-server devices list
 docker exec <container> kitsune-server devices revoke <ID_OR_NAME>
 ```
 
-#### Soft-stop, restart, and stopping the container
+### Soft-stop, restart, and stopping the container
 
 - **Soft-stop** (`POST /admin/stop`, the Client's Stop for a Remote Server)
   unloads the model, so `/transcribe` answers `503` with code `stopped`, and
@@ -540,7 +489,7 @@ docker exec <container> kitsune-server devices revoke <ID_OR_NAME>
   container health to detect a soft-stop — `/health` is liveness, not
   readiness; `/status` reports `stopped`/`model_state`.
 
-#### Upgrade and remove
+### Upgrade and remove
 
 ```sh
 docker compose pull && docker compose up -d    # upgrade
@@ -555,8 +504,8 @@ does not remove `./config`.
 `docker compose down -v` deletes **both** named volumes: the certificate, all
 Device records and pairing codes, the lifecycle flag and log, the models, and
 the llama.cpp GGUF. The next start generates a new certificate, so every Client
-must pair again and re-pin the fingerprint, and the first transcription
-downloads the model again. Use it only for a deliberate fresh start.
+must pair again and re-pin the fingerprint, and the first model download is
+needed again. Use it only for a deliberate fresh start.
 
 The container runs as root by default, so files it creates in `./config` and
 in a bind-mounted state directory are root-owned. Secrets (the TLS key, the
@@ -686,17 +635,17 @@ An **NVIDIA/CUDA GPU is recommended**. On the measured host (Ryzen 7 8700F,
 RTX 4060) the default `small` model transcribes at ≈0.02–0.2× realtime — near
 instant. CPU-only hosts are **supported but slower**, at ≈0.6–0.7× realtime.
 
-- **GPU** - any recent NVIDIA driver. The Docker image ships the CUDA 12.3 /
-  cuDNN 9 runtime; the native bundle takes cuBLAS separately (the documented
-  `pip install --target` command for Windows, or `install.sh --cuda` on Linux).
+- **GPU** — any recent NVIDIA driver. The Docker image ships the CUDA 12.3 /
+  cuDNN 9 runtime; the native bundle takes cuBLAS separately (see
+  [dependencies.md](dependencies.md#optional-cuda-runtime)).
   `compute_type: auto` resolves to `float16`. On a low-VRAM GPU set
   `server.compute_type: int8_float16` to fit the model.
 - **CPU** — `compute_type: auto` resolves to `int8`. For lower latency set
   `server.model` to `base` (the best accuracy↔speed trade for dictation, roughly
   2–3× faster than `small`) or `tiny` on the weakest hosts.
 
-The `base`/`tiny` figures are **derived estimates, not measured** — validate them
-on your own host. The Server logs a `WARN` when it resolves to CPU, and the
+The `base`/`tiny` figures are **derived estimates, not measured** — validate
+them on your own host. The Server logs a `WARN` when it resolves to CPU, and the
 authenticated `GET /status` reports the resolved `device`/`compute_type` so you
 can confirm the GPU is actually in use.
 
@@ -705,11 +654,12 @@ For the full config surface, see [Configuration](configuration.md).
 
 ## Troubleshooting and security
 
-- [`troubleshooting.md`](troubleshooting.md) — installer, Tray, hotkey,
-  injection, 401/revoked, certificate changed, 503 stopped, model, update, and
-  Docker failures, with the log locations and diagnostic commands.
+- [`troubleshooting.md`](troubleshooting.md) — installer warnings, Tray,
+  hotkey, injection, 401/revoked, certificate changed, 503 stopped, model,
+  update, and Docker failures, with the log locations and diagnostic commands.
 - [`security.md`](security.md) — TLS pinning, Device tokens, Pairing codes,
   revocation, and the LAN-exposure checklist.
 - [`models.md`](models.md) — catalog, download/activate/delete, idle unload, and
   CUDA.
-- [`release.md`](release.md) — the 1.0.0 artifacts and the release checklist.
+- [`dependencies.md`](dependencies.md) — the full package and injection matrix.
+- [`release.md`](release.md) — release artifacts, signing, and the checklist.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shlex
 import tomllib
 from pathlib import Path
@@ -410,6 +411,49 @@ def test_documentation_covers_install_release_and_troubleshooting() -> None:
             assert needle in text, f"{name}: {needle}"
         if name != "verification/manual-matrix.md":
             assert f"docs/{name}" in readme, name
+
+
+def test_readme_has_quick_start_and_a_dependencies_section() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert re.search(r"^## Quick Start$", readme, re.MULTILINE)
+    assert re.search(r"^## Dependencies$", readme, re.MULTILINE)
+    # The installer warnings point at the README anchor this heading creates.
+    for installer in ("install.sh", "install.ps1"):
+        assert "README" in (REPO_ROOT / installer).read_text(encoding="utf-8")
+
+
+def test_dependencies_document_mirrors_the_installer_identifiers() -> None:
+    """The dependency doc is the human matrix for the identifiers the scripts check.
+
+    #102 formalises this contract in CI; this small assertion keeps the doc from
+    silently drifting before then.
+    """
+    install_sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
+    install_ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
+    dependencies = (REPO_ROOT / "docs" / "dependencies.md").read_text(encoding="utf-8")
+
+    linux_ids = set(re.findall(r'^DEP_[A-Z0-9_]+="([^"]+)"', install_sh, re.MULTILINE))
+    assert linux_ids == {
+        "gtk4",
+        "webkitgtk-6.0",
+        "alsa",
+        "libx11",
+        "glibc-client",
+        "glibc-server",
+        "wayland-injection",
+    }
+
+    windows_ids = set(re.findall(r"^\$Dep\w+ = '([^']+)'", install_ps1, re.MULTILINE))
+    assert windows_ids == {"webview2", "windows-version", "windows-64-bit"}
+
+    for identifier in sorted(linux_ids | windows_ids):
+        assert f"`{identifier}`" in dependencies, identifier
+
+    client_floor = re.search(r'GLIBC_CLIENT_FLOOR="([^"]+)"', install_sh)
+    server_floor = re.search(r'GLIBC_SERVER_FLOOR="([^"]+)"', install_sh)
+    assert client_floor is not None and server_floor is not None
+    for floor in (client_floor.group(1), server_floor.group(1)):
+        assert f"`{floor}`" in dependencies, floor
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:

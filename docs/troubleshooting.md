@@ -27,43 +27,60 @@ into an issue; diagnostics already redact them.
 
 ## Installation
 
-**The installer says a GTK/WebKitGTK package is missing.** The default Linux
-build needs GTK4 and WebKitGTK 6.0. The installer selects the legacy GTK3 +
-WebKit2GTK 4.1 build automatically on older LTS hosts. If you declined
-`sudo --no-elevate`, install the runtime packages yourself or re-run the
-installer with elevation. Without a desktop toolkit the Client still works and
-Settings open in the browser.
+**The installer warns that GTK4, WebKitGTK 6.0, ALSA, or X11 is missing.** The
+installer installs no packages; it only checks and warns. Install the runtime
+yourself using the command for your distribution in
+[`dependencies.md`](dependencies.md#linux-packages), then restart the Client.
+Without GTK4/WebKitGTK the Client still runs and Settings open in the browser;
+without ALSA it cannot record; without `libX11` hotkeys and X11 injection do not
+load.
 
-**The Settings window is blank.** On Linux check that the WebKitGTK runtime
-matches the build (`--gui gtk3` for old hosts). On Windows the installer never
-downloads the WebView2 Evergreen Runtime; when it is missing it warns and links
-to the manual download. Install it from that link, then reopen the Client.
+**The installer warns that the Client needs a newer glibc.** The Client requires
+`2.39`; the Server requires `2.35`. On Ubuntu 22.04, Debian 12, or openSUSE Leap
+15.6 the Client cannot run, but the Server can: install with `--server-only` or
+use another machine for the Client.
+
+**The installer warns that a Wayland injection tool is missing.** Install
+`wtype` (wlroots) or `ydotool` (GNOME/KDE, wlroots) and set up `/dev/uinput` as
+described in [`dependencies.md`](dependencies.md#granting-uinput-access).
+Until then transcription only reaches the clipboard. The installer never
+installs the tool or writes the rule.
+
+**The Settings window is blank.** On Linux check that the GTK4 and WebKitGTK 6.0
+runtimes are present. On Windows the installer never downloads the WebView2
+Evergreen Runtime; when it is missing it warns and links to the manual
+download. Install it from that link, then reopen the Client.
 
 **Port 8765 is already in use.** The Server never picks a random port. Stop the
 other process or set `server.port` in `kitsune.yaml` and restart the Server. The
 Client's Local Server profile must use the same port.
 
-**The CUDA download failed or was declined.** The Server falls back to CPU
-(`server.device: auto`). Re-run the installer with the CUDA task, or run
-`install.sh --cuda` on Linux. A GPU host without `nvidia-smi` is treated as
-CPU-only.
+**The CUDA runtime is missing or its install failed.** The Server falls back to
+CPU (`server.device: auto`). Neither installer downloads CUDA; install
+`nvidia-cublas-cu12` into the bundle's `lib` directory with the command in
+[`dependencies.md`](dependencies.md#optional-cuda-runtime), then restart the
+Server. A GPU host without `nvidia-smi` is treated as CPU-only.
 
 ## Starting and the Tray
 
-**Nothing appears after login.** The Client starts hidden in the Tray; open
-**Settings** from the application menu or run `kitsune-client settings` (or
-`kitsune-client gui`). On GNOME without the AppIndicator extension the Tray may
-not render; the application entry and CLI are the supported fallback.
+**Nothing appears after login.** Autostart is off after installation. Turn it
+on in **Settings → Startup** if you want the Client (and optionally the Server)
+at login; it starts hidden in the Tray. Before that, launch it from the
+application menu or run `kitsune-client settings` (or `kitsune-client gui`). On
+GNOME without the AppIndicator extension the Tray may not render; the
+application entry and CLI are the supported fallback.
 
 **A second launch exits immediately.** That is the single-instance lock. Use
 `kitsune-client settings`, `toggle`, or `cancel` to drive the running Client.
 
-**Autostart does not come back after reboot.** Toggle it in **Settings →
-General → Startup** or run `kitsune-client install-autostart` /
-`kitsune-server install`. On Linux check `systemctl --user status
-kitsune-client.service kitsune-server.service`; on Windows check the two
-per-user tasks in Task Scheduler. Toggling autostart off keeps the registration
-but stops it from launching.
+**Nothing starts after reboot.** Autostart is off by default. Turn it on in
+**Settings → Startup** and choose Client + Server, Client only, or Server only;
+only modes whose Components are installed are offered. On Linux check
+`systemctl --user status kitsune-client.service kitsune-server.service`; on
+Windows check the per-user tasks in Task Scheduler. Turning autostart off
+removes the login registration instead of leaving it disabled. The Server's
+supervisor registration may remain so on-demand start still works, but it never
+fires at login.
 
 **Tray Quit closed dictation for another machine.** Quit stops the Client only.
 A Remote Server keeps serving other Devices; use **Stop Server** to soft-stop
@@ -82,10 +99,10 @@ See [wayland.md](wayland.md).
 overrides the config for one run. Check the OS input volume and mute switch.
 
 **Wayland leaves the text on the clipboard.** `wtype`/`ydotool` is missing, not
-running, or cannot open `/dev/uinput`. The Client logs the reason and degrades to
-clipboard-only. Re-run the installer with elevation to add the `uaccess` rule and
-the `ydotoold` user unit, or install a helper manually as described in
-[install.md](install.md).
+running, or cannot open `/dev/uinput`. The installer only warns; install the
+tool, grant `/dev/uinput` access, and start `ydotoold` as described in
+[dependencies.md](dependencies.md). The Client logs the reason and degrades to
+clipboard-only; it never fails the dictation cycle for this.
 
 **Nothing is injected, but the log shows a transcription.** Injection uses the
 clipboard plus a synthetic paste; some terminals need `Ctrl+Shift+V` or
@@ -154,20 +171,30 @@ directory. An activation failure keeps the previous model active. See
 [models.md](models.md).
 
 **CUDA is not used.** `server.device: auto` resolves to CPU when cuBLAS/cuDNN
-cannot load. Install the CUDA runtime (the installer offers it; `install.sh
---cuda`), confirm `nvidia-smi` works for the user running the Server, and restart
-the Server. `GET /status` reports the resolved `device` and `gpu` block.
+cannot load. Install the optional CUDA runtime with the command in
+[`dependencies.md`](dependencies.md#optional-cuda-runtime), confirm `nvidia-smi`
+works for the user running the Server, and restart the Server. `GET /status`
+reports the resolved `device` and `gpu` block.
 
 ## Updates
 
 **The update check says a newer version exists but nothing installs.** Updates
 are check-and-confirm by design. Press **Download and install**; the Client
-fetches the release installer, verifies its SHA-256 against `checksums.txt`, and
-only then launches it.
+fetches the release installer and verifies its SHA-256 against
+`checksums.txt`; the installer then verifies `checksums.txt.sig` before
+installing anything.
 
 **The checksum does not match.** The download is corrupted or the release assets
 are inconsistent. Delete the partial download and retry. Do not bypass the
 check; report the release instead.
+
+**The release signature failed to verify.** The installer aborts before
+extracting anything: `checksums.txt.sig` does not match the release public key
+pinned in the script, or the signature is missing. This is what a compromised
+download host or a corrupted asset looks like. Fetch the installer and the
+release from the official repository and retry; do not use `--insecure` /
+`-Insecure` to get past it unless you are testing locally signed artifacts you
+built yourself. On Linux, `openssl` must be installed for the check.
 
 **An upgrade lost settings.** Re-running the installer preserves
 `kitsune.yaml`, models, Devices, and TLS. The installer keeps the previous config
@@ -191,11 +218,15 @@ the Docker host for a hard stop. See [docker-smoke.md](verification/docker-smoke
 ## Uninstall and purge
 
 **Models or credentials remain after uninstalling.** The default uninstaller
-keeps user data. Re-run with `--remove-models` / `--remove-server-data` (Linux)
-or use `--purge` for a clean slate. A purge also removes the udev rule on Linux
-and the keychain tokens. Windows uninstall currently keeps configuration,
-models and pairing state; removing those data classes is a later installer
-revision. See [install.md](install.md#uninstall).
+keeps configuration, models, certificates, pairing state, logs, Spool, and
+wizard progress. Re-run with `--remove-models` / `--remove-server-data` (Linux)
+or `-RemoveModels` / `-RemoveServerData` (Windows), or use `--purge` /
+`-Purge` for a clean slate. A purge removes the keyring or Credential Manager
+tokens and every directory we created. It does **not** remove a package you
+installed, and on Linux it does not remove a udev rule you added yourself — see
+[`dependencies.md`](dependencies.md#removing-a-rule-you-added). Neither
+uninstall nor purge touches packages. See
+[install.md](install.md#uninstall-and-purge).
 
 ## Reporting a problem
 

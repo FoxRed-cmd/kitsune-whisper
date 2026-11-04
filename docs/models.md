@@ -29,7 +29,7 @@ download.
 | Deployment | Default |
 | --- | --- |
 | Linux native bundle | `~/.cache/kitsune-whisper/models` |
-| Windows native bundle | the path in `server.download_root` |
+| Windows native bundle | `%USERPROFILE%\.cache\kitsune-whisper\models` (the default `server.download_root`) |
 | Docker | `/models` on the `kitsune-models` volume |
 
 Set `server.catalog_file` to a YAML catalog to override the pinned metadata;

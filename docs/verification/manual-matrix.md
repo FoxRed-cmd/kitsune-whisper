@@ -11,7 +11,7 @@ Release under verification: **1.0.0** (`VERSION`).
 
 | ID | Environment | Needed for |
 | --- | --- | --- |
-| A | GNOME on Wayland, Linux x64 | GTK4 Settings/Tray, portal hotkey, `wtype`/`ydotool` injection, indicator |
+| A | GNOME on Wayland, Linux x64 | GTK4 Settings/Tray, portal hotkey, user-installed `ydotool` injection, indicator |
 | B | Windows 11 x64 | install.ps1, WebView2, Task Scheduler, Credential Manager, hidden Server |
 | C | Linux or Windows with a real NVIDIA GPU | CUDA runtime, model load, latency |
 | D | Two machines on one LAN | remote pairing and Device revocation (tracked with #84) |
@@ -58,12 +58,12 @@ failure opens a ticket; do not silently mark the row passed.
 
 | # | Check | A | B | C |
 | --- | --- | --- | --- | --- |
-| 1 | Installer completes on a clean machine; no admin rights on Windows | Pending | Pending | — |
-| 2 | One Linux `sudo` step installs GTK/WebKitGTK and the udev `uaccess` rule; re-run does not ask again | Pending | — | — |
-| 3 | Settings window opens (GTK4 default; GTK3 legacy on an old LTS) | Pending | Pending | — |
-| 4 | WebView2 bootstraps per user, or an offline machine gets the manual link | — | Pending | — |
+| 1 | Installer completes on a clean machine; no admin rights on Windows and no `sudo` on Linux | Pending | Pending | — |
+| 2 | Linux install runs no package manager, writes no udev/`modules-load.d` file, and starts/enables no unit; `--dry-run` and `--check` change nothing | Pending | — | — |
+| 3 | Settings window opens with GTK4/WebKitGTK 6.0; a host without them falls back to the browser page | Pending | Pending | — |
+| 4 | WebView2 is reported as missing with the manual link; the installer never downloads it | — | Pending | — |
 | 5 | Tray shows idle, recording, processing, and error; no AppIndicator on GNOME still leaves Settings reachable from the menu/CLI | Pending | Pending | — |
-| 6 | Client starts hidden at login; Server runs hidden; autostart toggles are independent | Pending | Pending | Pending |
+| 6 | Autostart is off after install; turning it on enables the selected mode, turning it off removes the login registration, and the Server task/unit is registered disabled | Pending | Pending | Pending |
 | 7 | Port 8765 in use stops the Server with an actionable message; changing `server.port` works | Pending | Pending | Pending |
 | 8 | `server.device: auto` uses CUDA on C and logs a CPU fallback without the runtime | — | — | Pending |
 
@@ -76,7 +76,7 @@ failure opens a ticket; do not silently mark the row passed.
 | 11 | Microphone picker and live level meter select the right input | Pending | Pending | — |
 | 12 | Text injects into a GUI editor (`Ctrl+V`) and a terminal (`Ctrl+Shift+V`/`Shift+Insert`) | Pending | Pending | — |
 | 13 | Clipboard restoration matches `client.clipboard_restore` | Pending | Pending | — |
-| 14 | Wayland injection works through the bundled `wtype`/`ydotool`; without `/dev/uinput` it degrades to clipboard-only with a log line | Pending | — | — |
+| 14 | Wayland injection works through a user-installed `wtype` or `ydotool`; without `/dev/uinput` or the daemon it degrades to clipboard-only with a log line | Pending | — | — |
 | 15 | Empty/silent utterance injects nothing and leaves the clipboard untouched | Pending | Pending | — |
 | 16 | Earcons and the Recording indicator honour Settings; a pinned unavailable backend logs once and does not stop dictation | Pending | Pending | — |
 | 17 | A failed utterance lands in the Spool; Retry, Copy, Insert, and Delete work against the active profile | Pending | Pending | — |
@@ -103,10 +103,11 @@ failure opens a ticket; do not silently mark the row passed.
 
 | # | Check | A | B | C |
 | --- | --- | --- | --- | --- |
-| 31 | Update check shows the available version; download verifies `checksums.txt` before launching | Pending | Pending | — |
-| 32 | Re-running the installer preserves config, models, Devices, and TLS; `kitsune.yaml.bak` is kept | Pending | Pending | — |
-| 33 | Uninstall asks separately about models and Server data; purge removes config, certificates, Devices, models, logs, Spool, keychain tokens, and (Linux, with sudo) the udev rule | Pending | Pending | — |
+| 31 | Update check shows the available version; download verifies `checksums.txt.sig` and `checksums.txt` before launching | Pending | Pending | — |
+| 32 | Re-running the installer preserves config, models, Devices, and TLS; `kitsune.yaml.bak` is kept; Linux `--check` reports versions and a lower version is refused without `--force` | Pending | Pending | — |
+| 33 | Uninstall asks separately about models and Server data; purge removes config, certificates, Devices, models, logs, Spool, and keychain/Credential Manager tokens; neither touches user-installed packages or a user-added udev rule | Pending | Pending | — |
 | 34 | A clean uninstall/reinstall starts dictation again | Pending | Pending | — |
+| 38 | The first-run wizard downloads the model with progress; the Server starts without a model and downloads nothing on its own | Pending | Pending | Pending |
 
 ### Two-machine pairing (#84)
 
