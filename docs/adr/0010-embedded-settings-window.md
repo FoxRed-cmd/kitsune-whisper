@@ -1,4 +1,4 @@
-# Settings live in an embedded Wails window, with one-time system dependency setup
+# Settings live in an embedded Wails window, built once for GTK4 and WebKitGTK 6.0
 
 **Status:** accepted
 
@@ -13,27 +13,29 @@ The user chose an embedded window.
 The Tray is a Wails v3 system tray; **Settings** is a Wails v3 window rendered
 from embedded HTML/TS. The version is pinned exactly, because v3 is young and
 the UI boundary is kept narrow enough to replace the shell. On Windows this uses
-WebView2, bootstrapped per-user by the installer (no elevation). On Linux it
-uses GTK4 and WebKitGTK 6.0 by default, which the installer adds after one
-explicit `sudo` confirmation (`install.sh` uses the distro package manager). A
-legacy GTK3 + WebKit2GTK 4.1
-build is published for older LTS distributions and selected by the installer.
-The same elevated step installs the `udev` `uaccess` rule for `/dev/uinput`, so
-Wayland text injection works through a bundled `ydotool` user service without
-adding the user to a group or requiring a re-login; `wtype` is bundled for
-wlroots. If the user declines elevation, Settings degrade to the browser page
-and Wayland injection to clipboard-only, with a clear explanation.
+WebView2, a runtime the installer reports as missing rather than installing. On
+Linux there is **one desktop build**: GTK4 plus WebKitGTK 6.0. The GTK3 +
+WebKit2GTK 4.1 variant and the `--gui` choice are deleted, because WebKitGTK 6.0
+is packaged on every supported distribution and a user without it is better
+served by the browser page than by a second binary. The installer warns about
+the missing libraries but installs nothing (ADR 0013).
 
-This **amends ADR 0002**, which said `ydotool` is never bundled and Wayland
-injection is best-effort: the desktop install now ships and configures it,
-because a working out-of-the-box Wayland setup is a requirement. The behavioural
-limits recorded in ADR 0002 still stand: there is no global hotkey without a
-portal, and `wtype` works only on wlroots.
+If the embedded window cannot start because a runtime library is missing,
+Settings degrade to the browser page with a clear explanation. Wayland text
+injection is unaffected by that fallback: it depends on the external injection
+tools documented in ADR 0002, not on the Settings window.
+
+This ADR originally **amended ADR 0002** by bundling `ydotool`/`wtype` and
+configuring `/dev/uinput`. [ADR 0013](0013-scripts-only-distribution.md)
+reverses that amendment, so ADR 0002's detection-only stance stands. Its
+behavioural limits still apply: there is no global hotkey without a portal, and
+`wtype` works only on wlroots.
 
 ## Considered options
 
-- **(a) Chosen — Wails embedded window plus install-time system dependencies.**
-  One integrated product; the cost is a system WebView and one elevation prompt.
+- **(a) Chosen — Wails embedded window, one GTK4/WebKitGTK 6.0 build.** One
+  integrated product; the cost is a system WebView and Linux runtime libraries
+  the user installs.
 - **(b) Browser-only settings.** Rejected after the decision to embed: zero
   dependencies, but worse focus handling, no native tray integration, and a
   detached feel.
@@ -42,13 +44,19 @@ portal, and `wtype` works only on wlroots.
   large enough that web UI pays off.
 - **(d) Electron.** Rejected: self-contained but doubles the runtime size and
   introduces a second updater and security surface.
+- **(e) Keep the legacy GTK3 + WebKit2GTK 4.1 build as a fallback.** Rejected: a
+  second binary, build and test surface for a library every supported
+  distribution packages; the browser page already covers the gap.
 
 ## Consequences
 
 - The Client is no longer a single self-contained binary on Linux: WebKitGTK and
-  GTK are runtime dependencies, and Windows gains a WebView2 prerequisite.
-- The installer needs an elevation path that explains itself and degrades
-  gracefully instead of failing.
+  GTK are documented runtime dependencies, and Windows gains a WebView2
+  prerequisite. Neither is installed by our installer; a missing one degrades
+  Settings to the browser page with an explanation.
+- There is no elevation path for the desktop runtime: the installer only warns
+  and points at the dependencies documentation (ADR 0013).
+- The `--gui` option is gone; the embedded window is the only desktop build.
 - The Settings UI is HTML/TS served from embedded assets; hotkey capture, live
   mic level, and server calls go through Go bindings.
 - The Recording indicator stays the existing in-process presenter and is not
