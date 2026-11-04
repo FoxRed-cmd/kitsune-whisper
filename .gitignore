@@ -23,6 +23,7 @@ __pycache__/
 
 ### Installer outputs ###
 /dist/
+/dist-local/
 /wizard.json
 /packaging/windows/.cache/
 /packaging/windows/app.ico
