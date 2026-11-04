@@ -71,18 +71,16 @@ Uninstall and purge never touch this file.
 
 ## Running `ydotoold`
 
-`ydotool` is a client; it needs the `ydotoold` daemon running in your session.
-Start it yourself, for example from your desktop's session startup or a systemd
-**user** unit. The Client does not bundle or supervise it.
+`ydotool` is a client; it needs exactly one `ydotoold` daemon running in your
+session. Use a systemd **user** unit; the Client does not bundle or supervise it.
 
-```sh
-ydotoold &
-```
+Do not run `ydotoold &` and the service at the same time: the second daemon exits
+with `Another ydotoold is running with the same socket`. The unit, recovery
+commands, and verification steps are in
+[dependencies.md](dependencies.md#running-ydotoold).
 
 The default socket is `$XDG_RUNTIME_DIR/.ydotool_socket`. If your daemon listens
-elsewhere, export `YDOTOOL_SOCKET` in the Client's environment. A minimal user
-unit and the verification commands are in
-[dependencies.md](dependencies.md#running-ydotoold).
+elsewhere, export `YDOTOOL_SOCKET` in the Client's environment.
 
 If `ydotoold` is not running, `ydotool` fails immediately; the Client detects
 this and degrades to clipboard-only (the error is in

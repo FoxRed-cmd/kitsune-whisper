@@ -71,21 +71,18 @@ sudo pacman -S --needed gtk4 webkitgtk-6.0 alsa-lib libx11
 sudo zypper install libgtk-4-1 libwebkitgtk-6_0-4 libasound2 libX11-6
 ```
 
-Add the Wayland tools for the session you use:
+Install the injection tool for your session. Use one column:
 
-```sh
-# Debian / Ubuntu
-sudo apt install wl-clipboard wtype ydotool
+| Distribution | wlroots — `wtype` | GNOME/KDE — `ydotool` | Clipboard only |
+| --- | --- | --- | --- |
+| Debian / Ubuntu | `sudo apt install -y wl-clipboard wtype` | `sudo apt install -y wl-clipboard ydotool` | `sudo apt install -y wl-clipboard` |
+| Fedora | `sudo dnf install -y wl-clipboard wtype` | `sudo dnf install -y wl-clipboard ydotool` | `sudo dnf install -y wl-clipboard` |
+| Arch | `sudo pacman -S --needed wl-clipboard wtype` | `sudo pacman -S --needed wl-clipboard ydotool` | `sudo pacman -S --needed wl-clipboard` |
+| openSUSE | `sudo zypper install -y wl-clipboard wtype` | `sudo zypper install -y wl-clipboard ydotool` | `sudo zypper install -y wl-clipboard` |
 
-# Fedora
-sudo dnf install wl-clipboard wtype ydotool
-
-# Arch
-sudo pacman -S --needed wl-clipboard wtype ydotool
-
-# openSUSE
-sudo zypper install wl-clipboard wtype ydotool
-```
+On wlroots, `wtype` is the primary choice. If it does not work, use the
+GNOME/KDE command to add `ydotool` as a fallback; both can be installed. On
+GNOME/KDE, `wtype` does not work, so install only the `ydotool` column.
 
 Distribution notes:
 
@@ -209,14 +206,9 @@ sudo gpasswd -d "$USER" input
 
 ## Running `ydotoold`
 
-`ydotool` is a client; it needs the `ydotoold` daemon in your session. Start it
-yourself, for example from your session startup or a systemd **user** unit. The
-Client does not bundle, install, or supervise it.
-
-```sh
-# One-off, for a test; the socket lands in $XDG_RUNTIME_DIR by default.
-ydotoold &
-```
+`ydotool` is a client; it needs exactly one `ydotoold` daemon in your session.
+Use a systemd **user** unit. The Client does not bundle, install, or supervise
+it.
 
 A minimal user unit (adjust `ExecStart` to the path `command -v ydotoold`
 prints):
@@ -240,6 +232,19 @@ WantedBy=graphical-session.target
 systemctl --user daemon-reload
 systemctl --user enable --now ydotoold.service
 ```
+
+Run only one daemon. If the service reports
+`Another ydotoold is running with the same socket`, a manual `ydotoold &` is
+still running. Stop it and restart the service:
+
+```sh
+pkill -x ydotoold
+systemctl --user reset-failed ydotoold.service
+systemctl --user start ydotoold.service
+```
+
+For a one-off test without the service, `ydotoold &` is enough; stop it with
+`pkill -x ydotoold` before enabling the service.
 
 The default socket is `$XDG_RUNTIME_DIR/.ydotool_socket`. If your daemon listens
 elsewhere, export `YDOTOOL_SOCKET` in the Client's environment so its `ydotool`
