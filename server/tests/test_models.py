@@ -243,11 +243,52 @@ def test_catalog_view_reports_recommendation_and_installation(
     assert view["device"] == "cpu"
     assert view["recommended"] == "base"
     assert view["state"] == "cold"
+    assert view["active_model"] == "small"
     by_name = {item["name"]: item for item in view["models"]}
     assert by_name["base"]["recommended"] is True
     assert by_name["base"]["installed"] is True
     assert by_name["tiny"]["installed"] is False
     assert by_name["tiny"]["download"] is None
+
+
+def test_configured_model_is_not_reported_active_before_it_is_downloaded() -> None:
+    manager = build_manager(storage=FakeStorage())
+    view = manager.view()
+    snapshot = manager.snapshot()
+
+    assert view["active_model"] == ""
+    assert view["active_path"] == ""
+    assert view["state"] == "cold"
+    assert snapshot.model == ""
+    assert snapshot.state == "cold"
+    # The preference is kept so the first completed download is adopted.
+    assert manager.active_model == "small"
+
+
+def test_a_local_model_directory_is_reported_active_before_it_is_loaded(tmp_path: Path) -> None:
+    local = tmp_path / "my-ct2-model"
+    local.mkdir()
+    manager = build_manager(
+        config=ServerConfig(workers=1, model=str(local), idle_unload_seconds=600),
+        storage=FakeStorage(),
+    )
+
+    view = manager.view()
+
+    assert view["active_model"] == str(local)
+    assert view["active_path"] == str(local)
+    assert manager.snapshot().model == str(local)
+
+
+def test_a_missing_local_model_directory_is_not_reported_active(tmp_path: Path) -> None:
+    missing = tmp_path / "missing-ct2-model"
+    manager = build_manager(
+        config=ServerConfig(workers=1, model=str(missing), idle_unload_seconds=600),
+        storage=FakeStorage(),
+    )
+
+    assert manager.view()["active_model"] == ""
+    assert manager.snapshot().model == ""
 
 
 # -- downloads -------------------------------------------------------------
@@ -734,6 +775,20 @@ async def test_status_reports_the_model_state_and_idle_setting() -> None:
         clock.advance(10_000)
         assert manager.maybe_unload() is False
         assert (await client.get("/status")).json()["model_state"] == "loaded"
+
+
+async def test_status_and_catalog_report_no_active_model_before_a_download() -> None:
+    manager = build_manager(storage=FakeStorage())
+    app = build_app(manager)
+
+    async with make_client(app) as client:
+        status = (await client.get("/status")).json()
+        catalog = (await client.get("/admin/models")).json()
+
+    assert status["model"] == ""
+    assert status["model_state"] == "cold"
+    assert catalog["active_model"] == ""
+    assert catalog["state"] == "cold"
 
 
 async def test_model_endpoints_require_a_device_token() -> None:
