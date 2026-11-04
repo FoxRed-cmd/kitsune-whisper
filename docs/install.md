@@ -75,50 +75,6 @@ it (or when `nvidia-smi` finds no GPU) `server.device: auto` resolves to CPU.
 For the piped one-liner, pass it as
 `curl ... | bash -s -- --cuda`.
 
-On Debian or Ubuntu you can use the package instead. On Fedora (and other
-rpm-based distributions) use the `.rpm`. Both install the Client, the native
-Server bundle, the bundled Wayland helpers, the udev rule, and three systemd
-user units, and declare GTK/WebKitGTK as dependencies (the package manager owns
-the only elevated step). The units start at your next login; to seed a config
-template and start them in the current session, run:
-
-```sh
-# Debian/Ubuntu
-sudo apt install ./kitsune-whisper_<version>_amd64.deb
-# Fedora/RHEL
-sudo dnf install ./kitsune-whisper-<version>-1.x86_64.rpm
-
-kitsune-whisper-setup        # optional: seed config + start the user units now
-kitsune-server status        # bundled Server CLI from the package
-```
-
-The package installs the Server bundle too, so `kitsune-server status`, `pair`,
-and `devices` work without the one-line installer. Older LTS distributions use
-`kitsune-whisper-legacy_<version>_amd64.deb` or
-`kitsune-whisper-legacy-<version>-1.x86_64.rpm`.
-
-### AppImage
-
-The AppImage is the no-install option: download it, make it executable, and run
-it. It carries the Client, the native Server bundle, and the bundled
-`ydotool`/`wtype` helpers. On first run it seeds `kitsune.yaml`; it starts the
-bundled Local Server and `ydotoold` for the duration of the session (unless the
-matching systemd user unit is already active) and stops them when the Client
-exits. It uses the host's GTK4/WebKitGTK 6.0 libraries; older LTS hosts can use
-the legacy AppImage built against GTK3/WebKit2GTK 4.1.
-
-```sh
-chmod +x kitsune-whisper-<version>-x86_64.AppImage
-./kitsune-whisper-<version>-x86_64.AppImage                 # Settings + Tray
-./kitsune-whisper-<version>-x86_64.AppImage --server status  # bundled Server CLI
-```
-
-Set `KITSUNE_APPIMAGE_NO_SERVER=1` when another Server already serves the
-machine. The AppImage does not install the `/dev/uinput` rule; without it,
-Wayland injection stays clipboard-only until you add the rule from
-[Wayland injection](#wayland-injection-is-set-up-for-you) or run the one-line
-installer once with elevation.
-
 Windows 10/11 (x64) — the per-user installer:
 
 Download `kitsune-whisper_windows_amd64_setup.exe` from the
@@ -474,8 +430,8 @@ image** remains the supported deployment for a dedicated host.
 
 Installing the bundle needs no system Python and no Docker: the release archive
 carries its own pinned runtime and a `bootstrap.py` that prepends the sibling
-`lib/` and runs `kitsune-server install`. The Linux one-line installer and the
-`.deb` finisher use that bootstrap, so a host with no Python still installs.
+`lib/` and runs `kitsune-server install`. The Linux one-line installer uses that
+bootstrap, so a host with no Python still installs.
 `kitsune-server install --artifact` remains the reference implementation for a
 host that already has Python.
 

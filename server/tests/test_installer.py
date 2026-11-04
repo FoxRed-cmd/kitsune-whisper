@@ -575,9 +575,6 @@ def test_release_workflow_publishes_every_artifact() -> None:
         "server-bundle-windows",
         "windows-installer",
         "wayland-tools",
-        "deb",
-        "rpm",
-        "appimage",
         "release",
     }
     text = workflow_path.read_text(encoding="utf-8")
@@ -589,19 +586,30 @@ def test_release_workflow_publishes_every_artifact() -> None:
         "kitsune-server_windows_amd64.tar.gz",
         "kitsune-whisper_windows_amd64_setup.exe",
         "kitsune-wayland_linux_amd64.tar.gz",
-        "kitsune-whisper*_amd64.deb",
-        "kitsune-whisper*.rpm",
-        "kitsune-whisper*.AppImage",
         "install.sh",
         "install.ps1",
         "checksums.txt",
     ):
         assert asset in text, asset
     assert "build-wayland-tools.sh" in text
-    assert "packaging/deb/build-deb.sh" in text
-    assert "packaging/rpm/build-rpm.sh" in text
-    assert "packaging/appimage/build-appimage.sh" in text
+    assert "packaging/windows/build-installer.ps1" in text
     assert "sha256sum" in text
+
+    # Distribution packages are gone: no jobs, builders, flags, or published
+    # globs may quietly return.
+    for retired in (
+        "packaging/deb",
+        "packaging/rpm",
+        "packaging/appimage",
+        "--no-deb",
+        "--no-rpm",
+        "--no-appimage",
+        ".deb",
+        ".rpm",
+        ".AppImage",
+        "appimagetool",
+    ):
+        assert retired not in text, retired
 
     # The publish job copies install.sh and install.ps1 from the checkout, so
     # it must check the repository out before generating checksums.
@@ -616,6 +624,17 @@ def test_release_workflow_publishes_every_artifact() -> None:
     assert "server/pyproject.toml" in text
     assert "server/kitsune_server/__init__.py" in text
     assert "server/uv.lock" in text
+
+
+def test_ci_builds_no_distribution_packages() -> None:
+    import yaml
+
+    workflow_path = REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    assert "packaging" not in workflow["jobs"]
+    text = workflow_path.read_text(encoding="utf-8")
+    for retired in ("rpm", "appimagetool", ".deb", ".AppImage"):
+        assert retired not in text, retired
 
 
 def test_the_wayland_builder_exposes_all_three_helpers() -> None:
@@ -650,413 +669,23 @@ def test_no_client_finisher_writes_config_and_installs_the_server(sandbox, tmp_p
     assert "bootstrap.py install" in read_log(sandbox, "calls.log")
 
 
-def test_the_deb_builder_produces_a_working_package(tmp_path):
-    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
-        pytest.skip("neither dpkg-deb nor ar is available")
-
-    # Newer dpkg defaults to zstd; the package contract and the ar fallback use
-    # gzip, so the builder must pin it explicitly.
-    source = (REPO_ROOT / "packaging" / "deb" / "build-deb.sh").read_text(encoding="utf-8")
-    assert "-Zgzip" in source
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
-            "--client",
-            str(client),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    deb = output / "kitsune-whisper_1.2.3_amd64.deb"
-    assert deb.is_file()
-    members = subprocess.run(
-        ["ar", "t", str(deb)], capture_output=True, text=True, check=True
-    ).stdout
-    assert "debian-binary" in members
-    assert "control.tar.gz" in members
-    assert "data.tar.gz" in members
-
-    control_tar = subprocess.run(
-        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
-    ).stdout
-    control = subprocess.run(
-        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "Package: kitsune-whisper" in control
-    assert "Version: 1.2.3" in control
-    assert "libgtk-4-1" in control
-    assert "libwebkitgtk-6.0-4" in control
-
-    data_tar = subprocess.run(
-        ["ar", "p", str(deb), "data.tar.gz"], capture_output=True, check=True
-    ).stdout
-    data_names = subprocess.run(
-        ["tar", "-tzf", "-"], input=data_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "usr/bin/kitsune-client" in data_names
-    assert "usr/bin/kitsune-whisper-setup" in data_names
-    assert "usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules" in data_names
-    assert "usr/lib/systemd/user/kitsune-client.service" in data_names
-
-
-def test_the_deb_package_can_include_the_server_and_wayland_helpers(tmp_path):
-    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
-        pytest.skip("neither dpkg-deb nor ar is available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    server = tmp_path / "server.tar.gz"
-    write_tar(
-        server,
-        {
-            "bootstrap.py": ("import sys\n", 0o644),
-            "bundle.json": ('{"version": "1.2.3"}\n', 0o644),
-            "lib/kitsune_server/__init__.py": ("", 0o644),
-            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
-        },
-    )
-    wayland = tmp_path / "wayland.tar.gz"
-    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
-            "--client",
-            str(client),
-            "--server-artifact",
-            str(server),
-            "--wayland-artifact",
-            str(wayland),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    deb = output / "kitsune-whisper_1.2.3_amd64.deb"
-    control_tar = subprocess.run(
-        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
-    ).stdout
-    control = subprocess.run(
-        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "Conflicts: kitsune-whisper-legacy" in control
-
-    data_tar = subprocess.run(
-        ["ar", "p", str(deb), "data.tar.gz"], capture_output=True, check=True
-    ).stdout
-    names = subprocess.run(
-        ["tar", "-tzf", "-"], input=data_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "usr/lib/kitsune-whisper/server/runtime/bin/python3" in names
-    assert "usr/bin/kitsune-server" in names
-    assert "usr/lib/kitsune-whisper/wayland/bin/ydotoold" in names
-    assert "usr/lib/systemd/user/kitsune-server.service" in names
-    assert "usr/lib/systemd/user/kitsune-ydotoold.service" in names
-    assert "usr/lib/modules-load.d/kitsune-whisper.conf" in names
-
-
-def test_the_legacy_deb_depends_on_the_gtk3_stack(tmp_path):
-    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
-        pytest.skip("neither dpkg-deb nor ar is available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
-            "--client",
-            str(client),
-            "--legacy",
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    deb = output / "kitsune-whisper-legacy_1.2.3_amd64.deb"
-    assert deb.is_file()
-    control_tar = subprocess.run(
-        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
-    ).stdout
-    control = subprocess.run(
-        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "libgtk-3-0" in control
-    assert "libwebkit2gtk-4.1-0" in control
-
-
-def native_arch() -> str:
-    import platform
-
-    return {
-        "x86_64": "x86_64",
-        "amd64": "x86_64",
-        "aarch64": "aarch64",
-        "arm64": "aarch64",
-    }.get(platform.machine().lower(), platform.machine().lower())
-
-
-@pytest.mark.parametrize(
-    "script",
-    [
-        "packaging/deb/build-deb.sh",
-        "packaging/rpm/build-rpm.sh",
-        "packaging/appimage/build-appimage.sh",
-        "scripts/build-linux-artifacts.sh",
-    ],
-)
-def test_the_linux_packagers_parse(script):
-    completed = subprocess.run(
-        ["bash", "-n", str(REPO_ROOT / script)], capture_output=True, text=True
-    )
+def test_the_linux_artifact_builder_parses_and_has_no_package_flags():
+    script = REPO_ROOT / "scripts" / "build-linux-artifacts.sh"
+    completed = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
 
-
-def test_the_rpm_builder_produces_a_working_package(tmp_path):
-    if not shutil_which("rpmbuild"):
-        pytest.skip("rpmbuild is not available")
-    if not shutil_which("rpm"):
-        pytest.skip("rpm is not available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "rpm" / "build-rpm.sh"),
-            "--client",
-            str(client),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    rpm = output / f"kitsune-whisper-1.2.3-1.{native_arch()}.rpm"
-    assert rpm.is_file()
-
-    query = subprocess.run(
-        ["rpm", "-qp", "--qf", "%{NAME} %{VERSION} %{RELEASE} %{ARCH}\n", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert query == ["kitsune-whisper", "1.2.3", "1", native_arch()]
-
-    requires = subprocess.run(
-        ["rpm", "-qp", "--requires", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "gtk4" in requires
-    assert "webkitgtk6.0" in requires
-
-    names = subprocess.run(
-        ["rpm", "-qp", "--list", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "/usr/bin/kitsune-client" in names
-    assert "/usr/bin/kitsune-whisper-setup" in names
-    assert "/usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules" in names
-    assert "/usr/lib/systemd/user/kitsune-client.service" in names
-
-
-def test_the_rpm_can_include_the_server_and_wayland_helpers(tmp_path):
-    if not shutil_which("rpmbuild") or not shutil_which("rpm"):
-        pytest.skip("rpmbuild or rpm is not available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    server = tmp_path / "server.tar.gz"
-    write_tar(
-        server,
-        {
-            "bootstrap.py": ("import sys\n", 0o644),
-            "bundle.json": ('{"version": "1.2.3"}\n', 0o644),
-            "lib/kitsune_server/__init__.py": ("", 0o644),
-            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
-        },
-    )
-    wayland = tmp_path / "wayland.tar.gz"
-    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "rpm" / "build-rpm.sh"),
-            "--client",
-            str(client),
-            "--server-artifact",
-            str(server),
-            "--wayland-artifact",
-            str(wayland),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    rpm = output / f"kitsune-whisper-1.2.3-1.{native_arch()}.rpm"
-    conflicts = subprocess.run(
-        ["rpm", "-qp", "--conflicts", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "kitsune-whisper-legacy" in conflicts
-
-    names = subprocess.run(
-        ["rpm", "-qp", "--list", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "/usr/lib/kitsune-whisper/server/runtime/bin/python3" in names
-    assert "/usr/bin/kitsune-server" in names
-    assert "/usr/lib/kitsune-whisper/wayland/bin/ydotoold" in names
-    assert "/usr/lib/systemd/user/kitsune-server.service" in names
-    assert "/usr/lib/systemd/user/kitsune-ydotoold.service" in names
-    assert "/usr/lib/modules-load.d/kitsune-whisper.conf" in names
-
-
-def test_the_legacy_rpm_depends_on_the_gtk3_stack(tmp_path):
-    if not shutil_which("rpmbuild") or not shutil_which("rpm"):
-        pytest.skip("rpmbuild or rpm is not available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "rpm" / "build-rpm.sh"),
-            "--client",
-            str(client),
-            "--legacy",
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    rpm = output / f"kitsune-whisper-legacy-1.2.3-1.{native_arch()}.rpm"
-    requires = subprocess.run(
-        ["rpm", "-qp", "--requires", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "gtk3" in requires
-    assert "webkit2gtk4.1" in requires
-
-
-def test_the_appimage_builder_produces_a_portable_bundle(tmp_path):
-    tool = os.environ.get("APPIMAGETOOL") or shutil_which("appimagetool")
-    if not tool:
-        pytest.skip("appimagetool is not available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    server = tmp_path / "server.tar.gz"
-    write_tar(
-        server,
-        {
-            "bootstrap.py": ("import sys\n", 0o644),
-            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
-        },
-    )
-    wayland = tmp_path / "wayland.tar.gz"
-    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "appimage" / "build-appimage.sh"),
-            "--client",
-            str(client),
-            "--server-artifact",
-            str(server),
-            "--wayland-artifact",
-            str(wayland),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-            "--appimagetool",
-            tool,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    image = output / f"kitsune-whisper-1.2.3-{native_arch()}.AppImage"
-    assert image.is_file()
-    assert os.access(image, os.X_OK)
-    assert image.read_bytes()[:4] == b"\x7fELF"
-
-
-def shutil_which(name: str) -> str | None:
-    import shutil
-
-    return shutil.which(name)
+    help_output = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True)
+    assert help_output.returncode == 0, help_output.stderr
+    source = script.read_text(encoding="utf-8")
+    for retired in (
+        "--no-deb",
+        "--no-rpm",
+        "--no-appimage",
+        "build-deb",
+        "build-rpm",
+        "build-appimage",
+        "appimagetool",
+        "rpmbuild",
+    ):
+        assert retired not in source, retired
+        assert retired not in help_output.stdout, retired

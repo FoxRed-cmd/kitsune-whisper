@@ -24,6 +24,17 @@ _Avoid_: local daemon, embedded server, fallback server
 A Server reached over the network from another machine.
 _Avoid_: external server, main server, cloud server
 
+**Component**:
+Either of the two programs the installer can place on this machine: the Client
+or the Local Server. A machine may have either alone or both.
+_Avoid_: part, module, package
+
+**Autostart mode**:
+The setting that chooses which installed Components may start at login: Client +
+Server, Client only, or Server only. Off by default, and only modes whose
+Components are installed are offered.
+_Avoid_: startup type, run level, boot mode
+
 **Server profile**:
 A named set of connection settings for one Server that the Client can route utterances to.
 _Avoid_: endpoint, connection, backend, host
@@ -37,9 +48,12 @@ Stopping a Server's processing — unloading the model and refusing transcriptio
 _Avoid_: pause, suspend, shutdown
 
 **Autostart registration**:
-The OS entry that starts the Client or the Local Server at login — a systemd
-user unit on Linux or a per-user Task Scheduler task on Windows. The Startup
-switch turns it off without removing it.
+The OS entry that starts the Components selected by the Autostart mode at
+login — a systemd user unit on Linux or a per-user Task Scheduler task on
+Windows. The registration exists only while autostart is on: turning the switch
+off removes it rather than leaving it disabled. A disabled supervisor
+registration that lets the Client start the Local Server on demand is not an
+Autostart registration, because it starts nothing at login.
 _Avoid_: service, daemon, startup item
 
 **Model catalog**:

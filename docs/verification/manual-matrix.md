@@ -153,7 +153,6 @@ omissions.
 | User story 33: toggle **and** push-to-talk | Toggle only; a legacy `trigger: hold` loads as toggle | Push-to-talk was removed from the Client; see the CLI and `kitsune.example.yaml`. |
 | User story 73: model progress streamed as events | Polled on the health tick and after each action | The Admin API stays simple; the UI shows progress and cancel. |
 | Implementation decisions: HTML/TypeScript UI, Svelte suggested | Server-rendered HTML/JS in `internal/shell/page.go` | ADR 0010 keeps the Wails adapter thin without a Node build in release CI. |
-| Out of scope: RPM, AppImage | Both are built and published | Added after the spec; they reuse the same payload and cost little in CI. |
 | Soft-stop is the uniform "stop" on native and Docker | Local Server Stop/Restart are **hard** supervisor operations; Remote/Docker use soft-stop | ADR 0012: the Client on the Server host can drive the OS supervisor. |
 | User stories 49/50/51/52/53: remote status, settings, models, logs, lifecycle | Implemented through the Admin API; the Server YAML is written only by that Server | Pairing grants a trusted Device the full Admin API (ADR 0008). |
 | "No automatic fallback" | Enforced in the Client and covered by `e2e_trust.py` | The active profile is always explicit. |
