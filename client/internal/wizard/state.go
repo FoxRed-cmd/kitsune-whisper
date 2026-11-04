@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 )
 
 // Step names one screen of the Setup wizard.
@@ -87,6 +89,65 @@ type Options struct {
 	Now func() time.Time
 	// OnLog receives corrupt-file and save-failure messages; nil is silent.
 	OnLog func(string)
+	// Components reports which Components the installer placed on this
+	// machine. It is read on every navigation, so installing the Local Server
+	// later restores its steps without editing wizard.json. Nil means both
+	// Components, which keeps the full flow available to tests and builds that
+	// do not detect an installation.
+	Components func() components.Set
+}
+
+// installed returns the current Component set. The Local Server's steps are
+// only meaningful when its Component is present: they patch and restart the
+// active profile, which on a Client-only machine is either absent or a stale
+// Local profile that cannot answer.
+func (s *Service) installed() components.Set {
+	if s.opts.Components == nil {
+		return components.Set{Client: true, Server: true}
+	}
+	return s.opts.Components()
+}
+
+// stepAvailable reports whether step is part of this installation's flow.
+func stepAvailable(step Step, installed components.Set) bool {
+	switch step {
+	case StepHardware, StepModel:
+		return installed.Server
+	default:
+		return true
+	}
+}
+
+// followingAvailable returns the first available step after from without
+// touching progress. StepTry is always available, so the walk terminates.
+func followingAvailable(from Step, installed components.Set) Step {
+	for index := stepIndex(from) + 1; index < len(AllSteps); index++ {
+		if stepAvailable(AllSteps[index], installed) {
+			return AllSteps[index]
+		}
+	}
+	return StepTry
+}
+
+// nextAvailable returns the first available step after from, marking the
+// skipped local-server steps as skipped so the navigation shows them that way.
+func (s *Service) nextAvailable(state *State, from Step, installed components.Set) Step {
+	next := followingAvailable(from, installed)
+	for index := stepIndex(from) + 1; index < stepIndex(next); index++ {
+		markSkipped(state, AllSteps[index])
+	}
+	return next
+}
+
+// previousAvailable returns the nearest available step before from, or from
+// when it is the first step. It never rewrites progress.
+func previousAvailable(from Step, installed components.Set) Step {
+	for index := stepIndex(from) - 1; index >= 0; index-- {
+		if stepAvailable(AllSteps[index], installed) {
+			return AllSteps[index]
+		}
+	}
+	return from
 }
 
 // Service owns the wizard state and persists every transition.
@@ -130,7 +191,7 @@ func Open(store Store, opts Options) *Service {
 		service.state = service.initialLocked()
 		return service
 	}
-	service.state = normalize(state)
+	service.state = normalize(state, service.installed())
 	return service
 }
 
@@ -141,8 +202,9 @@ func (s *Service) initialLocked() State {
 // normalize repairs a loaded state: unknown steps fall back to the first step,
 // duplicate entries are removed, a completed wizard resumes on the try step,
 // and the wizard starts hidden so a restart never forces it open. The user can
-// reopen it from Settings.
-func normalize(state State) State {
+// reopen it from Settings. A step that this installation cannot run is skipped
+// forward, so resuming a Client-only wizard never lands on a dead screen.
+func normalize(state State, installed components.Set) State {
 	state.Version = stateVersion
 	state.Active = false
 	if !validStep(state.Step) {
@@ -162,6 +224,9 @@ func normalize(state State) State {
 	}
 	if state.SkippedAll {
 		state.Completed = false
+	}
+	if !stepAvailable(state.Step, installed) {
+		state.Step = followingAvailable(state.Step, installed)
 	}
 	return state
 }
@@ -235,7 +300,8 @@ func (s *Service) Close() error {
 }
 
 // Next records the current setup step as done and advances. From the final
-// try-it step it completes the wizard.
+// try-it step it completes the wizard. Steps this installation cannot run are
+// skipped on the way.
 func (s *Service) Next() error {
 	return s.mutate(func(state *State) {
 		if state.Step == StepTry {
@@ -243,23 +309,22 @@ func (s *Service) Next() error {
 			return
 		}
 		markDone(state, state.Step)
-		state.Step = nextStep(state.Step)
+		state.Step = s.nextAvailable(state, state.Step, s.installed())
 		state.Active = true
 	})
 }
 
-// Back steps backwards without erasing completed work. The first step is a
-// no-op.
+// Back steps backwards without erasing completed work, skipping steps this
+// installation cannot run. The first step is a no-op.
 func (s *Service) Back() error {
 	return s.mutate(func(state *State) {
-		if index := stepIndex(state.Step); index > 0 {
-			state.Step = AllSteps[index-1]
-		}
+		state.Step = previousAvailable(state.Step, s.installed())
 	})
 }
 
-// SkipStep records the current step as skipped and advances. Skipping the
-// final step completes the wizard.
+// SkipStep records the current step as skipped and advances, passing over
+// steps this installation cannot run. Skipping the final step completes the
+// wizard.
 func (s *Service) SkipStep() error {
 	return s.mutate(func(state *State) {
 		if state.Step == StepTry {
@@ -270,7 +335,7 @@ func (s *Service) SkipStep() error {
 			return
 		}
 		markSkipped(state, state.Step)
-		state.Step = nextStep(state.Step)
+		state.Step = s.nextAvailable(state, state.Step, s.installed())
 		state.Active = true
 	})
 }
@@ -310,7 +375,7 @@ func (s *Service) DeferModel(name string) error {
 		state.DeferredModel = name
 		markSkipped(state, StepModel)
 		if state.Step == StepModel {
-			state.Step = StepServer
+			state.Step = s.nextAvailable(state, StepModel, s.installed())
 		}
 		state.Active = true
 	})
@@ -425,14 +490,6 @@ func stepIndex(step Step) int {
 		}
 	}
 	return 0
-}
-
-func nextStep(step Step) Step {
-	index := stepIndex(step)
-	if index+1 < len(AllSteps) {
-		return AllSteps[index+1]
-	}
-	return StepTry
 }
 
 func (s *Service) mutate(change func(*State)) error {

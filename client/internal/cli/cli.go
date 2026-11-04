@@ -23,6 +23,7 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/audio"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/control"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
@@ -742,8 +743,14 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			statePath := paths.WizardState(bootstrap.store.Snapshot().Path)
 			stateStore := wizard.NewFileStore(statePath)
 			stateStore.OnLog = func(message string) { logger.Warning("wizard: %s", message) }
+			// The Component set is read once per launch, before any step runs.
+			// It stays out of wizard.json so upgrading a Client-only install
+			// with the Local Server brings its steps back on the next start.
+			installed := components.Detect(components.Default())
+			logger.Info("wizard: client=%t server=%t", installed.Client, installed.Server)
 			wizardService = wizard.Open(stateStore, wizard.Options{
-				OnLog: func(message string) { logger.Warning("wizard: %s", message) },
+				OnLog:      func(message string) { logger.Warning("wizard: %s", message) },
+				Components: func() components.Set { return installed },
 			})
 		}
 		clientLogPath := cfg.LogFile

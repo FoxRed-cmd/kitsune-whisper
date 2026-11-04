@@ -279,12 +279,14 @@ func wizardServerHTML(view wizard.View) string {
 			out.WriteString(` <code>` + escape(profile.URL) + `</code></div>`)
 		}
 	}
-	out.WriteString(`<h4>` + escape(view.Labels.ServerLocalTitle) + `</h4>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.ServerLocalHelp) + `</p>`)
-	out.WriteString(`<div class="field"><label for="wizard-local-address">` + escape(view.Labels.ServerLocalAddress) + `</label>`)
-	out.WriteString(`<input type="text" id="wizard-local-address" autocomplete="off" spellcheck="false" value="` +
-		escape(server.LocalAddress) + `"></div>`)
-	out.WriteString(`<button type="button" data-action="wizard-local">` + escape(view.Labels.ServerUseLocal) + `</button>`)
+	if server.LocalAvailable {
+		out.WriteString(`<h4>` + escape(view.Labels.ServerLocalTitle) + `</h4>`)
+		out.WriteString(`<p class="help">` + escape(view.Labels.ServerLocalHelp) + `</p>`)
+		out.WriteString(`<div class="field"><label for="wizard-local-address">` + escape(view.Labels.ServerLocalAddress) + `</label>`)
+		out.WriteString(`<input type="text" id="wizard-local-address" autocomplete="off" spellcheck="false" value="` +
+			escape(server.LocalAddress) + `"></div>`)
+		out.WriteString(`<button type="button" data-action="wizard-local">` + escape(view.Labels.ServerUseLocal) + `</button>`)
+	}
 	out.WriteString(`<h4>` + escape(view.Labels.ServerRemoteTitle) + `</h4>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.ServerRemoteHelp) + `</p>`)
 	out.WriteString(`<div class="field"><label for="wizard-server-address">` + escape(view.Labels.ServerAddress) + `</label>`)

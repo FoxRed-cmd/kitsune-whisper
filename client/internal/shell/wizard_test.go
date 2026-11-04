@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/cycle"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
@@ -848,4 +849,160 @@ func mustSettings(t *testing.T, window *fakeWindow) shell.SettingsView {
 		t.Fatal("no settings view was pushed")
 	}
 	return view
+}
+
+func clientOnlyWizard(t *testing.T) *wizard.Service {
+	t.Helper()
+	return openClientOnlyWizard(t, filepath.Join(t.TempDir(), "wizard.json"))
+}
+
+func openClientOnlyWizard(t *testing.T, path string) *wizard.Service {
+	t.Helper()
+	return wizard.Open(wizard.NewFileStore(path), wizard.Options{
+		Components: func() components.Set { return components.Set{Client: true} },
+	})
+}
+
+func TestClientOnlyWizardOffersRemoteServerStraightAway(t *testing.T) {
+	wiz := clientOnlyWizard(t)
+	_ = wiz.Open()
+	for i := 0; i < 3; i++ {
+		if err := wiz.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if wiz.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", wiz.Step())
+	}
+	view := wiz.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	html := shell.WizardHTML(view)
+	for _, want := range []string{
+		`id="wizard-server-address"`,
+		`id="wizard-server-code"`,
+		`id="wizard-server-name"`,
+		`data-action="wizard-pair-remote"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the Client-only Server step is missing %q", want)
+		}
+	}
+	for _, unwanted := range []string{`data-action="wizard-local"`, `id="wizard-local-address"`} {
+		if strings.Contains(html, unwanted) {
+			t.Errorf("the Client-only Server step still offers %q", unwanted)
+		}
+	}
+}
+
+func TestBothComponentsWizardKeepsTheLocalServerOption(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wizard.json")
+	wiz := wizard.Open(wizard.NewFileStore(path), wizard.Options{
+		Components: func() components.Set { return components.Set{Client: true, Server: true} },
+	})
+	_ = wiz.Open()
+	for i := 0; i < 5; i++ {
+		if err := wiz.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if wiz.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", wiz.Step())
+	}
+	view := wiz.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	html := shell.WizardHTML(view)
+	if !strings.Contains(html, `data-action="wizard-local"`) {
+		t.Fatal("a Client and Server installation lost the Local Server option")
+	}
+}
+
+func TestClientOnlyRemotePairYieldsAnActiveProfileAndFinishes(t *testing.T) {
+	wiz := clientOnlyWizard(t)
+	env := newWizardEnv(t, wiz)
+	remote := servers.Profile{ID: "remote-desktop", Name: "Desktop", URL: "https://desktop.local:8765"}
+	env.servers.mu.Lock()
+	env.servers.profile = remote
+	env.servers.health[remote.ID] = trust.Status{
+		State: trust.StateOnline, Model: "small", ModelState: "loaded",
+	}
+	env.servers.mu.Unlock()
+	env.start(t)
+	env.navigate(t, wizard.StepServer)
+
+	env.intent(t, shell.Intent{
+		Action: shell.IntentWizardPairRemote, Address: "desktop.local:8765",
+		Code: "abcd-2345", Name: "Laptop",
+	})
+	if env.applied.ActiveServer != remote.ID {
+		t.Fatalf("applied config = %+v, want the remote profile active", env.applied)
+	}
+	waitFor(t, "the paired remote profile", func() bool {
+		view, ok := env.window().lastSettings()
+		return ok && view.Wizard.Server.ActiveID == remote.ID
+	})
+
+	env.next(t, shell.Intent{})
+	if wiz.Step() != wizard.StepTry {
+		t.Fatalf("step = %q, want try", wiz.Step())
+	}
+	waitFor(t, "the remote Server status", func() bool {
+		return env.shell.Snapshot().Server.State == trust.StateOnline
+	})
+	waitFor(t, "the ready try step", func() bool {
+		view, ok := env.window().lastSettings()
+		return ok && view.Wizard.Try.Ready
+	})
+	view, ok := env.window().lastSettings()
+	if !ok || !view.Wizard.Try.Ready {
+		t.Fatalf("the try step is not ready against the paired remote Server: %+v", view.Wizard.Try)
+	}
+	if strings.Contains(shell.WizardHTML(view.Wizard), "Use Local Server") {
+		t.Fatal("the Client-only flow still offers the Local Server")
+	}
+
+	// Finish is the footer action on the try step.
+	env.next(t, shell.Intent{})
+	if !wiz.State().Completed || wiz.Active() {
+		t.Fatalf("state after finish = %+v", wiz.State())
+	}
+	env.stop(t)
+}
+
+func TestClientOnlyWizardResumesWithTheSameBranching(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wizard.json")
+	wiz := openClientOnlyWizard(t, path)
+	_ = wiz.Open()
+	for i := 0; i < 3; i++ {
+		if err := wiz.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if wiz.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", wiz.Step())
+	}
+	if err := wiz.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	resumed := openClientOnlyWizard(t, path)
+	if resumed.Step() != wizard.StepServer {
+		t.Fatalf("resumed step = %q, want server", resumed.Step())
+	}
+	env := newWizardEnv(t, resumed)
+	env.start(t)
+	env.intent(t, shell.Intent{Action: shell.IntentWizardOpen})
+	waitFor(t, "the resumed wizard", func() bool {
+		view, ok := env.window().lastSettings()
+		return ok && view.Wizard.Active
+	})
+	view := mustSettings(t, env.window())
+	if view.Wizard.Step != wizard.StepServer {
+		t.Fatalf("rendered step = %q, want server", view.Wizard.Step)
+	}
+	html := shell.WizardHTML(view.Wizard)
+	if !strings.Contains(html, `id="wizard-server-address"`) {
+		t.Fatal("the resumed Client-only wizard does not offer a remote address")
+	}
+	if strings.Contains(html, `data-action="wizard-local"`) {
+		t.Fatal("the resumed Client-only wizard offers the Local Server")
+	}
+	env.stop(t)
 }

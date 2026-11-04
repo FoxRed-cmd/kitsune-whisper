@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
@@ -19,6 +20,16 @@ func fixedNow() time.Time {
 func newService(t *testing.T, path string) *wizard.Service {
 	t.Helper()
 	return wizard.Open(wizard.NewFileStore(path), wizard.Options{Now: fixedNow})
+}
+
+// newServiceWith opens the wizard for an installation with the given
+// Components. Detection is injected so tests never touch the filesystem.
+func newServiceWith(t *testing.T, path string, installed components.Set) *wizard.Service {
+	t.Helper()
+	return wizard.Open(wizard.NewFileStore(path), wizard.Options{
+		Now:        fixedNow,
+		Components: func() components.Set { return installed },
+	})
 }
 
 func tempState(t *testing.T) string {
@@ -390,5 +401,116 @@ func activeModelServers() wizard.Data {
 	return wizard.Data{
 		Servers: serversViewWith(models),
 		Server:  trust.Status{State: trust.StateOnline, Model: "small", ModelState: "loaded"},
+	}
+}
+
+func TestClientOnlyNextSkipsTheLocalServerSteps(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true})
+	if err := service.Open(); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	want := []wizard.Step{
+		wizard.StepMicrophone,
+		wizard.StepHotkey,
+		wizard.StepServer,
+		wizard.StepTry,
+	}
+	for _, step := range want {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		if service.Step() != step {
+			t.Fatalf("step = %q, want %q", service.Step(), step)
+		}
+	}
+	if err := service.Next(); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+	if state := service.State(); !state.Completed {
+		t.Fatalf("state = %+v, want completed", state)
+	}
+	state := service.State()
+	for _, step := range []wizard.Step{wizard.StepHardware, wizard.StepModel} {
+		if !contains(state.Skipped, step) {
+			t.Fatalf("skipped = %v, missing %q", state.Skipped, step)
+		}
+	}
+}
+
+func TestClientOnlyBackAndSkipStepSkipTheLocalServerSteps(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true})
+	_ = service.Open()
+	for i := 0; i < 2; i++ {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if service.Step() != wizard.StepHotkey {
+		t.Fatalf("step = %q, want hotkey", service.Step())
+	}
+	if err := service.SkipStep(); err != nil {
+		t.Fatalf("skip: %v", err)
+	}
+	if service.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", service.Step())
+	}
+	if err := service.Back(); err != nil {
+		t.Fatalf("back: %v", err)
+	}
+	if service.Step() != wizard.StepHotkey {
+		t.Fatalf("step after back = %q, want hotkey", service.Step())
+	}
+}
+
+func TestClientOnlyResumeMovesOffAnUnavailableStep(t *testing.T) {
+	path := tempState(t)
+	done := wizard.State{
+		Version: 1,
+		Step:    wizard.StepModel,
+		Done:    []wizard.Step{wizard.StepWelcome, wizard.StepMicrophone, wizard.StepHotkey},
+	}
+	data, err := json.Marshal(done)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if err := writeFile(path, string(data)); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	service := newServiceWith(t, path, components.Set{Client: true})
+	if service.Step() != wizard.StepServer {
+		t.Fatalf("resumed step = %q, want server", service.Step())
+	}
+	if service.Fresh() {
+		t.Fatal("a readable state file was treated as fresh")
+	}
+}
+
+func TestComponentDecisionIsDerivedFromEachLaunch(t *testing.T) {
+	path := tempState(t)
+	clientOnly := newServiceWith(t, path, components.Set{Client: true})
+	_ = clientOnly.Open()
+	for i := 0; i < 3; i++ {
+		if err := clientOnly.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if clientOnly.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", clientOnly.Step())
+	}
+	if err := clientOnly.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// A later launch with a Local Server installed gets the local-server steps
+	// back, so the component set must not have been frozen into wizard.json.
+	both := newServiceWith(t, path, components.Set{Client: true, Server: true})
+	if both.Step() != wizard.StepServer {
+		t.Fatalf("resumed step = %q, want server", both.Step())
+	}
+	if err := both.Back(); err != nil {
+		t.Fatalf("back: %v", err)
+	}
+	if both.Step() != wizard.StepModel {
+		t.Fatalf("back step = %q, want model", both.Step())
 	}
 }
