@@ -826,24 +826,19 @@ function Install-Kitsune {
 
 function Uninstall-Kitsune {
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
-    $shim = $UninstallShim
-    $tempDir = ''
-    if (-not (Test-Path -LiteralPath $shim -PathType Leaf)) {
-        # Removal is idempotent: a partial install or a second -Uninstall still
-        # cleans the registrations and data. The temp shim receives the install
-        # root explicitly because its $PSScriptRoot is the temp directory.
-        $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) `
-            ('kitsune-uninstall-' + [guid]::NewGuid().ToString('N'))
-        New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-        $shim = Join-Path $tempDir 'uninstall.ps1'
-        Write-UninstallShim -Path $shim
-    }
+    # Run a fresh copy of the current boundaries rather than a shim left by an
+    # older installer. The shim receives the install root explicitly because
+    # its $PSScriptRoot is the temp directory. Removal is idempotent, so this
+    # also works when a partial install left no shim.
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ('kitsune-uninstall-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    $shim = Join-Path $tempDir 'uninstall.ps1'
+    Write-UninstallShim -Path $shim
     $arguments = @(
-        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $shim
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $shim,
+        '-InstallRoot', $InstallRoot
     )
-    if ($tempDir) {
-        $arguments += @('-InstallRoot', $InstallRoot)
-    }
     if ($Purge) {
         $arguments += '-Purge'
     }
@@ -860,9 +855,7 @@ function Uninstall-Kitsune {
         }
     }
     finally {
-        if ($tempDir) {
-            Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
-        }
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
