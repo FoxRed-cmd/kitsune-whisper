@@ -207,6 +207,29 @@ def test_install_without_start_leaves_a_registered_but_disabled_unit(
     assert "disabled" in status
 
 
+def test_install_no_start_does_not_require_a_free_port(
+    tmp_path: Path,
+    wiring: Wiring,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    artifact = build_artifact(tmp_path)
+
+    def taken(host: str, port: int) -> None:
+        raise server.PortInUseError(
+            f"server.port {port} is already in use on {host}; change server.port"
+        )
+
+    monkeypatch.setattr(cli, "_port_check", taken)
+
+    assert cli.main([*install_args(artifact), "--no-start"]) == 0
+
+    assert "installed" in capsys.readouterr().out
+    assert supervisor.unit_path(
+        supervisor.Environment("linux", wiring.paths.config_dir.parent, wiring.runner)
+    ).is_file()
+
+
 def test_install_stops_a_running_server_before_replacing_the_bundle(
     tmp_path: Path, wiring: Wiring
 ) -> None:
