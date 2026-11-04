@@ -59,6 +59,30 @@ The two installers are the only installation artifacts. They download the
 Client and Server archives from the same release and verify them against the
 signed checksum file. No distribution package or desktop bundle is produced.
 
+## Installer smoke jobs
+
+PR CI proves the published artifact set still installs, not just that it builds:
+
+- `install-smoke-linux` builds the Client and Server archives, signs
+  `checksums.txt` with an ephemeral ECDSA P-256 key, and runs
+  `scripts/ci-install-smoke.sh` inside a clean `ubuntu:24.04` container as a
+  non-root user. The script asserts the installed tree, the Client and Server
+  `--version` output, `--check`, an in-place reinstall, uninstall and purge, and
+  that no `sudo`, package manager, `udev`, `systemctl enable/start`, or `loginctl`
+  call happened. It also fails if anything under `/etc`, `/usr` or `/opt`
+  changed.
+- `install-smoke-windows` builds the Client zip and Server bundle, signs the
+  checksums with .NET `ECDsa`, and runs `scripts/ci-install-smoke.ps1` with an
+  isolated `LOCALAPPDATA`/`APPDATA`/`USERPROFILE`. It asserts the install tree,
+  Apps & Features entry, user PATH entry, a disabled Server logon trigger, the
+  installed binaries' versions, and the uninstall/purge boundaries.
+
+Both jobs use throwaway keys and the `KITSUNE_RELEASE_PUBLIC_KEY` test seam.
+They never touch the production `RELEASE_SIGNING_KEY`. A drift between the
+identifiers in `install.sh` / `install.ps1` and the table in
+[`dependencies.md`](dependencies.md#what-the-installers-check) fails the normal
+`server` test job.
+
 ### What each archive contains
 
 | Artifact | Contents |
@@ -194,10 +218,11 @@ scripts/e2e-live.sh --profile local-cpu --report e2e-cpu.md
 scripts/e2e-trust.sh --model small --report e2e-trust.md
 ```
 
-The Python suite includes the documentation assertions that keep the
-dependency identifiers in
-[`dependencies.md`](dependencies.md#what-the-installers-check) in sync with
-`install.sh` and `install.ps1`.
+The Python suite includes the drift guard that keeps the dependency
+identifiers and glibc floors in
+[`dependencies.md`](dependencies.md#what-the-installers-check) exactly equal to
+the `DEP_*`, `$Dep*`, and `GLIBC_*_FLOOR` values in `install.sh` and
+`install.ps1`.
 
 ## Release checklist
 

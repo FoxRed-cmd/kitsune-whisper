@@ -4,6 +4,12 @@ A manual, repeatable check of the Linux installer (`install.sh`) on a clean
 machine. It proves the scripts-only contract: per-user files, no elevation, no
 packages, no udev rule, and nothing enabled or started.
 
+CI automates the same black-box check on every PR: `install-smoke-linux` in
+`.github/workflows/ci.yml` runs `scripts/ci-install-smoke.sh` against freshly
+built and throwaway-signed artifacts inside a clean `ubuntu:24.04` container.
+The steps below remain the real-desktop check (menu entry, GTK/WebKit, hotkey
+and microphone) that a container cannot cover.
+
 Run it on a disposable machine or with a backup of your user configuration.
 Unlike the old installers, `install.sh` writes nothing outside your home
 directory and `/tmp`.
