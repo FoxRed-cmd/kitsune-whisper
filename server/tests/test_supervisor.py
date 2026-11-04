@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -69,6 +70,18 @@ def windows_options() -> SupervisorOptions:
     )
 
 
+def logon_trigger_enabled(xml: str) -> bool:
+    match = re.search(r"<LogonTrigger>\s*<Enabled>(true|false)</Enabled>", xml)
+    assert match is not None, "task XML has no logon trigger enable flag"
+    return match.group(1) == "true"
+
+
+def task_enabled(xml: str) -> bool:
+    match = re.search(r"<Settings>.*?<Enabled>(true|false)</Enabled>", xml, re.DOTALL)
+    assert match is not None, "task XML has no task-level enable flag"
+    return match.group(1) == "true"
+
+
 def test_systemd_unit_runs_in_the_user_manager_without_a_graphical_session() -> None:
     unit = supervisor.systemd_unit(linux_options())
 
@@ -106,7 +119,9 @@ def test_systemd_unit_escapes_percent_specifiers() -> None:
     assert "ExecStart=/home/kim/100%%/python3 start" in unit
 
 
-def test_install_writes_and_enables_the_user_unit(tmp_path: Path) -> None:
+def test_linux_install_writes_the_unit_and_reloads_without_enabling_or_starting(
+    tmp_path: Path,
+) -> None:
     runner = FakeRunner()
     env = linux_env(tmp_path, runner)
 
@@ -115,9 +130,21 @@ def test_install_writes_and_enables_the_user_unit(tmp_path: Path) -> None:
     unit_path = supervisor.unit_path(env)
     assert unit_path.is_file()
     assert "ExecStart=" in unit_path.read_text(encoding="utf-8")
+    assert runner.commands == ["systemctl --user daemon-reload"]
+
+
+def test_linux_enable_and_disable_toggle_the_registration_without_reinstalling(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner()
+    env = linux_env(tmp_path, runner)
+
+    supervisor.enable(env)
+    supervisor.disable(env)
+
     assert runner.commands == [
-        "systemctl --user daemon-reload",
-        f"systemctl --user enable --now {supervisor.UNIT_NAME}",
+        f"systemctl --user enable {supervisor.UNIT_NAME}",
+        f"systemctl --user disable {supervisor.UNIT_NAME}",
     ]
 
 
@@ -159,26 +186,57 @@ def test_lifecycle_delegates_to_systemctl(tmp_path: Path, command: str, expected
     assert runner.commands == [expected]
 
 
-def test_status_reports_a_running_unit(tmp_path: Path) -> None:
-    runner = FakeRunner({"is-active": CommandResult(0, "active\n")})
+def test_status_reports_a_running_enabled_unit(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        {
+            "is-active": CommandResult(0, "active\n"),
+            "is-enabled": CommandResult(0, "enabled\n"),
+        }
+    )
     env = linux_env(tmp_path, runner)
     supervisor.unit_path(env).parent.mkdir(parents=True)
     supervisor.unit_path(env).write_text("", encoding="utf-8")
 
     status = supervisor.status(env)
 
-    assert status == supervisor.SupervisorStatus(installed=True, running=True, detail="active")
+    assert status == supervisor.SupervisorStatus(
+        installed=True, running=True, enabled=True, detail="active"
+    )
 
 
-def test_status_reports_an_installed_but_stopped_unit(tmp_path: Path) -> None:
-    runner = FakeRunner({"is-active": CommandResult(3, "inactive\n")})
+def test_status_reports_an_installed_but_stopped_and_disabled_unit(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        {
+            "is-active": CommandResult(3, "inactive\n"),
+            "is-enabled": CommandResult(1, "disabled\n"),
+        }
+    )
     env = linux_env(tmp_path, runner)
     supervisor.unit_path(env).parent.mkdir(parents=True)
     supervisor.unit_path(env).write_text("", encoding="utf-8")
 
     status = supervisor.status(env)
 
-    assert status == supervisor.SupervisorStatus(installed=True, running=False, detail="inactive")
+    assert status == supervisor.SupervisorStatus(
+        installed=True, running=False, enabled=False, detail="inactive"
+    )
+
+
+def test_status_reports_a_running_but_disabled_unit(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        {
+            "is-active": CommandResult(0, "active\n"),
+            "is-enabled": CommandResult(1, "disabled\n"),
+        }
+    )
+    env = linux_env(tmp_path, runner)
+    supervisor.unit_path(env).parent.mkdir(parents=True)
+    supervisor.unit_path(env).write_text("", encoding="utf-8")
+
+    status = supervisor.status(env)
+
+    assert status.running is True
+    assert status.enabled is False
 
 
 def test_status_reports_a_missing_supervisor_without_calling_out(tmp_path: Path) -> None:
@@ -203,10 +261,12 @@ def test_failed_commands_raise_one_actionable_line(tmp_path: Path) -> None:
     assert "\n" not in str(caught.value)
 
 
-def test_task_xml_starts_hidden_at_logon_and_restarts_on_failure() -> None:
+def test_task_xml_is_hidden_runnable_and_has_no_enabled_logon_trigger() -> None:
     xml = supervisor.task_xml(windows_options())
 
     assert "<LogonTrigger>" in xml
+    assert logon_trigger_enabled(xml) is False
+    assert task_enabled(xml) is True
     assert "<Hidden>true</Hidden>" in xml
     assert "<RestartOnFailure>" in xml
     assert "<Command>" + windows_options().invocation.command + "</Command>" in xml
@@ -215,6 +275,13 @@ def test_task_xml_starts_hidden_at_logon_and_restarts_on_failure() -> None:
     assert "<LogonType>InteractiveToken</LogonType>" in xml
     assert "<RunLevel>LeastPrivilege</RunLevel>" in xml
     assert "<UserId>DESKTOP\\kim</UserId>" in xml
+
+
+def test_task_xml_with_an_enabled_logon_trigger_still_runs_hidden() -> None:
+    xml = supervisor.task_xml(windows_options(), logon_trigger=True)
+
+    assert logon_trigger_enabled(xml) is True
+    assert task_enabled(xml) is True
 
 
 def test_task_xml_escapes_paths() -> None:
@@ -232,7 +299,7 @@ def test_task_xml_escapes_paths() -> None:
     assert "C:\\Program Files\\kitsune\\launcher.py" in xml
 
 
-def test_windows_install_registers_the_task_from_a_utf16_file(tmp_path: Path) -> None:
+def test_windows_install_registers_a_disabled_task_from_a_utf16_file(tmp_path: Path) -> None:
     runner = FakeRunner()
     env = windows_env(tmp_path, runner)
 
@@ -241,10 +308,47 @@ def test_windows_install_registers_the_task_from_a_utf16_file(tmp_path: Path) ->
     task_path = supervisor.task_path(env)
     raw = task_path.read_bytes()
     assert raw[:2] == b"\xff\xfe"
+    xml = task_path.read_text(encoding="utf-16")
+    assert logon_trigger_enabled(xml) is False
+    assert task_enabled(xml) is True
     assert runner.commands == [
         f"schtasks /Create /TN {supervisor.TASK_NAME} /XML {task_path} /F",
-        f"schtasks /Run /TN {supervisor.TASK_NAME}",
     ]
+
+
+def test_windows_installed_task_can_be_started_on_demand(tmp_path: Path) -> None:
+    runner = FakeRunner()
+    env = windows_env(tmp_path, runner)
+    supervisor.install(env, windows_options())
+    runner.calls.clear()
+
+    supervisor.start(env)
+
+    assert runner.commands == [f"schtasks /Run /TN {supervisor.TASK_NAME}"]
+
+
+def test_windows_enable_and_disable_toggle_the_logon_trigger_without_reinstalling(
+    tmp_path: Path,
+) -> None:
+    runner = FakeRunner()
+    env = windows_env(tmp_path, runner)
+    supervisor.install(env, windows_options())
+    runner.calls.clear()
+
+    supervisor.enable(env)
+
+    task_path = supervisor.task_path(env)
+    assert logon_trigger_enabled(task_path.read_text(encoding="utf-16")) is True
+    reimport = f"schtasks /Create /TN {supervisor.TASK_NAME} /XML {task_path} /F"
+    assert runner.commands == [reimport]
+    assert f"schtasks /Run /TN {supervisor.TASK_NAME}" not in runner.commands
+
+    runner.calls.clear()
+    supervisor.disable(env)
+
+    assert logon_trigger_enabled(task_path.read_text(encoding="utf-16")) is False
+    assert runner.commands == [reimport]
+    assert f"schtasks /Delete /TN {supervisor.TASK_NAME} /F" not in runner.commands
 
 
 def test_windows_uninstall_deletes_the_task_and_is_idempotent(tmp_path: Path) -> None:
@@ -318,9 +422,12 @@ def test_windows_restart_starts_a_stopped_task_anyway(tmp_path: Path) -> None:
     assert runner.commands[-1] == f"schtasks /Run /TN {supervisor.TASK_NAME}"
 
 
-def test_windows_status_parses_the_query(tmp_path: Path) -> None:
+def test_windows_status_parses_a_running_enabled_task(tmp_path: Path) -> None:
     runner = FakeRunner(
-        {"/Query": CommandResult(0, "TaskName:      \\kitsune-server\nStatus:        Running\n")}
+        {
+            "LIST": CommandResult(0, "TaskName:      \\kitsune-server\nStatus:        Running\n"),
+            "/XML": CommandResult(0, supervisor.task_xml(windows_options(), logon_trigger=True)),
+        }
     )
     env = windows_env(tmp_path, runner)
     task_path = supervisor.task_path(env)
@@ -329,11 +436,34 @@ def test_windows_status_parses_the_query(tmp_path: Path) -> None:
 
     status = supervisor.status(env)
 
-    assert status == supervisor.SupervisorStatus(installed=True, running=True, detail="Running")
+    assert status == supervisor.SupervisorStatus(
+        installed=True, running=True, enabled=True, detail="Running"
+    )
+
+
+def test_windows_status_reports_a_disabled_logon_trigger(tmp_path: Path) -> None:
+    runner = FakeRunner(
+        {
+            "LIST": CommandResult(0, "TaskName:      \\kitsune-server\nStatus:        Ready\n"),
+            "/XML": CommandResult(0, supervisor.task_xml(windows_options())),
+        }
+    )
+    env = windows_env(tmp_path, runner)
+    task_path = supervisor.task_path(env)
+    task_path.parent.mkdir(parents=True)
+    task_path.write_text("", encoding="utf-8")
+
+    status = supervisor.status(env)
+
+    assert status.installed is True
+    assert status.running is False
+    assert status.enabled is False
+    assert status.detail == "Ready"
+    assert any("/Query" in call for call in runner.commands)
 
 
 def test_windows_status_treats_an_unregistered_task_as_missing(tmp_path: Path) -> None:
-    runner = FakeRunner({"/Query": CommandResult(1, stderr="ERROR: the task does not exist")})
+    runner = FakeRunner({"LIST": CommandResult(1, stderr="ERROR: the task does not exist")})
     env = windows_env(tmp_path, runner)
     task_path = supervisor.task_path(env)
     task_path.parent.mkdir(parents=True)
@@ -343,6 +473,7 @@ def test_windows_status_treats_an_unregistered_task_as_missing(tmp_path: Path) -
 
     assert status.installed is False
     assert status.running is False
+    assert status.enabled is False
     assert "does not exist" in status.detail
 
 
