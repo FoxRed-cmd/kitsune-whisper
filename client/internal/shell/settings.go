@@ -690,8 +690,8 @@ func collectViewErrors(view SettingsView) []ViewError {
 		errors = append(errors, ViewError{Section: section, Message: message})
 	}
 
-	add("dictation", view.DeviceError)
-	add("dictation", view.Gnome.Error)
+	add("dictation-microphone", view.DeviceError)
+	add("dictation-hotkeys", view.Gnome.Error)
 	for _, profile := range view.Servers.Profiles {
 		if profile.Health.State != trust.StateOnline {
 			add("servers", profile.Name+": "+profile.Health.Error)

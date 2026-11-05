@@ -42,6 +42,18 @@ func sectionIcon(id string) string {
 		return pageIcon("monitor")
 	case "dictation":
 		return pageIcon("mic")
+	case "dictation-hotkeys":
+		return pageIcon("keyboard")
+	case "dictation-microphone":
+		return pageIcon("mic")
+	case "dictation-language":
+		return pageIcon("globe")
+	case "dictation-feedback":
+		return pageIcon("bell")
+	case "dictation-paste":
+		return pageIcon("paste")
+	case "dictation-storage":
+		return pageIcon("spool")
 	}
 	return ""
 }
@@ -72,6 +84,12 @@ var pageIconPaths = map[string]string{
 	"keyboard": `<rect x="2.5" y="6" width="19" height="12" rx="2.2"/>` +
 		`<path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 13.5h.01M9.5 13.5h.01M13 13.5h.01M16.5 13.5h.01"/>` +
 		`<path d="M8 16.5h8"/>`,
+	"globe": `<circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17"/>` +
+		`<path d="M12 3.5c2.3 2.4 3.4 5.3 3.4 8.5s-1.1 6.1-3.4 8.5c-2.3-2.4-3.4-5.3-3.4-8.5s1.1-6.1 3.4-8.5z"/>`,
+	"bell": `<path d="M6.5 9.5a5.5 5.5 0 0 1 11 0c0 4 1.5 5.5 1.5 5.5H5s1.5-1.5 1.5-5.5z"/>` +
+		`<path d="M10 18.5a2.3 2.3 0 0 0 4 0"/>`,
+	"paste": `<rect x="5.5" y="5" width="13" height="15" rx="2"/>` +
+		`<path d="M9 5V3.8h6V5"/><path d="M9 10h6"/><path d="M9 14h4"/>`,
 	"plus": `<path d="M12 5.5v13"/><path d="M5.5 12h13"/>`,
 	"trash": `<path d="M4.5 7h15"/><path d="M9.5 7V5.2A1.2 1.2 0 0 1 10.7 4h2.6a1.2 1.2 0 0 1 1.2 1.2V7"/>` +
 		`<path d="M6.5 7l.9 12.1a1.6 1.6 0 0 0 1.6 1.4h6a1.6 1.6 0 0 0 1.6-1.4L17.5 7"/>` +

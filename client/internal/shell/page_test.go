@@ -268,6 +268,45 @@ func TestSettingsNavigationGroupsRelatedScreens(t *testing.T) {
 	}
 }
 
+func TestDictationScreenSplitsIntoLogicalCards(t *testing.T) {
+	view := sampleView()
+	view.Sections = []dictation.Section{
+		{ID: "dictation-hotkeys", Title: "Hotkeys"},
+		{ID: "dictation-microphone", Title: "Microphone"},
+		{ID: "dictation-language", Title: "Spoken language"},
+		{ID: "dictation-feedback", Title: "Feedback"},
+		{ID: "dictation-paste", Title: "Insertion"},
+		{ID: "dictation-storage", Title: "Recordings folder"},
+	}
+	page := shell.SettingsHTML(view)
+	wantNav := `data-nav="dictation" data-targets="dictation-hotkeys,dictation-microphone,dictation-language,dictation-feedback,dictation-paste,dictation-storage"`
+	if !strings.Contains(page, wantNav) {
+		t.Errorf("dictation navigation does not show every card: %s", page)
+	}
+	// Hotkeys and insertion need the full width; the three middle cards share
+	// a row, like the General screen.
+	for _, want := range []string{
+		`class="group group-wide" data-section="dictation-hotkeys"`,
+		`class="group" data-section="dictation-microphone"`,
+		`class="group" data-section="dictation-language"`,
+		`class="group" data-section="dictation-feedback"`,
+		`class="group group-wide" data-section="dictation-paste"`,
+		`class="group" data-section="dictation-storage"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing card %q", want)
+		}
+	}
+	// The screen is identified by the navigation entry, not by a heading over
+	// the whole group of cards.
+	if !strings.Contains(page, `>Hotkeys</h2>`) {
+		t.Error("the hotkeys card lost its heading")
+	}
+	if strings.Contains(page, `Распознавание речи</h2>`) {
+		t.Error("the removed whole-screen heading is still rendered")
+	}
+}
+
 func TestSettingsPageRendersIndicatorPlacementAndLivePreview(t *testing.T) {
 	view := managementView()
 	view.Sections = append(view.Sections, dictation.Section{

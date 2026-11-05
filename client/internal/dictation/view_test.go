@@ -49,6 +49,17 @@ func fieldByPath(t *testing.T, view dictation.View, path string) dictation.Field
 	return dictation.Field{}
 }
 
+func sectionByID(t *testing.T, view dictation.View, id string) dictation.Section {
+	t.Helper()
+	for _, section := range view.Sections {
+		if section.ID == id {
+			return section
+		}
+	}
+	t.Fatalf("view has no section %s", id)
+	return dictation.Section{}
+}
+
 func hasOption(options []dictation.Option, value, label string) bool {
 	for _, option := range options {
 		if option.Value == value && option.Label == label {
@@ -74,11 +85,23 @@ client:
 	service := dictation.New(dictation.Options{Store: store, Env: map[string]string{"LANG": "en_US.UTF-8"}})
 	view := service.View()
 
-	if len(view.Sections) != 3 || view.Sections[0].ID != "general" || view.Sections[1].ID != "appearance" || view.Sections[2].ID != "dictation" {
-		t.Fatalf("sections = %+v, want general then dictation", view.Sections)
+	if len(view.Sections) != 8 || view.Sections[0].ID != "general" || view.Sections[1].ID != "appearance" {
+		t.Fatalf("sections = %+v, want general, appearance and six dictation cards", view.Sections)
 	}
-	if view.Sections[0].Title != "Interface language" || view.Sections[2].Title != "Dictation" {
-		t.Fatalf("section titles = %q, %q", view.Sections[0].Title, view.Sections[2].Title)
+	if got := sectionByID(t, view, "general").Title; got != "Interface language" {
+		t.Fatalf("general title = %q", got)
+	}
+	for id, want := range map[string]string{
+		"dictation-hotkeys":    "Hotkeys",
+		"dictation-microphone": "Microphone",
+		"dictation-language":   "Spoken language",
+		"dictation-feedback":   "Feedback",
+		"dictation-paste":      "Insertion",
+		"dictation-storage":    "Recordings folder",
+	} {
+		if got := sectionByID(t, view, id).Title; got != want {
+			t.Errorf("%s title = %q, want %q", id, got, want)
+		}
 	}
 
 	hotkey := fieldByPath(t, view, "client.hotkey")
@@ -180,8 +203,8 @@ func TestViewRendersInRussian(t *testing.T) {
 	if view.Language != "ru" {
 		t.Fatalf("language = %q, want ru", view.Language)
 	}
-	if view.Sections[2].Title != "Распознавание речи" {
-		t.Fatalf("dictation title = %q", view.Sections[2].Title)
+	if got := sectionByID(t, view, "dictation-hotkeys").Title; got != "Горячие клавиши" {
+		t.Fatalf("hotkeys title = %q", got)
 	}
 	if got := fieldByPath(t, view, "client.hotkey").Label; got != "Горячая клавиша распознавания" {
 		t.Fatalf("hotkey label = %q", got)
@@ -198,7 +221,7 @@ func TestViewSwitchesLanguageAfterSaving(t *testing.T) {
 	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
 	store := openStore(t, path, nil, nil)
 	service := dictation.New(dictation.Options{Store: store, Env: map[string]string{"LANG": "en_US.UTF-8"}})
-	if got := service.View().Sections[2].Title; got != "Dictation" {
+	if got := sectionByID(t, service.View(), "dictation-hotkeys").Title; got != "Hotkeys" {
 		t.Fatalf("initial title = %q, want English", got)
 	}
 
@@ -210,7 +233,7 @@ func TestViewSwitchesLanguageAfterSaving(t *testing.T) {
 		t.Fatalf("save errors = %v", outcome.Errors)
 	}
 	view := service.View()
-	if view.Language != "ru" || view.Sections[2].Title != "Распознавание речи" {
+	if view.Language != "ru" || sectionByID(t, view, "dictation-hotkeys").Title != "Горячие клавиши" {
 		t.Fatalf("view after switching language = %+v", view.Sections)
 	}
 	if service.Catalog().Lang() != "ru" {

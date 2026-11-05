@@ -243,8 +243,8 @@ func TestGnomeOfferIsRenderedInsideTheDictationSection(t *testing.T) {
 	cancelField := strings.Index(page, `data-field="client.cancel_hotkey"`)
 	offer := strings.Index(page, `class="gnome-offer"`)
 	backendField := strings.Index(page, `data-field="client.hotkey_backend"`)
-	if offer < 0 || cancelField < 0 || backendField < 0 || offer < cancelField || offer > backendField {
-		t.Fatalf("the GNOME offer is not directly under the hotkeys: cancel=%d offer=%d backend=%d",
+	if offer < 0 || cancelField < 0 || backendField < 0 || offer < cancelField || offer < backendField {
+		t.Fatalf("the GNOME offer is not below the hotkey fields: cancel=%d offer=%d backend=%d",
 			cancelField, offer, backendField)
 	}
 }

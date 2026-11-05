@@ -82,8 +82,7 @@ func navEntries(view SettingsView) []navEntry {
 		entries = append(entries, navEntry{Key: "general", Label: catalog.T("section.general"), Targets: general})
 	}
 
-	dictationTargets := sectionTargets(view, "dictation")
-	if len(dictationTargets) > 0 {
+	if dictationTargets := dictationSectionTargets(view); len(dictationTargets) > 0 {
 		entries = append(entries, navEntry{
 			Key:     "dictation",
 			Label:   catalog.T("section.dictation"),
@@ -130,7 +129,7 @@ func navEntries(view SettingsView) []navEntry {
 // they are rendered. Short cards share a row.
 func sectionIsWide(id string) bool {
 	switch id {
-	case "dictation", "appearance":
+	case "dictation", "dictation-hotkeys", "dictation-paste", "appearance":
 		return true
 	}
 	return false
@@ -144,6 +143,22 @@ func sectionTargets(view SettingsView, id string) []string {
 		}
 	}
 	return nil
+}
+
+// dictationSectionTargets collects every card of the Dictation screen. The
+// screen is one navigation entry made of several cards, each a section of its
+// own, so the entry must show all of them at once.
+func dictationSectionTargets(view SettingsView) []string {
+	var targets []string
+	for _, section := range view.Sections {
+		if section.Title == "" {
+			continue
+		}
+		if section.ID == "dictation" || strings.HasPrefix(section.ID, "dictation-") {
+			targets = append(targets, section.ID)
+		}
+	}
+	return targets
 }
 
 // SettingsHTML renders the Settings screens into a navigation menu plus the
@@ -164,25 +179,14 @@ func SettingsHTML(view SettingsView) string {
 		out.WriteString(`<section class="` + classes + `" data-section="` + escape(section.ID) + `">`)
 		out.WriteString(`<h2>` + sectionIcon(section.ID) + escape(section.Title) + `</h2>`)
 		out.WriteString(`<div class="field-grid">`)
-		// GNOME's system keybindings belong to the hotkeys they bind: the offer
-		// sits directly under the last hotkey field of the Dictation screen, not
-		// on a screen of its own or at the bottom of the pane.
-		gnomeAfter := -1
-		if section.ID == "dictation" && view.Gnome.Visible {
-			for index, field := range section.Fields {
-				if field.Kind == dictation.KindHotkey {
-					gnomeAfter = index
-				}
-			}
-		}
-		if gnomeAfter < 0 && section.ID == "dictation" && view.Gnome.Visible {
-			out.WriteString(gnomeShortcutsHTML(view.Gnome))
-		}
-		for index, field := range section.Fields {
+		for _, field := range section.Fields {
 			writeField(&out, field, view.View)
-			if index == gnomeAfter {
-				out.WriteString(gnomeShortcutsHTML(view.Gnome))
-			}
+		}
+		// GNOME's system keybindings belong to the hotkeys they bind. The offer
+		// goes below the whole hotkey card, so it never splits the row of
+		// hotkey, cancel and backend fields.
+		if (section.ID == "dictation" || section.ID == "dictation-hotkeys") && view.Gnome.Visible {
+			out.WriteString(gnomeShortcutsHTML(view.Gnome))
 		}
 		out.WriteString(`</div></section>`)
 	}
@@ -1305,14 +1309,21 @@ const pageHTML = `<!doctype html>
     justify-content:center;
     min-height:32px;
   }
+  /* The microphone test and stop buttons share one width, like the other
+     card actions. */
+  .settings-pane > [data-section='dictation-microphone'] .mic-actions > button {
+    flex:1 1 0;
+    min-width:0;
+    justify-content:center;
+    min-height:32px;
+  }
   /* A card with many short fields uses two columns of fields, so it stays
      compact without turning every input into a half-width control. */
   .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:2px 20px; align-items:start; }
   .field-grid > .field { border-top:none; padding:6px 0; }
   .field-grid > .gnome-offer { grid-column:1 / -1; margin:6px 0 2px; }
-  .group[data-section='dictation'] > .field-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
   @media (max-width: 900px) {
-    .group[data-section='dictation'] > .field-grid, .server-fields { grid-template-columns:minmax(0, 1fr); }
+    .server-fields { grid-template-columns:minmax(0, 1fr); }
   }
   /* Author display rules (notably the flex Server form) otherwise beat the
      user-agent [hidden] rule, so the Server screen stayed visible on every

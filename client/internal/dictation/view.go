@@ -167,8 +167,8 @@ var specs = []sectionSpec{
 		},
 	},
 	{
-		id:       "dictation",
-		titleKey: "section.dictation",
+		id:       "dictation-hotkeys",
+		titleKey: "section.dictation.hotkeys",
 		fields: []fieldSpec{
 			{path: "client.hotkey", kind: KindHotkey, labelKey: "field.hotkey", helpKey: "help.hotkey"},
 			{path: "client.cancel_hotkey", kind: KindHotkey, labelKey: "field.cancel_hotkey", helpKey: "help.cancel_hotkey"},
@@ -184,8 +184,44 @@ var specs = []sectionSpec{
 					{value: "external", key: "backend.external"},
 				},
 			},
+		},
+	},
+	{
+		id:       "dictation-microphone",
+		titleKey: "section.dictation.microphone",
+		fields: []fieldSpec{
 			{path: "client.audio.device", kind: KindMicrophone, labelKey: "field.audio.device", helpKey: "help.audio.device"},
+		},
+	},
+	{
+		id:       "dictation-language",
+		titleKey: "section.dictation.language",
+		fields: []fieldSpec{
 			{path: "client.language", kind: KindSelect, labelKey: "field.language", helpKey: "help.language"},
+		},
+	},
+	{
+		id:       "dictation-feedback",
+		titleKey: "section.dictation.feedback",
+		fields: []fieldSpec{
+			{path: "client.feedback.earcons", kind: KindToggle, labelKey: "field.feedback.earcons", helpKey: "help.feedback.earcons"},
+			{
+				path:     "client.feedback.indicator",
+				kind:     KindSelect,
+				labelKey: "field.feedback.indicator",
+				options: []optionSpec{
+					{value: "auto", key: "indicator.auto"},
+					{value: "layer_shell", key: "indicator.layer_shell"},
+					{value: "x11", key: "indicator.x11"},
+					{value: "off", key: "indicator.off"},
+				},
+			},
+		},
+	},
+	{
+		id:       "dictation-paste",
+		titleKey: "section.dictation.paste",
+		fields: []fieldSpec{
 			{path: "client.paste", kind: KindToggle, labelKey: "field.paste", helpKey: "help.paste"},
 			{
 				path:     "client.paste_shortcut",
@@ -208,18 +244,12 @@ var specs = []sectionSpec{
 					{value: "never", key: "clipboard.never"},
 				},
 			},
-			{path: "client.feedback.earcons", kind: KindToggle, labelKey: "field.feedback.earcons", helpKey: "help.feedback.earcons"},
-			{
-				path:     "client.feedback.indicator",
-				kind:     KindSelect,
-				labelKey: "field.feedback.indicator",
-				options: []optionSpec{
-					{value: "auto", key: "indicator.auto"},
-					{value: "layer_shell", key: "indicator.layer_shell"},
-					{value: "x11", key: "indicator.x11"},
-					{value: "off", key: "indicator.off"},
-				},
-			},
+		},
+	},
+	{
+		id:       "dictation-storage",
+		titleKey: "section.dictation.storage",
+		fields: []fieldSpec{
 			{path: "client.spool_dir", kind: KindText, labelKey: "field.spool_dir", helpKey: "help.spool_dir"},
 		},
 	},
