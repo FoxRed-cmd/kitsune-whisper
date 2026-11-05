@@ -430,13 +430,16 @@ type Shell struct {
 	opts Options
 	log  Logger
 
-	mu            sync.Mutex
-	snapshot      Snapshot
-	runtimeStatus runtime.Status
-	server        trust.Status
-	window        Window
-	tray          Tray
-	levelTest     dictation.LevelStream
+	mu sync.Mutex
+	// settingsPushMu keeps a settings render and its delivery in one order, so
+	// an older view cannot arrive after a newer one.
+	settingsPushMu sync.Mutex
+	snapshot       Snapshot
+	runtimeStatus  runtime.Status
+	server         trust.Status
+	window         Window
+	tray           Tray
+	levelTest      dictation.LevelStream
 	// notifiedError is the last Dictation failure already announced.
 	notifiedError string
 	healthState   string
@@ -886,14 +889,29 @@ func (s *Shell) localProfilePinned() bool {
 }
 
 func (s *Shell) checkServer(ctx context.Context) {
+	s.checkServerMode(ctx, false)
+}
+
+// checkServerNow is the explicit Refresh path: it waits for the Device list so
+// the caller sees the newly paired Device in the same view, instead of racing
+// the background load.
+func (s *Shell) checkServerNow(ctx context.Context) {
+	s.checkServerMode(ctx, true)
+}
+
+func (s *Shell) checkServerMode(ctx context.Context, syncDevices bool) {
 	if s.opts.Servers != nil {
-		s.checkProfiles(ctx)
+		s.checkProfiles(ctx, syncDevices)
 		return
 	}
 	status := s.probeActiveServer(ctx)
 	s.updateServer(status)
 	if status.State == trust.StateOnline {
-		go s.loadDevices(ctx)
+		if syncDevices {
+			s.loadDevices(ctx)
+		} else {
+			go s.loadDevices(ctx)
+		}
 		go s.loadModelsForCheck(ctx)
 	}
 	s.maybeAutoOpenWizard()
@@ -935,7 +953,7 @@ func (s *Shell) probeProfile(ctx context.Context, profileID string) trust.Status
 // checkProfiles refreshes the advisory health of every Server profile. It never
 // changes the active profile and never applies a configuration; a changed
 // health only re-renders the profile list.
-func (s *Shell) checkProfiles(ctx context.Context) {
+func (s *Shell) checkProfiles(ctx context.Context, syncDevices bool) {
 	s.ensureLocalPairing(ctx)
 	view := s.opts.Servers.View()
 	active := trust.Status{State: trust.StateUnknown}
@@ -952,7 +970,11 @@ func (s *Shell) checkProfiles(ctx context.Context) {
 		// The Models and Devices screens follow the active profile's health:
 		// the catalog is loaded once per profile, and a running download keeps
 		// refreshing its progress.
-		go s.loadDevices(ctx)
+		if syncDevices {
+			s.loadDevices(ctx)
+		} else {
+			go s.loadDevices(ctx)
+		}
 		go s.loadModelsForCheck(ctx)
 	}
 }

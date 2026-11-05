@@ -94,7 +94,10 @@ func newWizardEnv(t *testing.T, wiz *wizard.Service) *wizardEnv {
 func (e *wizardEnv) start(t *testing.T) {
 	t.Helper()
 	e.done = start(t, e.shell, false)
-	waitFor(t, "the settings window", func() bool { return e.desktop.getWindow() != nil })
+	waitFor(t, "the settings window", func() bool {
+		window := e.desktop.getWindow()
+		return window != nil && window.intentInstalled()
+	})
 }
 
 func (e *wizardEnv) startHidden(t *testing.T) {
@@ -461,8 +464,21 @@ func TestWizardLocalProfileCreatesAndApplies(t *testing.T) {
 	env.navigate(t, wizard.StepServer)
 
 	env.intent(t, shell.Intent{Action: shell.IntentWizardLocal, Address: "http://127.0.0.1:9999"})
-	if len(env.servers.ensureCalls) != 1 {
-		t.Fatalf("ensure calls = %v", env.servers.ensureCalls)
+	// The background health poll may retry auto-pairing on the new Local
+	// Server profile (with an empty address) at the same time. Only the
+	// wizard's own call carries the typed address.
+	env.servers.mu.Lock()
+	ensureCalls := append([]string(nil), env.servers.ensureCalls...)
+	env.servers.mu.Unlock()
+	found := false
+	for _, call := range ensureCalls {
+		if call == "http://127.0.0.1:9999" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("ensure calls = %v, want the typed address", ensureCalls)
 	}
 	if env.applied.ActiveServer != "local" {
 		t.Fatalf("applied config = %+v", env.applied)

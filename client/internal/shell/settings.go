@@ -1292,7 +1292,7 @@ func (s *Shell) useProfile(profileID string) {
 func (s *Shell) refreshServers() {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	s.checkServer(ctx)
+	s.checkServerNow(ctx)
 	s.pushSettings()
 }
 
@@ -1509,6 +1509,8 @@ func (s *Shell) hideIndicatorPreview() {
 
 // pushSettings renders the current settings view into the window.
 func (s *Shell) pushSettings() {
+	s.settingsPushMu.Lock()
+	defer s.settingsPushMu.Unlock()
 	view := s.settingsView()
 	s.mu.Lock()
 	window := s.window

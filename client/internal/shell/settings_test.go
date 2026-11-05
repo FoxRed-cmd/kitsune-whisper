@@ -188,7 +188,10 @@ func newSettingsShell(t *testing.T, rt *fakeRuntime, desktop *fakeDesktop, setti
 func startWithWindow(t *testing.T, sh *shell.Shell, desktop *fakeDesktop) <-chan runResult {
 	t.Helper()
 	done := start(t, sh, false)
-	waitFor(t, "settings window", func() bool { return desktop.getWindow() != nil })
+	waitFor(t, "settings window", func() bool {
+		window := desktop.getWindow()
+		return window != nil && window.intentInstalled()
+	})
 	return done
 }
 
