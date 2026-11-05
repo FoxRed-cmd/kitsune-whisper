@@ -5,6 +5,7 @@
 /kitsune.yaml
 /config/kitsune.yaml
 /.env
+/mise.local.toml
 
 ### Go ###
 *.exe

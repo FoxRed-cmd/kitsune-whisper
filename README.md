@@ -517,6 +517,7 @@ More detail is in [docs/troubleshooting.md](docs/troubleshooting.md).
 - [Security: TLS, Device tokens, pairing](docs/security.md)
 - [Models: catalog, download, activate, delete](docs/models.md)
 - [Troubleshooting](docs/troubleshooting.md)
+- [Development environment and tasks](docs/development.md)
 - [Release process and artifacts](docs/release.md)
 - [Manual verification matrix](docs/verification/manual-matrix.md)
 - [Wayland support and limitations](docs/wayland.md)

@@ -526,6 +526,7 @@ udev-правило для `ydotool`; это нужно делать вручн�
 - [Безопасность: TLS, токены устройств, сопряжение](docs/security.md)
 - [Модели: каталог, загрузка, активация, удаление](docs/models.md)
 - [Решение проблем](docs/troubleshooting.md)
+- [Среда разработки и команды](docs/development.md)
 - [Процесс релиза и артефакты](docs/release.md)
 - [Матрица ручной проверки](docs/verification/manual-matrix.md)
 - [Поддержка Wayland и ограничения](docs/wayland.md)
