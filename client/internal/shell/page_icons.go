@@ -17,26 +17,16 @@ func navIcon(key string) string {
 	switch key {
 	case "general":
 		return "sliders"
-	case "appearance":
-		return "monitor"
-	case "startup":
-		return "power"
-	case "updates":
-		return "download"
 	case "dictation":
 		return "mic"
-	case "servers":
+	case "server":
 		return "server"
 	case "models":
 		return "models"
-	case "server":
-		return "gear"
 	case "spool":
 		return "spool"
 	case "diagnostics":
 		return "activity"
-	case "wizard":
-		return "wand"
 	}
 	return ""
 }

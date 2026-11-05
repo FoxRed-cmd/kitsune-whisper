@@ -304,7 +304,7 @@ func wizardServerHTML(view wizard.View) string {
 	}
 	out.WriteString(`<div class="wizard-columns">`)
 	if server.LocalAvailable {
-		out.WriteString(`<div class="wizard-panel">`)
+		out.WriteString(`<div class="wizard-panel wizard-panel-stack">`)
 		out.WriteString(`<h4>` + escape(view.Labels.ServerLocalTitle) + `</h4>`)
 		out.WriteString(`<p class="help">` + escape(view.Labels.ServerLocalHelp) + `</p>`)
 		out.WriteString(`<div class="field"><label for="wizard-local-address">` + escape(view.Labels.ServerLocalAddress) + `</label>`)
@@ -313,7 +313,7 @@ func wizardServerHTML(view wizard.View) string {
 		out.WriteString(`<button type="button" data-action="wizard-local">` + escape(view.Labels.ServerUseLocal) + `</button>`)
 		out.WriteString(`</div>`)
 	}
-	out.WriteString(`<div class="wizard-panel">`)
+	out.WriteString(`<div class="wizard-panel wizard-panel-stack">`)
 	out.WriteString(`<h4>` + escape(view.Labels.ServerRemoteTitle) + `</h4>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.ServerRemoteHelp) + `</p>`)
 	out.WriteString(`<div class="field"><label for="wizard-server-address">` + escape(view.Labels.ServerAddress) + `</label>`)
@@ -366,7 +366,7 @@ func wizardTryHTML(view wizard.View) string {
 	default:
 		out.WriteString(`<p class="notice">` + escape(view.Labels.TryReady) + `</p>`)
 	}
-	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<div class="wizard-actions">`)
 	out.WriteString(`<button type="button" class="primary" data-action="wizard-try-start">` + escape(view.Labels.TryStart) + `</button>`)
 	out.WriteString(`<button type="button" data-action="wizard-try-stop">` + escape(view.Labels.TryStop) + `</button>`)
 	out.WriteString(`<button type="button" data-action="wizard-try-confirm">` + escape(view.Labels.TryConfirm) + `</button>`)
@@ -376,7 +376,7 @@ func wizardTryHTML(view wizard.View) string {
 		out.WriteString(`<p class="help">` + escape(view.Labels.TryFinish) + `</p>`)
 	}
 	out.WriteString(`</div>`)
-	out.WriteString(`<div class="wizard-panel">`)
+	out.WriteString(`<div class="wizard-panel wizard-panel-fill">`)
 	out.WriteString(`<div class="field"><label for="wizard-try-output">` + escape(view.Labels.TryTranscript) + `</label>`)
 	out.WriteString(`<textarea id="wizard-try-output" rows="7" spellcheck="false"></textarea></div>`)
 	out.WriteString(`<p class="failure" data-wizard-error>` + escape(try.RuntimeError) + `</p>`)

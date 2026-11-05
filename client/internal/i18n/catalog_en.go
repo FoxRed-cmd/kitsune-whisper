@@ -40,6 +40,8 @@ var english = map[string]string{
 	"section.servers":    "Servers and Devices",
 	"section.spool":      "Spool",
 
+	"nav.server": "Server",
+
 	"server.profiles":         "Server profiles",
 	"server.active":           "Active",
 	"server.health":           "Status",
@@ -580,7 +582,7 @@ var english = map[string]string{
 	"wizard.server.localTitle":    "Local Server",
 	"wizard.server.localHelp":     "The Local Server runs on this machine. Its profile pairs automatically over loopback.",
 	"wizard.server.localAddress":  "Local Server address",
-	"wizard.server.useLocal":      "Create or use Local Server profile",
+	"wizard.server.useLocal":      "Connect Local Server",
 	"wizard.server.localExists":   "The Local Server profile is active.",
 	"wizard.server.localCreated":  "The Local Server profile is active and paired.",
 	"wizard.server.localUnpaired": "The Local Server profile is saved, but pairing did not finish: %s",

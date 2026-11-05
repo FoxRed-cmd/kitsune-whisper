@@ -38,6 +38,8 @@ var russian = map[string]string{
 	"section.servers":    "Серверы и устройства",
 	"section.spool":      "Сохранённые записи",
 
+	"nav.server": "Сервер",
+
 	"server.profiles":         "Профили серверов",
 	"server.active":           "Активный",
 	"server.health":           "Состояние",
@@ -578,7 +580,7 @@ var russian = map[string]string{
 	"wizard.server.localTitle":    "Локальный сервер",
 	"wizard.server.localHelp":     "Локальный сервер работает на этой машине. Его профиль подключается автоматически через loopback.",
 	"wizard.server.localAddress":  "Адрес локального сервера",
-	"wizard.server.useLocal":      "Создать или использовать профиль локального сервера",
+	"wizard.server.useLocal":      "Подключить локальный сервер",
 	"wizard.server.localExists":   "Профиль локального сервера активен.",
 	"wizard.server.localCreated":  "Профиль локального сервера активен и подключён.",
 	"wizard.server.localUnpaired": "Профиль локального сервера сохранён, но сопряжение не завершилось: %s",

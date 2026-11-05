@@ -209,10 +209,9 @@ func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, managementView())
 	for _, want := range []string{
 		`id="settings-nav"`,
-		`data-nav="general"`,
-		`data-nav="dictation"`,
-		`data-nav="servers" data-targets="servers,devices,exposure"`,
-		`data-nav="server" data-targets="server-settings"`,
+		`data-nav="general" data-targets="general"`,
+		`data-nav="dictation" data-targets="dictation"`,
+		`data-nav="server" data-targets="servers,devices,exposure,server-settings"`,
 		`data-nav="diagnostics" data-targets="diagnostics"`,
 		`id="settings-pane"`,
 		`function selectSection(`,
@@ -231,8 +230,35 @@ func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
 	if strings.Contains(page, `data-nav="wizard"`) {
 		t.Error("the wizard launcher is listed without a wizard view")
 	}
-	if strings.Index(page, `data-nav="servers"`) > strings.Index(page, `data-nav="server"`) {
+	if strings.Index(page, `data-nav="dictation"`) > strings.Index(page, `data-nav="server"`) {
 		t.Error("the navigation order is wrong")
+	}
+}
+
+func TestSettingsNavigationGroupsRelatedScreens(t *testing.T) {
+	view := managementView()
+	view.Sections = append(view.Sections, dictation.Section{ID: "appearance", Title: "Indicator"})
+	view.ModelLabels.Title = "Models"
+	view.Spool.Labels.Title = "Spool"
+	view.Startup.Available = true
+	view.Update = shell.UpdateView{UpdateLabels: shell.UpdateLabels{Title: "Updates"}}
+	page := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-nav="general" data-targets="general,startup,updates"`,
+		`data-nav="dictation" data-targets="dictation,appearance"`,
+		`data-nav="models" data-targets="models"`,
+		`data-nav="spool" data-targets="spool"`,
+		// The grouped labels follow the Russian interface language.
+		`Общие</button>`,
+		`Распознавание речи</button>`,
+		`Сервер</button>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing grouped entry %q", want)
+		}
+	}
+	if got := strings.Count(page, `data-nav="`); got != 6 {
+		t.Errorf("navigation has %d entries, want 6 grouped entries", got)
 	}
 }
 
@@ -265,7 +291,7 @@ func TestSettingsPageRendersIndicatorPlacementAndLivePreview(t *testing.T) {
 	})
 	page := shell.Page(shell.Snapshot{}, view)
 	for _, want := range []string{
-		`data-nav="appearance" data-targets="appearance"`,
+		`data-nav="dictation" data-targets="dictation,appearance"`,
 		`data-section="appearance"`,
 		`class="position-grid"`,
 		`data-indicator-anchor="bottom-left" aria-pressed="true"`,
@@ -408,7 +434,7 @@ func TestPageRendersTheAutostartSwitchAndModeSelector(t *testing.T) {
 	page := shell.SettingsHTML(view)
 	for _, want := range []string{
 		`data-section="startup"`,
-		`data-nav="startup"`,
+		`data-nav="general" data-targets="general,startup"`,
 		`data-startup-switch`,
 		`data-startup-mode="client-server"`,
 		`data-startup-mode="client"`,

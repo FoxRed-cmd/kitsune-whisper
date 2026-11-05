@@ -12,6 +12,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
@@ -60,49 +61,52 @@ type navEntry struct {
 	Targets []string
 }
 
-// navEntries lists the Settings screens in navigation order. An entry is
+// navEntries lists the Settings screens in navigation order. Related screens
+// share one entry so the menu stays short: everyday preferences, dictation,
+// the Server, its Models, saved recordings, and Diagnostics. An entry is
 // omitted when the build does not render its content, so the menu never offers
 // an empty screen.
 func navEntries(view SettingsView) []navEntry {
+	catalog := i18n.For(view.Language)
 	var entries []navEntry
-	for _, section := range view.Sections {
-		switch section.ID {
-		case "general", "appearance", "dictation":
-			if section.Title != "" {
-				entries = append(entries, navEntry{Key: section.ID, Label: section.Title, Targets: []string{section.ID}})
-			}
-		}
-	}
+
+	general := sectionTargets(view, "general")
 	if view.Startup.Available {
-		entries = append(entries, navEntry{
-			Key:     "startup",
-			Label:   view.Labels.StartupTitle,
-			Targets: []string{"startup"},
-		})
+		general = append(general, "startup")
 	}
 	if view.Update.Title != "" {
+		general = append(general, "updates")
+	}
+	if view.Wizard.Enabled && !view.Wizard.Active && view.Wizard.Labels.ReopenTitle != "" {
+		general = append(general, "wizard-launcher")
+	}
+	if len(general) > 0 {
+		entries = append(entries, navEntry{Key: "general", Label: catalog.T("section.general"), Targets: general})
+	}
+
+	dictationTargets := sectionTargets(view, "dictation")
+	dictationTargets = append(dictationTargets, sectionTargets(view, "appearance")...)
+	if len(dictationTargets) > 0 {
 		entries = append(entries, navEntry{
-			Key:     "updates",
-			Label:   view.Update.Title,
-			Targets: []string{"updates"},
+			Key:     "dictation",
+			Label:   catalog.T("section.dictation"),
+			Targets: dictationTargets,
 		})
 	}
+
+	var server []string
 	if view.Labels.Title != "" {
-		entries = append(entries, navEntry{
-			Key:     "servers",
-			Label:   view.Labels.Title,
-			Targets: []string{"servers", "devices", "exposure"},
-		})
-	}
-	if view.ModelLabels.Title != "" {
-		entries = append(entries, navEntry{Key: "models", Label: view.ModelLabels.Title, Targets: []string{"models"}})
+		server = append(server, "servers", "devices", "exposure")
 	}
 	if view.Labels.SettingsTitle != "" {
-		entries = append(entries, navEntry{
-			Key:     "server",
-			Label:   view.Labels.SettingsTitle,
-			Targets: []string{"server-settings"},
-		})
+		server = append(server, "server-settings")
+	}
+	if len(server) > 0 {
+		entries = append(entries, navEntry{Key: "server", Label: catalog.T("nav.server"), Targets: server})
+	}
+
+	if view.ModelLabels.Title != "" {
+		entries = append(entries, navEntry{Key: "models", Label: view.ModelLabels.Title, Targets: []string{"models"}})
 	}
 	if view.Spool.Labels.Title != "" {
 		entries = append(entries, navEntry{Key: "spool", Label: view.Spool.Labels.Title, Targets: []string{"spool"}})
@@ -114,14 +118,17 @@ func navEntries(view SettingsView) []navEntry {
 			Targets: []string{"diagnostics"},
 		})
 	}
-	if view.Wizard.Enabled && !view.Wizard.Active && view.Wizard.Labels.ReopenTitle != "" {
-		entries = append(entries, navEntry{
-			Key:     "wizard",
-			Label:   view.Wizard.Labels.ReopenTitle,
-			Targets: []string{"wizard-launcher"},
-		})
-	}
 	return entries
+}
+
+// sectionTargets returns id when the view rendered that section.
+func sectionTargets(view SettingsView, id string) []string {
+	for _, section := range view.Sections {
+		if section.ID == id && section.Title != "" {
+			return []string{id}
+		}
+	}
+	return nil
 }
 
 // SettingsHTML renders the Settings screens into a navigation menu plus the
@@ -1306,12 +1313,14 @@ const pageHTML = `<!doctype html>
   .server-save { flex:0 0 auto; display:flex; justify-content:flex-end; margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); }
   .settings-single .settings-pane { overflow:hidden; }
   .settings-single .wizard { flex:1 1 auto; display:grid; grid-template-columns:224px minmax(0,1fr); min-height:0; padding:0; overflow:hidden; }
-  /* The rail carries the sequence; the main column carries one task. */
-  .wizard-rail { display:flex; flex-direction:column; gap:16px; min-height:0; padding:16px 14px; background:var(--card-2); border-right:1px solid var(--line-soft); overflow-y:auto; scrollbar-width:thin; }
-  .wizard-rail-head h2 { margin:0 0 4px; }
-  .wizard-subtitle { margin:2px 0 0; color:var(--muted); font-size:11.5px; line-height:1.4; }
-  .wizard-main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:16px 18px 14px; }
-  .wizard-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding-right:4px; scrollbar-width:thin; }
+  /* The rail carries the sequence; the main column carries one task. The
+     heading and the rail actions stay put: only a long step list scrolls. */
+  .wizard-rail { display:flex; flex-direction:column; gap:12px; min-height:0; padding:14px 12px; background:var(--card-2); border-right:1px solid var(--line-soft); overflow:hidden; }
+  .wizard-rail-head { flex:0 0 auto; }
+  .wizard-rail-head h2 { margin:0 0 3px; }
+  .wizard-subtitle { margin:1px 0 0; color:var(--muted); font-size:11px; line-height:1.35; }
+  .wizard-main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:14px 18px 12px; }
+  .wizard-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:0 4px 6px 0; scrollbar-width:thin; }
   .wizard-content { max-width:720px; margin:0 auto; }
   .group h2 { display:flex; align-items:center; gap:7px; font-size:14px; margin:0 0 10px; letter-spacing:-.005em; }
   .group h2 .icon { color:var(--accent); }
@@ -1403,9 +1412,11 @@ const pageHTML = `<!doctype html>
   .devices td:last-child, .models .model-actions { text-align:right; white-space:nowrap; }
   .models .model-progress td { color:var(--muted); font-size:11.5px; border-top:none; }
   /* Every row's action occupies the same column width, so the download
-     buttons line up instead of growing with the model name. */
-  .models .model-actions button, .models .model-actions .badge { width:152px; justify-content:center; }
-  .models .model-actions .badge { display:inline-flex; align-items:center; }
+     buttons line up instead of growing with the model name. A status badge
+     stays compact: stretching a word across a button-sized slot reads as an
+     empty button. */
+  .models .model-actions button { width:152px; justify-content:center; }
+  .models .model-actions .badge { display:inline-flex; align-items:center; justify-content:center; }
   .model-state { margin:8px 0 0; }
   .messages { display:flex; flex-direction:column; gap:5px; flex:0 0 auto; max-height:20vh; overflow-y:auto; }
   .messages:empty { display:none; }
@@ -1418,10 +1429,10 @@ const pageHTML = `<!doctype html>
   .health[data-health="online"] { color:var(--ok); }
   .health[data-health="stopped"] { color:var(--warn); }
   .health[data-health="offline"], .health[data-health="unauthenticated"], .health[data-health="mismatch"] { color:var(--danger); }
-  .wizard-progress { color:var(--muted); font-size:11.5px; margin:0; }
-  .wizard-steps { list-style:none; display:flex; flex-direction:column; gap:1px; padding:0; margin:0; }
-  .wizard-steps li { position:relative; display:flex; align-items:flex-start; gap:9px; padding:7px 8px; border-radius:7px; color:var(--muted); }
-  .wizard-steps li:not(:last-child)::before { content:""; position:absolute; left:16px; top:27px; bottom:-2px; width:1px; background:var(--line); }
+  .wizard-progress { color:var(--muted); font-size:11.5px; margin:0 0 3px; }
+  .wizard-steps { flex:1 1 auto; min-height:0; list-style:none; display:flex; flex-direction:column; gap:1px; padding:0 2px 0 0; margin:0; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; }
+  .wizard-steps li { position:relative; display:flex; align-items:flex-start; gap:9px; padding:5px 7px; border-radius:7px; color:var(--muted); }
+  .wizard-steps li:not(:last-child)::before { content:""; position:absolute; left:15px; top:23px; bottom:-1px; width:1px; background:var(--line); }
   .wizard-step-number { position:relative; z-index:1; display:inline-flex; align-items:center; justify-content:center; flex:0 0 18px; width:18px; height:18px; border-radius:999px; border:1px solid var(--line); background:var(--card); font-size:10px; }
   .wizard-step-text { display:flex; flex-direction:column; gap:1px; min-width:0; }
   .wizard-step-title { font-size:12px; font-weight:600; }
@@ -1431,7 +1442,8 @@ const pageHTML = `<!doctype html>
   .wizard-steps li[data-status="current"] .wizard-step-number { background:var(--accent); color:var(--on-accent); border-color:transparent; }
   .wizard-steps li[data-status="done"] .wizard-step-number { background:#2f9e441f; color:var(--ok); border-color:transparent; }
   .wizard-steps li[data-status="skipped"] .wizard-step-title { text-decoration:line-through; }
-  .wizard-rail-actions { margin-top:auto; display:flex; flex-direction:column; align-items:flex-start; gap:1px; padding-top:10px; border-top:1px solid var(--line); }
+  .wizard-rail-actions { flex:0 0 auto; display:flex; flex-direction:column; align-items:stretch; gap:1px; padding-top:8px; border-top:1px solid var(--line); }
+  .wizard-rail-actions button { justify-content:flex-start; }
   button.ghost { background:transparent; border-color:transparent; color:var(--muted); padding:4px 6px; }
   button.ghost:hover { background:var(--bg-soft); color:var(--fg); }
   .wizard h3 { display:flex; align-items:center; gap:7px; font-size:15px; margin:0 0 4px; color:var(--fg); letter-spacing:-.005em; text-transform:none; }
@@ -1439,9 +1451,25 @@ const pageHTML = `<!doctype html>
   .wizard h4 { font-size:12.5px; margin:0 0 5px; color:var(--fg); }
   .wizard-panel { padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card-2); }
   .wizard-panel > :last-child { margin-bottom:0; }
-  .wizard-columns { display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:12px; align-items:start; }
+  .wizard-columns { display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:12px; align-items:stretch; }
   .wizard-panel .field { border-top:none; padding:5px 0; }
   .wizard-panel .field + .field { border-top:1px solid var(--line-soft); padding-top:9px; }
+  /* Actions that sit directly in a panel, and any action stack, fill the
+     card width so two stacked buttons never look like different sizes. */
+  .wizard-panel > button, .wizard-actions > button, .shortcut-offer .actions-inline > button { width:100%; justify-content:center; }
+  .wizard-panel .actions-inline { display:flex; align-items:stretch; gap:6px; }
+  .wizard-panel .actions-inline > button { flex:1 1 0; justify-content:center; }
+  .shortcut-offer .actions-inline { flex-direction:column; }
+  .shortcut-offer .actions-inline > button { flex:0 0 auto; }
+  .wizard-actions { display:flex; flex-direction:column; align-items:stretch; gap:6px; margin:10px 0 0; }
+  /* Paired forms share a height; pin their primary buttons to one line so the
+     two cards read as one row instead of two unrelated stacks. */
+  .wizard-panel-stack { display:flex; flex-direction:column; }
+  .wizard-panel-stack > button:last-child { margin-top:auto; }
+  /* The transcript shares the card height with the controls beside it. */
+  .wizard-panel-fill { display:flex; flex-direction:column; }
+  .wizard-panel-fill > .field { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
+  .wizard-panel-fill textarea { flex:1 1 auto; min-height:112px; }
   .wizard-facts { list-style:none; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; padding:0; margin:0; }
   .wizard-facts li { padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); font-size:12.5px; font-weight:600; overflow-wrap:anywhere; }
   .wizard-table { margin-top:10px; border:1px solid var(--line); border-radius:9px; overflow-x:auto; }
@@ -1452,9 +1480,9 @@ const pageHTML = `<!doctype html>
   .wizard-sep { opacity:.5; }
   .wizard-panel .help { max-width:62ch; }
   .wizard-missing { margin:6px 0; padding-left:18px; font-size:12px; }
-  .wizard-footer { flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; width:100%; max-width:720px; margin:12px auto 0; padding-top:12px; border-top:1px solid var(--line-soft); }
-  .wizard-footer-actions { display:flex; align-items:center; gap:2px; flex-wrap:wrap; margin-left:auto; }
-  .wizard-footer-actions .primary { margin-left:6px; }
+  .wizard-footer { flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; width:100%; max-width:720px; margin:10px auto 0; padding-top:10px; border-top:1px solid var(--line-soft); }
+  .wizard-footer-actions { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-left:auto; }
+  .wizard-footer-actions .primary { margin-left:8px; }
   .wizard textarea { resize:vertical; }
   .shortcut-offer h4 { margin-bottom:2px; }
   @media (max-width: 820px) {
@@ -1463,9 +1491,10 @@ const pageHTML = `<!doctype html>
     .wizard-rail-head { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
     .wizard-rail-head h2 { margin:0; }
     .wizard-subtitle { display:none; }
-    .wizard-steps { flex-direction:row; flex-wrap:wrap; gap:2px 4px; }
+    .wizard-steps { flex:0 0 auto; flex-direction:row; flex-wrap:wrap; gap:2px 4px; padding:0; overflow:visible; }
     .wizard-steps li:not(:last-child)::before { display:none; }
-    .wizard-rail-actions { margin-top:0; margin-left:auto; flex-direction:row; padding-top:0; border-top:none; }
+    .wizard-rail-actions { flex:0 0 auto; margin-top:0; margin-left:auto; flex-direction:row; align-items:center; padding-top:0; border-top:none; }
+    .wizard-rail-actions button { width:auto; }
     .wizard-facts { grid-template-columns:minmax(0,1fr); }
   }
   footer { display:flex; gap:8px; align-items:center; flex:0 0 auto; padding-top:10px; border-top:1px solid var(--line); }
@@ -1595,9 +1624,15 @@ const pageHTML = `<!doctype html>
       offset_y: Number(y ? y.value : 0) || 0
     };
   }
+  // The indicator settings can share a navigation entry with other screens,
+  // so preview visibility follows the rendered section, not the entry key.
+  function indicatorSectionVisible() {
+    var section = document.querySelector("#settings-pane [data-section='appearance']");
+    return Boolean(section && !section.hidden);
+  }
   function sendIndicatorPreview() {
     var position = indicatorPreviewPosition();
-    if (!position || activeSection !== "appearance" || !previewWanted || document.hidden) return;
+    if (!position || !indicatorSectionVisible() || !previewWanted || document.hidden) return;
     fetch("/kitsune/intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1624,7 +1659,7 @@ const pageHTML = `<!doctype html>
       clearTimeout(previewTimer);
       previewTimer = null;
     }
-    if (activeSection !== "appearance" || document.hidden) {
+    if (!indicatorSectionVisible() || document.hidden) {
       hideIndicatorPreview();
       return;
     }
@@ -1786,6 +1821,19 @@ const pageHTML = `<!doctype html>
     var wizardOutput = document.getElementById("wizard-try-output");
     if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
     else restoreFocus(host, focus);
+    revealWizardStep();
+  }
+  // The step list gets its own scrollbar in a short window. Keep the current
+  // step in view instead of leaving the user at the top of an older list.
+  function revealWizardStep() {
+    var current = document.querySelector(".wizard-steps li[data-status='current']");
+    if (!current) return;
+    var list = current.closest(".wizard-steps");
+    if (!list || list.scrollHeight <= list.clientHeight) return;
+    var step = current.getBoundingClientRect();
+    var frame = list.getBoundingClientRect();
+    if (step.top < frame.top) list.scrollTop -= frame.top - step.top;
+    else if (step.bottom > frame.bottom) list.scrollTop += step.bottom - frame.bottom;
   }
   function renderSpool(v) {
     var host = document.getElementById("settings-pane") || document.getElementById("settings");
@@ -1816,6 +1864,7 @@ const pageHTML = `<!doctype html>
     var output = document.getElementById("wizard-try-output");
     if (output && output.focus) output.focus();
     else restoreFocus(rendered, focus);
+    revealWizardStep();
   }
   function renderMessages(m) {
     var host = document.getElementById("messages");
@@ -2241,6 +2290,7 @@ const pageHTML = `<!doctype html>
   renderStatus(__INITIAL__);
   selectSection("");
   markRendered(document.getElementById("settings"));
+  revealWizardStep();
   // Fill the Diagnostics cache when the window opens; the first visit to the
   // screen then shows real values instead of empty placeholders.
   primeDiagnostics();
