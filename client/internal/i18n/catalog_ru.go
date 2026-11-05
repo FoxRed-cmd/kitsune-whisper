@@ -33,7 +33,7 @@ var russian = map[string]string{
 	"phase.delivering": "вставка",
 
 	"section.general":              "Общие",
-	"section.language":             "Язык интерфейса",
+	"section.interface":            "Интерфейс",
 	"section.appearance":           "Индикатор на экране",
 	"section.dictation":            "Распознавание речи",
 	"section.dictation.hotkeys":    "Горячие клавиши",
@@ -86,6 +86,8 @@ var russian = map[string]string{
 	"server.exposureConnect":  "Адрес подключения: %s.",
 	"server.exposurePending":  "Изменение записано в конфигурацию и вступит в силу после перезапуска сервера.",
 
+	"field.theme":              "Тема",
+	"help.theme":               "Цветовая схема этого окна, значка в трее и индикатора записи. «Системная» следует рабочему столу: окно обновляется сразу, значок и пилюля — после перезапуска.",
 	"field.ui_language":        "Язык",
 	"help.ui_language":         "Язык этого окна и значка в трее. Используется язык системы, если не выбран другой.",
 	"hotkey.capture":           "Нажмите сочетание",
@@ -114,6 +116,10 @@ var russian = map[string]string{
 	"help.indicator_offset_y":  "Положительное значение сдвигает вниз, отрицательное — вверх. Индикатор остаётся в пределах монитора.",
 	"field.spool_dir":          "Папка сохранённых записей",
 	"help.spool_dir":           "Сюда сохраняются неудавшиеся записи. Оставьте пустым, чтобы использовать папку по умолчанию.",
+
+	"theme.system": "Системная",
+	"theme.light":  "Светлая",
+	"theme.dark":   "Тёмная",
 
 	"language.system": "Системный",
 	"language.auto":   "Авто",

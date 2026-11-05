@@ -1232,7 +1232,7 @@ func newIndicator(cfg config.ClientConfig, logger *logging.Logger, recorder *mic
 		Level:     recorder,
 		Clock:     nil,
 		Placement: indicatorPlacement(cfg),
-		Theme:     theme.Detect(),
+		Theme:     theme.Resolve(cfg.Theme),
 		OnClick:   func() { send(cycle.Stop) },
 		OnLog:     func(message string) { logger.Debug("%s", message) },
 		OnWarning: func(message string) { logger.Warning("%s", message) },

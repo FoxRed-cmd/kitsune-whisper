@@ -37,20 +37,36 @@ func sampleView() shell.SettingsView {
 			Sections: []dictation.Section{
 				{
 					ID:    "general",
-					Title: "Язык интерфейса",
-					Fields: []dictation.Field{{
-						Path:   "client.ui_language",
-						Label:  "Язык",
-						Kind:   dictation.KindSelect,
-						Value:  "ru",
-						Source: "file", SourceLabel: "Сохранено",
-						Mode: settings.ApplyHot,
-						Options: []dictation.Option{
-							{Value: "auto", Label: "Системный"},
-							{Value: "en", Label: "Английский"},
-							{Value: "ru", Label: "Русский"},
+					Title: "Интерфейс",
+					Fields: []dictation.Field{
+						{
+							Path:   "client.theme",
+							Label:  "Тема",
+							Help:   "Цветовая схема этого окна и индикатора записи.",
+							Kind:   dictation.KindTheme,
+							Value:  "system",
+							Source: "default",
+							Mode:   settings.ApplyHot,
+							Options: []dictation.Option{
+								{Value: "system", Label: "Системная"},
+								{Value: "light", Label: "Светлая"},
+								{Value: "dark", Label: "Тёмная"},
+							},
 						},
-					}},
+						{
+							Path:   "client.ui_language",
+							Label:  "Язык",
+							Kind:   dictation.KindSelect,
+							Value:  "ru",
+							Source: "file", SourceLabel: "Сохранено",
+							Mode: settings.ApplyHot,
+							Options: []dictation.Option{
+								{Value: "auto", Label: "Системный"},
+								{Value: "en", Label: "Английский"},
+								{Value: "ru", Label: "Русский"},
+							},
+						},
+					},
 				},
 				{
 					ID:    "dictation",
@@ -485,7 +501,11 @@ func TestPageRendersTheDictationScreens(t *testing.T) {
 	for _, want := range []string{
 		"Общие",
 		"Распознавание речи",
-		"Язык интерфейса",
+		"Интерфейс",
+		"Тема",
+		"Системная",
+		"Светлая",
+		"Тёмная",
 		"Горячая клавиша распознавания",
 		"Нажмите сочетание",
 		"Микрофон",
@@ -1534,6 +1554,29 @@ func TestSettingsPaneLaysShortCardsInColumns(t *testing.T) {
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the Settings pane does not lay cards out in columns: missing %q", want)
+		}
+	}
+}
+
+func TestPageRendersTheThemeChoiceAndItsPalette(t *testing.T) {
+	view := sampleView()
+	view.Theme = "dark"
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		`<html lang="ru" data-theme="dark">`,
+		`data-theme-choice="system"`,
+		`data-theme-choice="light"`,
+		`data-theme-choice="dark"`,
+		`data-path="client.theme"`,
+		`function applyTheme(value)`,
+		`applyTheme(v.theme);`,
+		`el.dataset.path === "client.theme"`,
+		`sendIntent({ action: "save", patch: { theme: themeValue } });`,
+		`:root[data-theme="dark"]`,
+		`:root[data-theme="system"]`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
 		}
 	}
 }

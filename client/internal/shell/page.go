@@ -40,6 +40,7 @@ func Page(initial Snapshot, settings SettingsView) string {
 	closeLabel := i18n.For(settings.Language).T("notice.close")
 	return strings.NewReplacer(
 		"__LANG__", html.EscapeString(language),
+		"__THEME__", html.EscapeString(themeAttribute(settings.Theme)),
 		"__TITLE__", html.EscapeString(title),
 		"__SETTINGS__", SettingsHTML(settings),
 		"__ERRORS__", jsonForScript(collectViewErrors(settings)),
@@ -50,6 +51,17 @@ func Page(initial Snapshot, settings SettingsView) string {
 		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
+}
+
+// themeAttribute normalizes the theme the page paints with. An unknown or
+// empty value follows the desktop, matching the built-in default.
+func themeAttribute(value string) string {
+	switch value {
+	case "light", "dark":
+		return value
+	default:
+		return "system"
+	}
 }
 
 // navEntry is one Settings navigation item: a translated label and the section
@@ -1202,6 +1214,8 @@ func writeField(out *strings.Builder, field dictation.Field, view dictation.View
 		writeSelect(out, id, field, disabled)
 	case dictation.KindPosition:
 		writePosition(out, id, field, disabled, preview)
+	case dictation.KindTheme:
+		writeTheme(out, id, field, disabled)
 	case dictation.KindNumber:
 		out.WriteString(`<input type="number" step="1" min="-4096" max="4096" id="` + escape(id) + `" data-path="` + escape(field.Path) +
 			`"` + preview + ` autocomplete="off" value="` + escape(field.Value) + `"` + disabled + `>`)
@@ -1243,6 +1257,42 @@ func writePosition(out *strings.Builder, id string, field dictation.Field, disab
 	out.WriteString(`</div>`)
 	out.WriteString(`<input type="hidden" id="` + escape(id) + `" data-path="` + escape(field.Path) +
 		`"` + preview + ` value="` + escape(field.Value) + `"` + disabled + `>`)
+}
+
+// writeTheme renders the theme as a three-way segmented picker. A hidden
+// input carries the value for the generic form collector, while the buttons
+// apply the palette immediately and save the choice in one intent.
+func writeTheme(out *strings.Builder, id string, field dictation.Field, disabled string) {
+	out.WriteString(`<div class="theme-options" role="group" aria-label="` + escape(field.Label) + `">`)
+	for _, option := range field.Options {
+		active := ""
+		pressed := "false"
+		if option.Value == field.Value {
+			active = " is-active"
+			pressed = "true"
+		}
+		out.WriteString(`<button type="button" class="theme-option` + active +
+			`" data-theme-choice="` + escape(option.Value) + `" aria-pressed="` + pressed +
+			`"` + disabled + `>` + themeIcon(option.Value) +
+			`<span>` + escape(option.Label) + `</span></button>`)
+	}
+	out.WriteString(`</div>`)
+	out.WriteString(`<input type="hidden" id="` + escape(id) + `" data-path="` + escape(field.Path) +
+		`" value="` + escape(field.Value) + `"` + disabled + `>`)
+}
+
+// themeIcon draws the segmented picker's glyph. The paths are inline so the
+// page keeps no image assets and inherits the current colour.
+func themeIcon(value string) string {
+	const prefix = `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">`
+	switch value {
+	case "light":
+		return prefix + `<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>`
+	case "dark":
+		return prefix + `<path d="M20.5 14.6A8.5 8.5 0 0 1 9.4 3.5a8.5 8.5 0 1 0 11.1 11.1z"/></svg>`
+	default:
+		return prefix + `<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>`
+	}
 }
 
 // writeFieldNotes renders the help and lock text shared by every field shape.
@@ -1287,25 +1337,38 @@ func jsonForScript(v any) string {
 }
 
 const pageHTML = `<!doctype html>
-<html lang="__LANG__">
+<html lang="__LANG__" data-theme="__THEME__">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__TITLE__</title>
 <style>
   :root {
-    color-scheme: light dark;
-    --bg:#f2f4f7; --bg-soft:#e9ecf2; --card:#ffffff; --card-2:#f7f8fb;
-    --fg:#1b1f27; --muted:#6a7382; --line:#dce1e9; --line-soft:#eaedf2;
-    --accent:#4d6bf5; --accent-strong:#3a57e8; --accent-soft:#4d6bf514; --on-accent:#ffffff;
-    --ok:#2f9e44; --warn:#b45309; --danger:#d6409f; --radius:9px;
+    color-scheme: light;
+    --bg:#f7f2eb; --bg-soft:#efe8de; --card:#fffdf9; --card-2:#f8f2e9;
+    --fg:#2a211b; --muted:#7c6f63; --line:#e3d9cb; --line-soft:#eee6da;
+    --accent:#c2703f; --accent-strong:#a95a2d; --accent-soft:#c2703f14; --on-accent:#fffaf5;
+    --ok:#3f7d4a; --warn:#a9661d; --danger:#b34a49; --knob:#fffdf9; --radius:9px;
+    --shadow:0 1px 2px rgba(60,42,28,.07);
+  }
+  /* The dark scheme is a warm charcoal rather than the cold blue-black of the
+     first palette: amber accent, paper-white text, and brown-grey hairlines. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg:#17130f; --bg-soft:#211b16; --card:#1d1814; --card-2:#29221b;
+    --fg:#f2ebe2; --muted:#b0a08f; --line:#3b3128; --line-soft:#2c251e;
+    --accent:#e9a878; --accent-strong:#f3bc94; --accent-soft:#e9a8781f; --on-accent:#24170c;
+    --ok:#92d18d; --warn:#f2c14e; --danger:#e2725b; --knob:#f2ebe2;
+    --shadow:0 1px 2px rgba(0,0,0,.28);
   }
   @media (prefers-color-scheme: dark) {
-    :root {
-      --bg:#0e1116; --bg-soft:#151a23; --card:#141922; --card-2:#1a202b;
-      --fg:#e7eaf1; --muted:#94a0b3; --line:#252c38; --line-soft:#1d232d;
-      --accent:#8fa8ff; --accent-strong:#a9bfff; --accent-soft:#8fa8ff1f; --on-accent:#0d1220;
-      --ok:#4ade80; --warn:#fbbf24; --danger:#f472b6;
+    :root[data-theme="system"] {
+      color-scheme: dark;
+      --bg:#17130f; --bg-soft:#211b16; --card:#1d1814; --card-2:#29221b;
+      --fg:#f2ebe2; --muted:#b0a08f; --line:#3b3128; --line-soft:#2c251e;
+      --accent:#e9a878; --accent-strong:#f3bc94; --accent-soft:#e9a8781f; --on-accent:#24170c;
+      --ok:#92d18d; --warn:#f2c14e; --danger:#e2725b; --knob:#f2ebe2;
+      --shadow:0 1px 2px rgba(0,0,0,.28);
     }
   }
   * { box-sizing: border-box; }
@@ -1430,7 +1493,7 @@ const pageHTML = `<!doctype html>
   .server-actions { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
   .server-actions > button { width:100%; justify-content:flex-start; white-space:nowrap; }
   .state { display:flex; align-items:center; gap:8px; }
-  .dot { width:10px; height:10px; border-radius:50%; background:#8a8a8e; box-shadow:0 0 0 3px color-mix(in srgb, #8a8a8e 25%, transparent); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); box-shadow:0 0 0 3px color-mix(in srgb, var(--muted) 25%, transparent); }
   .state[data-state="recording"] .dot { background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent); }
   .state[data-state="processing"] .dot { background:var(--warn); box-shadow:0 0 0 3px color-mix(in srgb, var(--warn) 28%, transparent); }
   .state[data-state="error"] .dot { background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent); }
@@ -1443,11 +1506,11 @@ const pageHTML = `<!doctype html>
   .field-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }
   .field-head label { font-weight:600; font-size:12.5px; }
   .field input[type="text"], .field input[type="number"], .wizard textarea { width:100%; min-height:30px; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--card-2); color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; transition:border-color .12s, box-shadow .12s; }
-  .field select { width:100%; min-height:30px; padding:6px 30px 6px 9px; border:1px solid var(--line); border-radius:6px; background-color:var(--card-2); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a97ab' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; background-size:12px 12px; color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; appearance:none; -webkit-appearance:none; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
+  .field select { width:100%; min-height:30px; padding:6px 30px 6px 9px; border:1px solid var(--line); border-radius:6px; background-color:var(--card-2); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239a8c7d' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; background-size:12px 12px; color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; appearance:none; -webkit-appearance:none; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
   .field input[type="text"]:focus, .field input[type="number"]:focus, .field select:focus, .wizard textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .field input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
   .field input[type="number"]::-webkit-outer-spin-button, .field input[type="number"]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
-  .field .switch { appearance:none; -webkit-appearance:none; width:36px; height:20px; margin:0; padding:0; border:1px solid var(--line); border-radius:999px; background-color:var(--bg-soft); background-image:radial-gradient(circle, #fff 0 6.5px, transparent 7px); background-size:14px 14px; background-repeat:no-repeat; background-position:2px center; cursor:pointer; flex:0 0 auto; box-shadow:inset 0 0 0 1px rgba(0,0,0,.04); transition:background-color .15s, border-color .15s, background-position .15s; }
+  .field .switch { appearance:none; -webkit-appearance:none; width:36px; height:20px; margin:0; padding:0; border:1px solid var(--line); border-radius:999px; background-color:var(--bg-soft); background-image:radial-gradient(circle, var(--knob) 0 6.5px, transparent 7px); background-size:14px 14px; background-repeat:no-repeat; background-position:2px center; cursor:pointer; flex:0 0 auto; box-shadow:inset 0 0 0 1px rgba(0,0,0,.04); transition:background-color .15s, border-color .15s, background-position .15s; }
   .field .switch:checked { background-color:var(--accent); border-color:transparent; background-position:18px center; }
   .field .switch:disabled { opacity:.55; cursor:not-allowed; }
   .field-toggle { padding:10px 0; }
@@ -1475,6 +1538,15 @@ const pageHTML = `<!doctype html>
   .position-preset.is-active { border-color:var(--accent); background:var(--accent-soft); color:var(--accent); }
   .position-preset.is-active::after { opacity:1; }
   .position-preset:disabled { opacity:.55; cursor:not-allowed; }
+  /* A three-way segmented picker: the selected tile is raised out of the
+     track, so the choice reads at a glance without opening a select. */
+  .theme-options { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:4px; padding:3px; border:1px solid var(--line); border-radius:8px; background:var(--bg-soft); }
+  .theme-option { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; min-height:54px; padding:6px 4px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--muted); font-size:11.5px; font-weight:500; }
+  .theme-option .icon { width:18px; height:18px; }
+  .theme-option:hover { background:var(--card-2); color:var(--fg); }
+  .theme-option.is-active { background:var(--card); border-color:var(--line); color:var(--fg); font-weight:600; box-shadow:var(--shadow); }
+  .theme-option.is-active .icon { color:var(--accent); }
+  .theme-option:disabled { opacity:.55; cursor:not-allowed; }
   .toggle-row { display:flex; align-items:center; justify-content:space-between; gap:12px; cursor:pointer; }
   .toggle-label { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-weight:600; font-size:12.5px; }
   .inline-field { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
@@ -1482,8 +1554,8 @@ const pageHTML = `<!doctype html>
   .field input[disabled], .field select[disabled], .field button[disabled] { opacity:.55; cursor:not-allowed; }
   .help { color:var(--muted); margin:4px 0 0; font-size:11.5px; }
   .lock { color:var(--warn); margin:4px 0 0; font-size:11.5px; }
-  .badge { font-size:10.5px; padding:1px 7px; border-radius:999px; background:#f5a52426; color:var(--warn); }
-  .badge.hot { background:#2f9e441f; color:var(--ok); }
+  .badge { font-size:10.5px; padding:1px 7px; border-radius:999px; background:color-mix(in srgb, var(--warn) 16%, transparent); color:var(--warn); }
+  .badge.hot { background:color-mix(in srgb, var(--ok) 14%, transparent); color:var(--ok); }
   .badge.active { background:var(--accent-soft); color:var(--accent); }
   pre.diagnostics, .spool-text { background:var(--card-2); border:1px solid var(--line-soft); border-radius:7px; padding:8px 10px; font-size:11.5px; }
   pre.diagnostics { max-height:220px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
@@ -1527,8 +1599,8 @@ const pageHTML = `<!doctype html>
   .message-close { width:20px; height:20px; min-height:0; flex:0 0 auto; padding:0; margin:1px 0 0; border:0; border-radius:5px; background:transparent; color:inherit; opacity:.65; }
   .message-close:hover { opacity:1; background:color-mix(in srgb, currentColor 12%, transparent); }
   .message-close .icon { width:12px; height:12px; }
-  .notice { color:var(--ok); margin:0; padding:6px 10px; border-radius:7px; background:#2f9e441a; font-size:12px; }
-  .failure { color:var(--danger); margin:0; padding:6px 10px; border-radius:7px; background:#d6409f14; font-size:12px; }
+  .notice { color:var(--ok); margin:0; padding:6px 10px; border-radius:7px; background:color-mix(in srgb, var(--ok) 12%, transparent); font-size:12px; }
+  .failure { color:var(--danger); margin:0; padding:6px 10px; border-radius:7px; background:color-mix(in srgb, var(--danger) 10%, transparent); font-size:12px; }
   .failure:empty { display:none; }
   .health { font-size:11px; color:var(--muted); }
   .health[data-health="online"] { color:var(--ok); }
@@ -1542,7 +1614,7 @@ const pageHTML = `<!doctype html>
   .wizard-step-title { min-width:0; font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .wizard-steps li[data-status="current"] { background:var(--accent-soft); color:var(--accent); }
   .wizard-steps li[data-status="current"] .wizard-step-number { background:var(--accent); color:var(--on-accent); border-color:transparent; }
-  .wizard-steps li[data-status="done"] .wizard-step-number { background:#2f9e441f; color:var(--ok); border-color:transparent; }
+  .wizard-steps li[data-status="done"] .wizard-step-number { background:color-mix(in srgb, var(--ok) 14%, transparent); color:var(--ok); border-color:transparent; }
   .wizard-steps li[data-status="skipped"] .wizard-step-title { text-decoration:line-through; }
   .wizard-rail-actions { flex:0 0 auto; display:flex; flex-direction:column; align-items:stretch; gap:1px; padding-top:8px; border-top:1px solid var(--line); }
   .wizard-rail-actions button { justify-content:flex-start; }
@@ -1651,6 +1723,13 @@ const pageHTML = `<!doctype html>
   function text(id, value) {
     var el = document.getElementById(id);
     if (el) el.textContent = value || "";
+  }
+  // The server renders the initial choice into data-theme; every later push
+  // and every click re-applies it here. "system" leaves the palette to the
+  // prefers-color-scheme rule, so a desktop switch needs no round trip.
+  function applyTheme(value) {
+    document.documentElement.setAttribute("data-theme",
+      value === "light" || value === "dark" ? value : "system");
   }
   // The status card is followed by one message area. Runtime failures, card
   // failures and intent results all land here; cards never repeat an error of
@@ -1939,7 +2018,7 @@ const pageHTML = `<!doctype html>
   // choice would contradict the failure message.
   function liveControl(el) {
     if (el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")) return true;
-    return el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
+    return el.dataset.path === "client.theme" || el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
   }
   function markRendered(root) {
     if (!root) return;
@@ -2029,6 +2108,7 @@ const pageHTML = `<!doctype html>
       restoreEdits(host, edits);
     }
     viewErrors = (v && v.errors) || [];
+    if (v) applyTheme(v.theme);
     if (v && v.language) document.documentElement.lang = v.language;
     if (v && v.title) document.title = v.title;
     if (v && v.actions) {
@@ -2299,6 +2379,24 @@ const pageHTML = `<!doctype html>
     sendIntent({ action: "revoke-device", device_id: button.dataset.deviceId || "" }, button);
   }
   document.addEventListener("click", function (event) {
+    var themeChoice = event.target.closest ? event.target.closest("[data-theme-choice]") : null;
+    if (themeChoice) {
+      var themeField = themeChoice.closest("[data-field]");
+      var themeInput = themeField ? themeField.querySelector("[data-path='client.theme']") : null;
+      if (themeInput && themeInput.disabled) return;
+      var themeValue = themeChoice.dataset.themeChoice || "system";
+      if (themeInput && themeInput.value === themeValue) return;
+      if (themeInput) themeInput.value = themeValue;
+      var themeChoices = themeField ? themeField.querySelectorAll("[data-theme-choice]") : [];
+      for (var t = 0; t < themeChoices.length; t++) {
+        var selected = themeChoices[t] === themeChoice;
+        themeChoices[t].classList.toggle("is-active", selected);
+        themeChoices[t].setAttribute("aria-pressed", selected ? "true" : "false");
+      }
+      applyTheme(themeValue);
+      sendIntent({ action: "save", patch: { theme: themeValue } });
+      return;
+    }
     var preset = event.target.closest ? event.target.closest("[data-indicator-anchor]") : null;
     if (preset) {
       var field = preset.closest("[data-field]");

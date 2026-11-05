@@ -252,7 +252,10 @@ type Snapshot struct {
 	ModelState string `json:"modelState,omitempty"`
 	// Update is the available-release state the Tray renders.
 	Update SnapshotUpdate `json:"update"`
-	Labels Labels         `json:"labels"`
+	// Theme is the saved light/dark/system choice, so the Tray icon follows
+	// the same palette as the Settings window and the Recording indicator.
+	Theme  string `json:"theme,omitempty"`
+	Labels Labels `json:"labels"`
 }
 
 // NewSnapshot maps the runtime status onto the shell's render model with
@@ -763,6 +766,7 @@ func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 		}
 	}
 	snapshot.Labels = labelsFor(s.catalog(), snapshot)
+	snapshot.Theme = s.themeSetting()
 	snapshot.Update = s.snapshotUpdateLocked()
 	s.snapshot = snapshot
 	return snapshot, s.window, s.tray

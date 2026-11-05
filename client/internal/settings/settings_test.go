@@ -706,6 +706,7 @@ func TestClassify(t *testing.T) {
 		"client.audio.device",
 		"client.language",
 		"client.ui_language",
+		"client.theme",
 		"client.initial_prompt",
 		"client.paste",
 		"client.paste_shortcut",

@@ -926,10 +926,21 @@ func TestASuccessfulCycleDoesNotNotify(t *testing.T) {
 	}
 }
 
+func TestIconsFollowTheSelectedTheme(t *testing.T) {
+	light := shell.Icon(shell.StateIdle, "light")
+	dark := shell.Icon(shell.StateIdle, "dark")
+	if len(light) == 0 || len(dark) == 0 {
+		t.Fatal("themed icon is empty")
+	}
+	if string(light) == string(dark) {
+		t.Fatal("light and dark Tray icons are identical")
+	}
+}
+
 func TestIconsAreDistinctPNGs(t *testing.T) {
 	seen := map[string]shell.State{}
 	for _, state := range []shell.State{shell.StateIdle, shell.StateRecording, shell.StateProcessing, shell.StateError} {
-		icon := shell.Icon(state)
+		icon := shell.Icon(state, "")
 		if len(icon) == 0 {
 			t.Fatalf("icon %q is empty", state)
 		}

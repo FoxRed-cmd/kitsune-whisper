@@ -28,6 +28,9 @@ const (
 // Palette is the subset of the Settings window's CSS variables that the
 // Recording indicator and the Tray paint with. Every colour is opaque.
 type Palette struct {
+	// Background is the Settings window's page background, used for the
+	// native window behind the WebView before the page paints.
+	Background color.NRGBA
 	// Pill is the Recording indicator's card background.
 	Pill color.NRGBA
 	// Border is the card outline and the hairline between surfaces.
@@ -44,28 +47,44 @@ type Palette struct {
 	OnAccent color.NRGBA
 }
 
+// Resolve maps the "theme" setting to the palette a desktop surface paints
+// with. An explicit light or dark value pins the palette; "system" and an
+// unknown value follow the detected desktop colour scheme.
+func Resolve(setting string) Theme {
+	switch Theme(setting) {
+	case Light:
+		return Light
+	case Dark:
+		return Dark
+	default:
+		return Detect()
+	}
+}
+
 // For returns the palette for t. An empty or unknown theme gets the dark
 // palette, which keeps the desktop surfaces visible on an unknown desktop.
 func For(t Theme) Palette {
 	if t == Light {
 		return Palette{
-			Pill:     color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
-			Border:   color.NRGBA{R: 0xdc, G: 0xe1, B: 0xe9, A: 0xff},
-			Accent:   color.NRGBA{R: 0x4d, G: 0x6b, B: 0xf5, A: 0xff},
-			Warn:     color.NRGBA{R: 0xb4, G: 0x53, B: 0x09, A: 0xff},
-			Danger:   color.NRGBA{R: 0xd6, G: 0x40, B: 0x9f, A: 0xff},
-			Muted:    color.NRGBA{R: 0x6a, G: 0x73, B: 0x82, A: 0xff},
-			OnAccent: color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff},
+			Background: color.NRGBA{R: 0xf7, G: 0xf2, B: 0xeb, A: 0xff},
+			Pill:       color.NRGBA{R: 0xff, G: 0xfd, B: 0xf9, A: 0xff},
+			Border:     color.NRGBA{R: 0xe3, G: 0xd9, B: 0xcb, A: 0xff},
+			Accent:     color.NRGBA{R: 0xc2, G: 0x70, B: 0x3f, A: 0xff},
+			Warn:       color.NRGBA{R: 0xa9, G: 0x66, B: 0x1d, A: 0xff},
+			Danger:     color.NRGBA{R: 0xb3, G: 0x4a, B: 0x49, A: 0xff},
+			Muted:      color.NRGBA{R: 0x7c, G: 0x6f, B: 0x63, A: 0xff},
+			OnAccent:   color.NRGBA{R: 0xff, G: 0xfa, B: 0xf5, A: 0xff},
 		}
 	}
 	return Palette{
-		Pill:     color.NRGBA{R: 0x14, G: 0x19, B: 0x22, A: 0xff},
-		Border:   color.NRGBA{R: 0x25, G: 0x2c, B: 0x38, A: 0xff},
-		Accent:   color.NRGBA{R: 0x8f, G: 0xa8, B: 0xff, A: 0xff},
-		Warn:     color.NRGBA{R: 0xfb, G: 0xbf, B: 0x24, A: 0xff},
-		Danger:   color.NRGBA{R: 0xf4, G: 0x72, B: 0xb6, A: 0xff},
-		Muted:    color.NRGBA{R: 0x94, G: 0xa0, B: 0xb3, A: 0xff},
-		OnAccent: color.NRGBA{R: 0x0d, G: 0x12, B: 0x20, A: 0xff},
+		Background: color.NRGBA{R: 0x17, G: 0x13, B: 0x0f, A: 0xff},
+		Pill:       color.NRGBA{R: 0x1d, G: 0x18, B: 0x14, A: 0xff},
+		Border:     color.NRGBA{R: 0x3b, G: 0x31, B: 0x28, A: 0xff},
+		Accent:     color.NRGBA{R: 0xe9, G: 0xa8, B: 0x78, A: 0xff},
+		Warn:       color.NRGBA{R: 0xf2, G: 0xc1, B: 0x4e, A: 0xff},
+		Danger:     color.NRGBA{R: 0xe2, G: 0x72, B: 0x5b, A: 0xff},
+		Muted:      color.NRGBA{R: 0xb0, G: 0xa0, B: 0x8f, A: 0xff},
+		OnAccent:   color.NRGBA{R: 0x24, G: 0x17, B: 0x0c, A: 0xff},
 	}
 }
 

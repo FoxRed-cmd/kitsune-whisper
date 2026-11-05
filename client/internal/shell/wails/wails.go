@@ -18,6 +18,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/autostart"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/brand"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/theme"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -207,6 +208,10 @@ func (d *desktop) NewWindow(initial shell.Snapshot, settings shell.SettingsView,
 		return nil, fmt.Errorf("wails application is not available")
 	}
 	d.setPage(withRuntime(shell.Page(initial, settings)))
+	// The native window shows while the WebView loads; paint it the palette's
+	// background colour so a light theme does not flash a dark rectangle.
+	palette := theme.For(theme.Resolve(settings.Theme))
+	background := application.NewRGB(palette.Background.R, palette.Background.G, palette.Background.B)
 	win := d.app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:  "settings",
 		Title: "kitsune-whisper Settings",
@@ -218,7 +223,7 @@ func (d *desktop) NewWindow(initial shell.Snapshot, settings shell.SettingsView,
 		MinHeight:        540,
 		Hidden:           hidden,
 		URL:              "/",
-		BackgroundColour: application.NewRGB(24, 24, 27),
+		BackgroundColour: background,
 	})
 	if win == nil {
 		return nil, fmt.Errorf("wails window could not be created")
@@ -385,6 +390,7 @@ func traySignature(snapshot shell.Snapshot) string {
 		ModelState  string               `json:"modelState"`
 		Server      trust.Status         `json:"server"`
 		Update      shell.SnapshotUpdate `json:"update"`
+		Theme       string               `json:"theme"`
 	}{
 		State:       snapshot.State,
 		Profile:     snapshot.Profile,
@@ -395,6 +401,7 @@ func traySignature(snapshot shell.Snapshot) string {
 		ModelState:  snapshot.ModelState,
 		Server:      snapshot.Server,
 		Update:      snapshot.Update,
+		Theme:       snapshot.Theme,
 	})
 	if err != nil {
 		return ""
@@ -448,7 +455,7 @@ func (t *trayPort) apply(snapshot shell.Snapshot) {
 	if snapshot.Profile != "" && serverState != "" {
 		tooltip = status + " · " + snapshot.Profile + ": " + serverState
 	}
-	icon := shell.Icon(snapshot.State)
+	icon := shell.Icon(snapshot.State, snapshot.Theme)
 	// Wails keeps a light and a dark tray image and picks one by the system
 	// theme. Setting only SetIcon leaves the dark image at its startup value
 	// when the first status update races the Tray's own startup: in dark mode

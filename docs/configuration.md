@@ -367,6 +367,7 @@ fingerprint produces a distinct "certificate changed, pair again" error.
 | `timeout_seconds` | number | `0` | Request timeout. `0` = `max(30 s, 2 × audio length)`. |
 | `language` | string | `auto` | Sent per request only when not `auto`. |
 | `ui_language` | `auto`\|`en`\|`ru` | `auto` | Language of the Settings window and Tray. `auto` follows the OS locale (`LC_ALL`/`LANGUAGE`/`LANG` on Linux, the user locale on Windows) and falls back to English. |
+| `theme` | `system`\|`light`\|`dark` | `system` | Colour scheme of the Settings window, the Tray icon, and the Recording indicator. `system` follows the desktop colour scheme: the window updates live, while the Tray icon and pill pick up a desktop change on the next Client start. `light` and `dark` pin it. Both palettes are warm: cream and terracotta in light, charcoal and amber in dark. |
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
 | `refine` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Refine per request; use the Server API directly if needed. |
 | `summarize` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Summarize per request. |

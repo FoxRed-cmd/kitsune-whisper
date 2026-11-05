@@ -35,7 +35,7 @@ var english = map[string]string{
 	"phase.delivering": "delivering",
 
 	"section.general":              "General",
-	"section.language":             "Interface language",
+	"section.interface":            "Interface",
 	"section.appearance":           "On-screen indicator",
 	"section.dictation":            "Dictation",
 	"section.dictation.hotkeys":    "Hotkeys",
@@ -88,6 +88,8 @@ var english = map[string]string{
 	"server.exposureConnect":  "Connect address: %s.",
 	"server.exposurePending":  "The change is saved and takes effect after the Server restarts.",
 
+	"field.theme":              "Theme",
+	"help.theme":               "The colour scheme of this window, the Tray icon, and the Recording indicator. System follows the desktop; the window updates live, while the icon and pill pick up a change on restart.",
 	"field.ui_language":        "Language",
 	"help.ui_language":         "The language of this window and the Tray. The system language is used unless you pick one.",
 	"hotkey.capture":           "Press the combination",
@@ -116,6 +118,10 @@ var english = map[string]string{
 	"help.indicator_offset_y":  "Positive moves down, negative moves up. The indicator stays inside the monitor.",
 	"field.spool_dir":          "Spool folder",
 	"help.spool_dir":           "Failed recordings are kept here. Leave empty to use the default folder.",
+
+	"theme.system": "System",
+	"theme.light":  "Light",
+	"theme.dark":   "Dark",
 
 	"language.system": "System language",
 	"language.auto":   "Automatic",

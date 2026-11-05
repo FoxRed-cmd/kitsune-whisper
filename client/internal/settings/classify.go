@@ -21,10 +21,10 @@ const (
 //
 // hotFields lists the values the Dictation runtime applies live per the
 // desktop spec: hotkey, cancel hotkey, trigger, the hotkey backend, microphone,
-// language, initial prompt, paste/clipboard, earcons, indicator, log level,
-// timeouts, the Spool, and the active Server profile. The runtime rebuilds its
-// transcriber from the active profile, so a Server switch needs no process
-// restart.
+// language, the interface theme, initial prompt, paste/clipboard, earcons,
+// indicator, log level, timeouts, the Spool, and the active Server profile.
+// The runtime rebuilds its transcriber from the active profile, so a Server
+// switch needs no process restart.
 //
 // Everything else needs a restart. The Wayland injection tool binds at startup,
 // the profile list is read when the transcriber is built, the log file is
@@ -38,6 +38,7 @@ var hotFields = map[string]struct{}{
 	"client.audio.device":                {},
 	"client.language":                    {},
 	"client.ui_language":                 {},
+	"client.theme":                       {},
 	"client.initial_prompt":              {},
 	"client.paste":                       {},
 	"client.paste_shortcut":              {},

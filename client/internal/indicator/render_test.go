@@ -157,12 +157,15 @@ func countOpaque(img *image.RGBA, x0, y0, x1, y1 int) int {
 	return count
 }
 
+// countAccent counts the lit level bars on the dark default palette. The
+// bars are much brighter than both the pill and its border, so a brightness
+// threshold keeps the check independent of the accent's hue.
 func countAccent(img *image.RGBA, x0 int) int {
 	count := 0
 	for y := 20; y <= 52; y++ {
 		for x := x0; x <= 90; x++ {
 			pixel := img.RGBAAt(x, y)
-			if pixel.B > 100 && int(pixel.B) > int(pixel.R)+30 {
+			if pixel.A > 100 && int(pixel.R)+int(pixel.G)+int(pixel.B) > 300 {
 				count++
 			}
 		}
@@ -175,8 +178,11 @@ func countRed(img *image.RGBA, region image.Rectangle) int {
 	for y := region.Min.Y; y < region.Max.Y; y++ {
 		for x := region.Min.X; x < region.Max.X; x++ {
 			pixel := img.RGBAAt(x, y)
-			if pixel.R > 180 && pixel.G < 160 && pixel.B > 100 &&
-				int(pixel.R) > int(pixel.G)+60 {
+			// A warm red/terracotta stop button: clearly red-dominant, with
+			// green not below blue. The blue channel bound would reject the
+			// warmer palette.
+			if pixel.R > 150 && int(pixel.R) > int(pixel.G)+50 &&
+				pixel.G >= pixel.B {
 				count++
 			}
 		}

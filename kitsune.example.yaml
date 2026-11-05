@@ -121,6 +121,10 @@ client:
   min_recording_seconds: 0.3
   # 0 selects max(30s, 2 x audio length).
   timeout_seconds: 0
+  # system | light | dark. The colour scheme of the Settings window, the Tray
+  # icon, and the Recording indicator. Both palettes are warm: cream and
+  # terracotta in light, charcoal and amber in dark.
+  theme: system
   # Sent per request only when set to something other than "auto".
   language: auto
   initial_prompt: ""

@@ -391,6 +391,36 @@ func TestUILanguageRejectsUnsupportedLanguages(t *testing.T) {
 	assertErrorContains(t, err, "client.ui_language")
 }
 
+func TestThemeDefaultsToTheSystemScheme(t *testing.T) {
+	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Theme != "system" {
+		t.Fatalf("theme = %q, want system", cfg.Theme)
+	}
+}
+
+func TestThemeAcceptsSupportedValues(t *testing.T) {
+	for _, theme := range []string{"system", "light", "dark"} {
+		path := writeConfig(t, map[string]any{"theme": theme})
+		cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+		if err != nil {
+			t.Fatalf("theme %q: %v", theme, err)
+		}
+		if cfg.Theme != theme {
+			t.Fatalf("theme = %q, want %q", cfg.Theme, theme)
+		}
+	}
+}
+
+func TestThemeRejectsUnsupportedValues(t *testing.T) {
+	path := writeConfig(t, map[string]any{"theme": "sepia"})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.theme")
+	assertErrorContains(t, err, "system, light, dark")
+}
+
 func TestWaylandDefaults(t *testing.T) {
 	cfg, err := load(t, config.LoadOptions{CWD: t.TempDir()})
 	if err != nil {

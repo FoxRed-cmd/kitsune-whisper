@@ -7,21 +7,48 @@ import (
 
 func TestForMirrorsTheSettingsPalette(t *testing.T) {
 	light := For(Light)
-	if light.Accent != (color.NRGBA{R: 0x4d, G: 0x6b, B: 0xf5, A: 0xff}) {
+	if light.Accent != (color.NRGBA{R: 0xc2, G: 0x70, B: 0x3f, A: 0xff}) {
 		t.Fatalf("light accent = %+v", light.Accent)
 	}
-	if light.OnAccent != (color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}) {
+	if light.OnAccent != (color.NRGBA{R: 0xff, G: 0xfa, B: 0xf5, A: 0xff}) {
 		t.Fatalf("light on-accent = %+v", light.OnAccent)
 	}
+	// The stop affordance must stay distinct from the accent in both palettes.
+	for _, palette := range []Palette{light, For(Dark)} {
+		dr := int(palette.Danger.R) - int(palette.Accent.R)
+		dg := int(palette.Danger.G) - int(palette.Accent.G)
+		db := int(palette.Danger.B) - int(palette.Accent.B)
+		if dr*dr+dg*dg+db*db < 40*40 {
+			t.Fatalf("danger %+v is too close to accent %+v", palette.Danger, palette.Accent)
+		}
+	}
 	dark := For(Dark)
-	if dark.Accent != (color.NRGBA{R: 0x8f, G: 0xa8, B: 0xff, A: 0xff}) {
+	if dark.Accent != (color.NRGBA{R: 0xe9, G: 0xa8, B: 0x78, A: 0xff}) {
 		t.Fatalf("dark accent = %+v", dark.Accent)
 	}
-	if dark.OnAccent != (color.NRGBA{R: 0x0d, G: 0x12, B: 0x20, A: 0xff}) {
+	if dark.OnAccent != (color.NRGBA{R: 0x24, G: 0x17, B: 0x0c, A: 0xff}) {
 		t.Fatalf("dark on-accent = %+v", dark.OnAccent)
 	}
 	if For("") != For(Dark) {
 		t.Fatal("an unknown theme did not fall back to dark")
+	}
+}
+
+func TestResolvePinsExplicitThemes(t *testing.T) {
+	for setting, want := range map[string]Theme{
+		"light": Light,
+		"dark":  Dark,
+	} {
+		if got := Resolve(setting); got != want {
+			t.Fatalf("Resolve(%q) = %q, want %q", setting, got, want)
+		}
+	}
+}
+
+func TestResolveSystemUsesTheDesktopScheme(t *testing.T) {
+	t.Setenv("GTK_THEME", "Adwaita:light")
+	if got := Resolve("system"); got != Light {
+		t.Fatalf("Resolve(system) = %q, want light from GTK_THEME", got)
 	}
 }
 

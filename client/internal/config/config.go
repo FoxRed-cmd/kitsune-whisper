@@ -85,7 +85,11 @@ type ClientConfig struct {
 	Language            string          `yaml:"language"`
 	// UILanguage selects the Settings window and Tray language: "auto"
 	// follows the operating system, "en" and "ru" pin it.
-	UILanguage       string         `yaml:"ui_language"`
+	UILanguage string `yaml:"ui_language"`
+	// Theme selects the Settings window, Tray icon, and Recording indicator
+	// palette: "system" follows the desktop colour scheme, "light" and "dark"
+	// pin it.
+	Theme            string         `yaml:"theme"`
 	InitialPrompt    string         `yaml:"initial_prompt"`
 	Audio            AudioConfig    `yaml:"audio"`
 	Paste            bool           `yaml:"paste"`
@@ -123,6 +127,7 @@ func Default() ClientConfig {
 		TimeoutSeconds:      0,
 		Language:            "auto",
 		UILanguage:          "auto",
+		Theme:               "system",
 		InitialPrompt:       "",
 		Audio:               AudioConfig{Device: ""},
 		Paste:               true,
@@ -395,6 +400,7 @@ var schema = map[string]any{
 	"timeout_seconds":       nil,
 	"language":              nil,
 	"ui_language":           nil,
+	"theme":                 nil,
 	"initial_prompt":        nil,
 	// refine and summarize are accepted for one release, warned about, and
 	// never read into ClientConfig or sent to a Server.
@@ -609,6 +615,12 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 		return cfg, err
 	}
 	if err = oneOf(cfg.UILanguage, "client.ui_language", "auto", "en", "ru"); err != nil {
+		return cfg, err
+	}
+	if cfg.Theme, err = asString(m["theme"], "client.theme"); err != nil {
+		return cfg, err
+	}
+	if err = oneOf(cfg.Theme, "client.theme", "system", "light", "dark"); err != nil {
 		return cfg, err
 	}
 	if cfg.InitialPrompt, err = asString(m["initial_prompt"], "client.initial_prompt"); err != nil {

@@ -308,6 +308,9 @@ type SettingsView struct {
 	Labels      ServerLabels `json:"serverLabels"`
 	ModelLabels ModelLabels  `json:"modelLabels"`
 	Spool       SpoolView    `json:"spool"`
+	// Theme is the saved light/dark/system choice the page, Tray icon, and
+	// Recording indicator paint with.
+	Theme string `json:"theme"`
 	// Wizard is the Setup wizard view; Enabled is false in a build without it.
 	Wizard wizard.View `json:"wizard"`
 	// Gnome is the GNOME custom-keybinding offer shown on GNOME Wayland.
@@ -646,6 +649,15 @@ func (s *Shell) catalog() i18n.Catalog {
 	return s.opts.Settings.Catalog()
 }
 
+// themeSetting reads the saved theme for the page. A build without a settings
+// store follows the desktop.
+func (s *Shell) themeSetting() string {
+	if s.opts.Settings == nil {
+		return "system"
+	}
+	return s.opts.Settings.Config().Theme
+}
+
 // settingsView renders the Settings screens, or a translated empty view when
 // no settings service is wired.
 func (s *Shell) settingsView() SettingsView {
@@ -663,6 +675,7 @@ func (s *Shell) settingsView() SettingsView {
 		Labels:      s.serverLabels(),
 		ModelLabels: s.modelLabels(),
 		Spool:       s.spoolView(),
+		Theme:       s.themeSetting(),
 		Wizard:      s.wizardView(),
 		Gnome:       s.gnomeShortcutsView(),
 		Update:      s.updateView(),

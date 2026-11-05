@@ -88,8 +88,15 @@ client:
 	if len(view.Sections) != 8 || view.Sections[0].ID != "general" || view.Sections[1].ID != "appearance" {
 		t.Fatalf("sections = %+v, want general, appearance and six dictation cards", view.Sections)
 	}
-	if got := sectionByID(t, view, "general").Title; got != "Interface language" {
+	if got := sectionByID(t, view, "general").Title; got != "Interface" {
 		t.Fatalf("general title = %q", got)
+	}
+	theme := fieldByPath(t, view, "client.theme")
+	if theme.Kind != dictation.KindTheme || theme.Value != "system" || theme.Mode != settings.ApplyHot {
+		t.Fatalf("theme field = %+v, want a hot system picker", theme)
+	}
+	if len(theme.Options) != 3 || !hasOption(theme.Options, "light", "Light") || !hasOption(theme.Options, "dark", "Dark") {
+		t.Fatalf("theme options = %+v", theme.Options)
 	}
 	for id, want := range map[string]string{
 		"dictation-hotkeys":    "Hotkeys",
@@ -214,6 +221,9 @@ func TestViewRendersInRussian(t *testing.T) {
 	}
 	if got := fieldByPath(t, view, "client.ui_language").Options[1].Label; got != "Английский" {
 		t.Fatalf("english language label = %q", got)
+	}
+	if got := fieldByPath(t, view, "client.theme").Options[2].Label; got != "Тёмная" {
+		t.Fatalf("dark theme label = %q", got)
 	}
 }
 

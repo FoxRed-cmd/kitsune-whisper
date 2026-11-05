@@ -29,6 +29,8 @@ const (
 	KindNumber Kind = "number"
 	// KindPosition is the six-preset screen-position picker.
 	KindPosition Kind = "position"
+	// KindTheme is the segmented light/dark/system theme picker.
+	KindTheme Kind = "theme"
 )
 
 // Option is one selectable value.
@@ -116,8 +118,19 @@ type sectionSpec struct {
 var specs = []sectionSpec{
 	{
 		id:       "general",
-		titleKey: "section.language",
+		titleKey: "section.interface",
 		fields: []fieldSpec{
+			{
+				path:     "client.theme",
+				kind:     KindTheme,
+				labelKey: "field.theme",
+				helpKey:  "help.theme",
+				options: []optionSpec{
+					{value: "system", key: "theme.system"},
+					{value: "light", key: "theme.light"},
+					{value: "dark", key: "theme.dark"},
+				},
+			},
 			{
 				path:     "client.ui_language",
 				kind:     KindSelect,
@@ -309,7 +322,7 @@ func (s *Service) View() View {
 				viewField.Badge = catalog.T("badge.restart")
 			}
 			switch spec.kind {
-			case KindSelect, KindPosition:
+			case KindSelect, KindPosition, KindTheme:
 				if spec.path == "client.language" {
 					viewField.Options = LanguageOptions(catalog, viewField.Value)
 				} else {

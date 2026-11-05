@@ -34,6 +34,7 @@ var migrationKeys = []string{
 	"hotkey_backend",
 	"cancel_hotkey",
 	"ui_language",
+	"theme",
 	"feedback.indicator_anchor",
 	"feedback.indicator_offset_x",
 	"feedback.indicator_offset_y",
