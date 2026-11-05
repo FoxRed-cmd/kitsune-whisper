@@ -396,7 +396,7 @@ def test_documentation_covers_install_release_and_troubleshooting() -> None:
         "security.md": ("Pairing code", "Revoke", "expose on", "Threat model"),
         "troubleshooting.md": ("Client log", "401", "Certificate changed", "Spool"),
         "models.md": ("Model catalog", "idle_unload_seconds", "CUDA", "download"),
-        "release.md": ("v1.0.0", "checksums.txt", "verify-version", "manual"),
+        "release.md": ("v1.1.0", "checksums.txt", "verify-version", "manual"),
         "verification/manual-matrix.md": (
             "GNOME on Wayland",
             "Windows 11",

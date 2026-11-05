@@ -5,16 +5,16 @@ root `VERSION` file and the Server package. `.github/workflows/release.yml` then
 builds every artifact natively and publishes it with `checksums.txt` and its
 detached signature `checksums.txt.sig`.
 
-The current release line is **1.0.0**.
+The current release line is **1.1.0**.
 
 ## Version sources
 
 | Where | Value | Checked by |
 | --- | --- | --- |
-| `VERSION` | `1.0.0` | release CI `verify-version` |
-| `server/pyproject.toml` | `1.0.0` | `verify-version` and `test_packaging.py` |
-| `server/kitsune_server/__init__.py` | `1.0.0` | `verify-version` and `test_packaging.py` |
-| Git tag | `v1.0.0` | `verify-version` |
+| `VERSION` | `1.1.0` | release CI `verify-version` |
+| `server/pyproject.toml` | `1.1.0` | `verify-version` and `test_packaging.py` |
+| `server/kitsune_server/__init__.py` | `1.1.0` | `verify-version` and `test_packaging.py` |
+| Git tag | `v1.1.0` | `verify-version` |
 
 Release builds embed the tag in the Client (`-X .../internal/cli.Version`) and
 in the Server bundle manifest. Local builds read `VERSION`; `git describe`
@@ -31,8 +31,8 @@ the version must be the tag, not an arbitrary commit string.
 # 1. Bump VERSION, server/pyproject.toml, and __init__.py together.
 # 2. Run the checks locally (see below).
 # 3. Commit, then tag and push the tag.
-git tag -a v1.0.0 -m "kitsune-whisper 1.0.0"
-git push origin v1.0.0
+git tag -a v1.1.0 -m "kitsune-whisper 1.1.0"
+git push origin v1.1.0
 ```
 
 Pushing a tag is the release action: it starts `release.yml` and
@@ -128,8 +128,8 @@ so a wrong or rotated secret cannot ship a signature that users cannot check.
 ### Verify with OpenSSL
 
 ```sh
-curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.0.0/checksums.txt
-curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.0.0/checksums.txt.sig
+curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.1.0/checksums.txt
+curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.1.0/checksums.txt.sig
 curl -fsSLO https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/packaging/keys/kitsune-release-public.pem
 openssl dgst -sha256 -verify kitsune-release-public.pem \
   -signature checksums.txt.sig checksums.txt
@@ -200,7 +200,7 @@ the checksums:
 ```sh
 scripts/sign-release-checksums.sh \
   --key /secure/offline/release-signing-key.pem --checksums dist/checksums.txt
-gh release upload v1.0.0 dist/checksums.txt dist/checksums.txt.sig --clobber
+gh release upload v1.1.0 dist/checksums.txt dist/checksums.txt.sig --clobber
 ```
 
 Before tagging:
