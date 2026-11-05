@@ -47,6 +47,8 @@ var english = map[string]string{
 	"section.servers":              "Servers and Devices",
 	"section.spool":                "Spool",
 
+	"notice.close": "Dismiss notification",
+
 	"nav.server": "Server",
 
 	"server.profiles":         "Server profiles",

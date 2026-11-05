@@ -72,6 +72,36 @@ func newManagementShellWithRuntime(
 	return sh, desktop, rt
 }
 
+func TestOnlineHealthPollLoadsServerSettingsWithoutRefreshingDiagnostics(t *testing.T) {
+	service := managementService()
+	sh, desktop := newManagementShell(t, service, nil)
+	service.mu.Lock()
+	service.health["local"] = trust.Status{State: trust.StateOffline}
+	service.mu.Unlock()
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "the first health probe", func() bool {
+		view, ok := desktop.getWindow().lastSettings()
+		return ok && view.Servers.Config == nil
+	})
+
+	service.mu.Lock()
+	service.health["local"] = trust.Status{State: trust.StateOnline, Version: "0.9.0"}
+	service.mu.Unlock()
+	if err := sh.HandleIntent([]byte(`{"action":"refresh-servers"}`)); err != nil {
+		t.Fatalf("refresh: %v", err)
+	}
+	waitFor(t, "the Server settings retry", func() bool {
+		view, ok := desktop.getWindow().lastSettings()
+		return ok && view.Servers.Config != nil
+	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
 func TestRefreshDiagnosticsLoadsConfigAndLogs(t *testing.T) {
 	service := managementService()
 	sh, desktop := newManagementShell(t, service, func(context.Context) trust.Status {
@@ -80,6 +110,12 @@ func TestRefreshDiagnosticsLoadsConfigAndLogs(t *testing.T) {
 
 	done := startWithWindow(t, sh, desktop)
 	window := desktop.getWindow()
+	// A health poll that finds the Server online may already have retried the
+	// configuration; the explicit refresh below is what this test counts.
+	service.mu.Lock()
+	service.configCalls = nil
+	service.logCalls = nil
+	service.mu.Unlock()
 	if err := window.sendIntent(t, shell.Intent{Action: shell.IntentRefreshDiagnostics}); err != nil {
 		t.Fatalf("intent: %v", err)
 	}

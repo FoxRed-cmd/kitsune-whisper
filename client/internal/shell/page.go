@@ -37,6 +37,7 @@ func Page(initial Snapshot, settings SettingsView) string {
 		// has its own Back/Next footer.
 		actionsStyle = ` style="display:none"`
 	}
+	closeLabel := i18n.For(settings.Language).T("notice.close")
 	return strings.NewReplacer(
 		"__LANG__", html.EscapeString(language),
 		"__TITLE__", html.EscapeString(title),
@@ -45,6 +46,7 @@ func Page(initial Snapshot, settings SettingsView) string {
 		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
+		"__CLOSE_LABEL__", jsonForScript(closeLabel),
 		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
@@ -99,7 +101,7 @@ func navEntries(view SettingsView) []navEntry {
 
 	var server []string
 	if view.Labels.Title != "" {
-		server = append(server, "servers", "devices", "exposure")
+		server = append(server, "servers", "server-pair", "server-control", "exposure", "devices")
 	}
 	if view.Labels.SettingsTitle != "" {
 		server = append(server, "server-settings")
@@ -238,26 +240,33 @@ func gnomeShortcutsHTML(view GnomeShortcutsView) string {
 	return out.String()
 }
 
+// cardHelpTip puts a card's explanatory paragraph behind a question mark next
+// to its heading. The text stays available on hover and keyboard focus without
+// pushing the card's controls down.
+func cardHelpTip(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	return `<span class="help-tip" tabindex="0" role="note" aria-label="` + escape(text) +
+		`" data-tip="` + escape(text) + `">?</span>`
+}
+
 // serversHTML renders the Server profiles and the active profile's Devices.
 // Inputs have stable ids so the page can collect one pairing request without
 // rebuilding any other screen.
 func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels, modelState string) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group group-wide" data-section="servers">`)
-	out.WriteString(`<h2>` + pageIcon("server") + escape(labels.Title) + `</h2>`)
+	out.WriteString(`<div class="card-head"><h2>` + pageIcon("server") + escape(labels.Title) + `</h2>`)
+	out.WriteString(`<button type="button" class="icon-button" data-action="refresh-servers" title="` +
+		escape(labels.RefreshHealth) + `" aria-label="` + escape(labels.RefreshHealth) + `">` +
+		pageIcon("refresh") + `</button></div>`)
 	if len(view.Profiles) == 0 {
 		out.WriteString(`<p class="help">` + escape(labels.NoServers) + `</p>`)
 	} else {
-		out.WriteString(`<h3>` + escape(labels.Profiles) + `</h3>`)
-		out.WriteString(`<div class="actions-inline">`)
-		out.WriteString(`<button type="button" data-action="refresh-servers">` + escape(labels.RefreshHealth) + `</button>`)
-		out.WriteString(`</div>`)
+		out.WriteString(`<div class="profile-list">`)
 		for _, profile := range view.Profiles {
-			out.WriteString(`<div class="row" data-profile="` + escape(profile.ID) + `">`)
-			out.WriteString(`<strong>` + escape(profile.Name) + `</strong>`)
-			if profile.Active {
-				out.WriteString(`<span class="badge">` + escape(labels.Active) + `</span>`)
-			}
 			healthKey := string(profile.Health.State)
 			if profile.Health.State == trust.StateOnline && serverSoftStopped(profile.Health) {
 				healthKey = "stopped"
@@ -266,12 +275,19 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 			if health == "" {
 				health = labels.StateLabels[string(trust.StateUnknown)]
 			}
-			out.WriteString(`<span class="health-label">` + escape(labels.Health) + `:</span>`)
-			out.WriteString(`<span class="health" data-health="` + escape(healthKey) + `">` + escape(health) + `</span>`)
-			out.WriteString(`<code>` + escape(profile.URL) + `</code>`)
+			out.WriteString(`<div class="profile-row" data-profile="` + escape(profile.ID) + `">`)
+			out.WriteString(`<div class="profile-main"><div class="profile-title"><strong>` + escape(profile.Name) + `</strong>`)
+			if profile.Active {
+				out.WriteString(`<span class="badge active">` + escape(labels.Active) + `</span>`)
+			}
+			out.WriteString(`</div><code class="profile-url">` + escape(profile.URL) + `</code></div>`)
+			out.WriteString(`<span class="health" data-health="` + escape(healthKey) + `" title="` +
+				escape(labels.Health+": "+health) + `">` + escape(health) + `</span>`)
+			out.WriteString(`<div class="profile-actions">`)
 			if !profile.Active {
-				out.WriteString(`<button type="button" data-action="use-profile" data-profile-id="` +
-					escape(profile.ID) + `">` + escape(labels.Use) + `</button>`)
+				out.WriteString(`<button type="button" class="icon-button" data-action="use-profile" data-profile-id="` +
+					escape(profile.ID) + `" title="` + escape(labels.Use) + `" aria-label="` + escape(labels.Use) + `">` +
+					pageIcon("check") + `</button>`)
 			}
 			if serverProfileNeedsRepair(profile.Health.State) {
 				confirm := ""
@@ -281,21 +297,27 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 					// pinned. A Remote Server still needs a fresh Pairing code.
 					confirm = labels.RepairConfirm
 				}
-				out.WriteString(`<button type="button" data-action="repair-profile" data-profile-id="` +
+				out.WriteString(`<button type="button" class="icon-button" data-action="repair-profile" data-profile-id="` +
 					escape(profile.ID) + `" data-profile-url="` + escape(profile.URL) +
 					`" data-profile-local="` + boolText(profile.AutoPair) +
-					`" data-confirm="` + escape(confirm) + `">` + escape(labels.Repair) + `</button>`)
+					`" data-confirm="` + escape(confirm) + `" title="` + escape(labels.Repair) +
+					`" aria-label="` + escape(labels.Repair) + `">` + pageIcon("refresh") + `</button>`)
 			}
 			if len(view.Profiles) > 1 {
-				out.WriteString(`<button type="button" data-action="remove-profile" data-profile-id="` +
+				out.WriteString(`<button type="button" class="icon-button danger" data-action="remove-profile" data-profile-id="` +
 					escape(profile.ID) + `" data-confirm="` + escape(labels.RemoveConfirm) +
-					`">` + escape(labels.RemoveProfile) + `</button>`)
+					`" title="` + escape(labels.RemoveProfile) + `" aria-label="` + escape(labels.RemoveProfile) +
+					`">` + pageIcon("trash") + `</button>`)
 			}
-			out.WriteString(`</div>`)
+			out.WriteString(`</div></div>`)
 		}
+		out.WriteString(`</div>`)
 	}
-	out.WriteString(`<h3>` + escape(labels.PairTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(labels.PairHelp) + `</p>`)
+	out.WriteString(`</section>`)
+
+	out.WriteString(`<section class="group" data-section="server-pair">`)
+	out.WriteString(`<h2>` + pageIcon("plus") + escape(labels.PairTitle) + cardHelpTip(labels.PairHelp) + `</h2>`)
+	out.WriteString(`<div class="card-fields">`)
 	out.WriteString(`<div class="field"><label for="server-address">` + escape(labels.Address) + `</label>`)
 	out.WriteString(`<input type="text" id="server-address" autocomplete="off" spellcheck="false" placeholder="desktop.local:8765"></div>`)
 	out.WriteString(`<div class="field"><label for="server-code">` + escape(labels.Code) + `</label>`)
@@ -303,22 +325,25 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`<div class="field"><label for="server-name">` + escape(labels.Name) + `</label>`)
 	out.WriteString(`<input type="text" id="server-name" autocomplete="off" spellcheck="false">`)
 	out.WriteString(`<p class="help">` + escape(labels.NameHelp) + `</p></div>`)
-	out.WriteString(`<button type="button" class="primary" data-action="pair-remote">` + escape(labels.Pair) + `</button>`)
-	out.WriteString(`<h3>` + escape(labels.ManagementTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(labels.ManagementHelp) + `</p>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`<button type="button" class="primary card-action" data-action="pair-remote">` + escape(labels.Pair) + `</button>`)
+	out.WriteString(`</section>`)
+
+	out.WriteString(`<section class="group" data-section="server-control">`)
+	out.WriteString(`<h2>` + pageIcon("power") + escape(labels.ManagementTitle) + cardHelpTip(labels.ManagementHelp) + `</h2>`)
 	if view.Lifecycle != nil {
-		out.WriteString(`<p class="row"><strong>` + escape(labels.ModelState) + `:</strong> <span data-model-state="` + escape(view.Lifecycle.ModelState) + `">` + escape(valueOr(modelState, view.Lifecycle.ModelState)) + `</span></p>`)
+		out.WriteString(`<p class="stat-line"><span>` + escape(labels.ModelState) + `</span><strong data-model-state="` +
+			escape(view.Lifecycle.ModelState) + `">` + escape(valueOr(modelState, view.Lifecycle.ModelState)) + `</strong></p>`)
 	}
-	out.WriteString(`<div class="actions-inline">`)
-	out.WriteString(`<button type="button" data-action="server-restart">` + escape(labels.RestartServer) + `</button>`)
-	out.WriteString(`<button type="button" data-action="server-stop">` + escape(labels.StopServer) + `</button>`)
-	out.WriteString(`<button type="button" data-action="server-start">` + escape(labels.StartServer) + `</button>`)
+	out.WriteString(`<div class="server-actions">`)
+	out.WriteString(`<button type="button" data-action="server-restart">` + pageIcon("restart") + escape(labels.RestartServer) + `</button>`)
+	out.WriteString(`<button type="button" data-action="server-stop">` + pageIcon("stop") + escape(labels.StopServer) + `</button>`)
+	out.WriteString(`<button type="button" data-action="server-start">` + pageIcon("play") + escape(labels.StartServer) + `</button>`)
 	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
-	out.WriteString(`<section class="group group-wide" data-section="exposure">`)
-	out.WriteString(`<h2>` + escape(labels.ExposureTitle) + `</h2>`)
-	out.WriteString(`<p class="help">` + escape(labels.ExposureHelp) + `</p>`)
+	out.WriteString(`<section class="group" data-section="exposure">`)
+	out.WriteString(`<h2>` + pageIcon("globe") + escape(labels.ExposureTitle) + cardHelpTip(labels.ExposureHelp) + `</h2>`)
 	live := activeNetwork(view)
 	if live != nil {
 		state := labels.ExposureLiveOff
@@ -336,7 +361,9 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 		out.WriteString(`<div class="row" data-exposure-connect="` + escape(view.ConnectAddress) + `">`)
 		out.WriteString(`<span class="help">` +
 			escape(fmt.Sprintf(labels.ExposureConnect, view.ConnectAddress)) + `</span>`)
-		out.WriteString(`<button type="button" data-action="copy-address">` + escape(labels.CopyAddress) + `</button>`)
+		out.WriteString(`<button type="button" class="icon-button" data-action="copy-address" title="` +
+			escape(labels.CopyAddress) + `" aria-label="` + escape(labels.CopyAddress) + `">` +
+			pageIcon("paste") + `</button>`)
 		out.WriteString(`</div>`)
 	}
 	if live == nil {
@@ -360,20 +387,26 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	if pendingExposure(view, live) {
 		out.WriteString(`<p class="notice pending" data-exposure-pending="true">` + escape(labels.ExposurePending) + `</p>`)
 	}
-	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<div class="actions-inline actions-equal">`)
 	out.WriteString(`<button type="button" data-action="exposure" data-expose="on" data-confirm="` + escape(labels.ExposureConfirm) + `">` + escape(labels.ExposureOn) + `</button>`)
 	out.WriteString(`<button type="button" data-action="exposure" data-expose="off">` + escape(labels.ExposureOff) + `</button>`)
 	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
 	out.WriteString(`<section class="group group-wide" data-section="devices">`)
-	out.WriteString(`<h2>` + escape(labels.Devices) + `</h2>`)
-	out.WriteString(`<p class="help">` + escape(labels.DevicesFor) + `</p>`)
-	out.WriteString(`<div class="actions-inline">`)
-	out.WriteString(`<button type="button" data-action="refresh-devices">` + escape(labels.Refresh) + `</button>`)
-	out.WriteString(`<button type="button" data-action="pairing-code">` + escape(labels.GenerateCode) + `</button>`)
-	out.WriteString(`</div>`)
-	out.WriteString(`<p class="help">` + escape(labels.CodeHelp) + `</p>`)
+	devicesHelp := strings.TrimSpace(labels.DevicesFor)
+	if help := strings.TrimSpace(labels.CodeHelp); help != "" {
+		if devicesHelp != "" {
+			devicesHelp += "\n\n"
+		}
+		devicesHelp += help
+	}
+	out.WriteString(`<div class="card-head"><h2>` + pageIcon("monitor") + escape(labels.Devices) + cardHelpTip(devicesHelp) + `</h2>`)
+	out.WriteString(`<div class="card-head-actions">`)
+	out.WriteString(`<button type="button" class="icon-button" data-action="refresh-devices" title="` +
+		escape(labels.Refresh) + `" aria-label="` + escape(labels.Refresh) + `">` + pageIcon("refresh") + `</button>`)
+	out.WriteString(`<button type="button" data-action="pairing-code">` + pageIcon("plus") + escape(labels.GenerateCode) + `</button>`)
+	out.WriteString(`</div></div>`)
 	if view.PairingCode != nil {
 		out.WriteString(`<p class="pair-code" data-code="` + escape(view.PairingCode.Code) + `"><strong>` + escape(view.PairingCode.Code) + `</strong> · ` + escape(labels.CodeExpires) + `</p>`)
 		if view.PairingCode.Fingerprint != "" {
@@ -796,8 +829,7 @@ func updatesHTML(view UpdateView) string {
 func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group group-wide server-settings" data-section="server-settings">`)
-	out.WriteString(`<h2>` + pageIcon("gear") + escape(labels.SettingsTitle) + `</h2>`)
-	out.WriteString(`<p class="help">` + escape(labels.SettingsHelp) + `</p>`)
+	out.WriteString(`<h2>` + pageIcon("gear") + escape(labels.SettingsTitle) + cardHelpTip(labels.SettingsHelp) + `</h2>`)
 	if view.Config == nil {
 		out.WriteString(`<p class="help">` + escape(labels.Unavailable) + `</p>`)
 		out.WriteString(`</section>`)
@@ -1272,15 +1304,15 @@ const pageHTML = `<!doctype html>
   .status-meta dt { color:var(--muted); font-size:11px; }
   .status-meta dd { margin:0; font-size:12px; overflow-wrap:anywhere; }
   .settings-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:206px minmax(0,1fr); gap:12px; }
-  #settings { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+  #settings { position:relative; z-index:1; flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
   .settings-single { grid-template-columns:minmax(0,1fr); }
   .settings-nav { display:flex; flex-direction:column; gap:2px; overflow-y:auto; overflow-x:hidden; min-height:0; padding:2px 4px 2px 0; scrollbar-width:thin; }
-  .nav-item { display:flex; align-items:center; gap:8px; font:inherit; text-align:left; border:1px solid transparent; background:transparent; color:var(--muted); border-radius:7px; padding:6px 9px; cursor:pointer; transition:background .12s, color .12s; }
+  .nav-item { display:flex; align-items:center; justify-content:flex-start; gap:8px; font:inherit; text-align:left; border:1px solid transparent; background:transparent; color:var(--muted); border-radius:7px; padding:6px 9px; cursor:pointer; transition:background .12s, color .12s; }
   .nav-item .icon { width:14px; height:14px; opacity:.85; }
   .nav-item:hover { background:var(--bg-soft); color:var(--fg); }
   .nav-item.is-active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
   .nav-item.is-active .icon { opacity:1; }
-  .settings-pane { display:flex; flex-direction:column; gap:10px; min-height:0; overflow-y:auto; padding:2px 6px 8px 2px; scrollbar-width:thin; }
+  .settings-pane { display:flex; flex-direction:column; gap:10px; min-height:0; overflow-y:auto; overflow-x:hidden; padding:2px 6px 8px 2px; scrollbar-width:thin; }
   /* Short cards share a line and grow to fill it, so two cards split the row
      and three split it three ways. Wide content marks itself .group-wide and
      always starts a line of its own. Cards on one line stretch to one height. */
@@ -1348,6 +1380,37 @@ const pageHTML = `<!doctype html>
   .group h2 { display:flex; align-items:center; gap:7px; font-size:14px; margin:0 0 10px; letter-spacing:-.005em; }
   .group h2 .icon { color:var(--accent); }
   .group h3 { display:flex; align-items:center; gap:6px; font-size:10.5px; margin:14px 0 5px; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; }
+  .card-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px; }
+  .card-head h2 { margin:0; }
+  .card-head-actions { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  /* A card explanation lives behind the question mark beside its heading, so
+     a long paragraph never pushes the actual controls down. */
+  .help-tip { position:relative; display:inline-flex; align-items:center; justify-content:center; width:15px; height:15px; flex:0 0 auto; border:1px solid var(--line); border-radius:50%; color:var(--muted); font-size:10px; font-weight:600; line-height:1; cursor:help; user-select:none; }
+  .help-tip:hover, .help-tip:focus-visible { color:var(--accent); border-color:var(--accent); background:var(--accent-soft); outline:none; }
+  /* One floating node is positioned in script, so a hint picks its side from
+     the space actually left in the settings pane instead of overflowing it. */
+  #help-tip-float { position:fixed; z-index:80; display:none; width:max-content; max-width:min(320px, calc(100vw - 24px)); padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:var(--card); color:var(--fg); font-size:11.5px; font-weight:400; line-height:1.4; letter-spacing:normal; text-align:left; white-space:pre-line; overflow-wrap:anywhere; box-shadow:0 10px 28px rgba(0,0,0,.35); pointer-events:none; }
+  #help-tip-float.is-open { display:block; }
+  .icon-button { width:30px; height:30px; min-height:30px; padding:0; justify-content:center; flex:0 0 auto; }
+  .icon-button.danger { color:var(--danger); }
+  .icon-button.danger:hover { background:color-mix(in srgb, var(--danger) 12%, transparent); border-color:color-mix(in srgb, var(--danger) 28%, transparent); }
+  .profile-list { display:flex; flex-direction:column; gap:6px; }
+  .profile-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; align-items:center; gap:10px; padding:8px 10px; border:1px solid var(--line-soft); border-radius:7px; background:var(--card-2); }
+  .profile-main { min-width:0; display:flex; flex-direction:column; gap:1px; }
+  .profile-title { display:flex; align-items:center; gap:7px; flex-wrap:wrap; }
+  .profile-url { color:var(--muted); overflow-wrap:anywhere; font-size:11.5px; }
+  .profile-actions { display:flex; align-items:center; gap:4px; }
+  .profile-row .health { white-space:nowrap; }
+  .card-fields { display:flex; flex-direction:column; gap:0; }
+  .card-fields > .field { border-top:none; padding:5px 0; }
+  .card-action { width:100%; justify-content:center; margin-top:8px; }
+  .stat-line { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:8px 0 0; padding:7px 9px; border-radius:6px; background:var(--card-2); font-size:12px; }
+  .stat-line span { color:var(--muted); }
+  .actions-equal > button { flex:1 1 0; min-width:0; justify-content:center; }
+  /* Three long lifecycle labels never fit side by side in a half-width
+     card. A full-width stack keeps every icon and label on one line. */
+  .server-actions { display:flex; flex-direction:column; gap:8px; margin-top:8px; }
+  .server-actions > button { width:100%; justify-content:flex-start; white-space:nowrap; }
   .state { display:flex; align-items:center; gap:8px; }
   .dot { width:10px; height:10px; border-radius:50%; background:#8a8a8e; box-shadow:0 0 0 3px color-mix(in srgb, #8a8a8e 25%, transparent); }
   .state[data-state="recording"] .dot { background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb, var(--danger) 28%, transparent); }
@@ -1361,8 +1424,8 @@ const pageHTML = `<!doctype html>
   .field:first-of-type { border-top:none; }
   .field-head { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }
   .field-head label { font-weight:600; font-size:12.5px; }
-  .field input[type="text"], .field input[type="number"], .wizard textarea { width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--card-2); color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; transition:border-color .12s, box-shadow .12s; }
-  .field select { width:100%; padding:6px 30px 6px 9px; border:1px solid var(--line); border-radius:6px; background-color:var(--card-2); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a97ab' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; background-size:12px 12px; color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; appearance:none; -webkit-appearance:none; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
+  .field input[type="text"], .field input[type="number"], .wizard textarea { width:100%; min-height:30px; padding:6px 9px; border:1px solid var(--line); border-radius:6px; background:var(--card-2); color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; transition:border-color .12s, box-shadow .12s; }
+  .field select { width:100%; min-height:30px; padding:6px 30px 6px 9px; border:1px solid var(--line); border-radius:6px; background-color:var(--card-2); background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a97ab' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 9px center; background-size:12px 12px; color:var(--fg); font:inherit; font-size:12.5px; line-height:1.35; appearance:none; -webkit-appearance:none; cursor:pointer; transition:border-color .12s, box-shadow .12s; }
   .field input[type="text"]:focus, .field input[type="number"]:focus, .field select:focus, .wizard textarea:focus { outline:none; border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft); }
   .field input[type="number"] { -moz-appearance:textfield; appearance:textfield; }
   .field input[type="number"]::-webkit-outer-spin-button, .field input[type="number"]::-webkit-inner-spin-button { -webkit-appearance:none; margin:0; }
@@ -1442,8 +1505,13 @@ const pageHTML = `<!doctype html>
   .models .model-actions button { width:152px; justify-content:center; }
   .models .model-actions .badge { display:inline-flex; align-items:center; justify-content:center; }
   .model-state { margin:8px 0 0; }
-  .messages { display:flex; flex-direction:column; gap:5px; flex:0 0 auto; max-height:20vh; overflow-y:auto; }
+  .messages { position:relative; z-index:3; display:flex; flex-direction:column; gap:5px; flex:0 0 auto; width:100%; max-height:20vh; overflow-y:auto; background:var(--bg); }
   .messages:empty { display:none; }
+  .messages .notice, .messages .failure { display:flex; align-items:flex-start; gap:8px; }
+  .message-text { min-width:0; overflow-wrap:anywhere; }
+  .message-close { width:20px; height:20px; min-height:0; flex:0 0 auto; padding:0; margin:1px 0 0; border:0; border-radius:5px; background:transparent; color:inherit; opacity:.65; }
+  .message-close:hover { opacity:1; background:color-mix(in srgb, currentColor 12%, transparent); }
+  .message-close .icon { width:12px; height:12px; }
   .notice { color:var(--ok); margin:0; padding:6px 10px; border-radius:7px; background:#2f9e441a; font-size:12px; }
   .failure { color:var(--danger); margin:0; padding:6px 10px; border-radius:7px; background:#d6409f14; font-size:12px; }
   .failure:empty { display:none; }
@@ -1523,7 +1591,7 @@ const pageHTML = `<!doctype html>
     .wizard-facts { grid-template-columns:minmax(0,1fr); }
   }
   footer { display:flex; gap:8px; align-items:center; flex:0 0 auto; padding-top:10px; border-top:1px solid var(--line); }
-  button { display:inline-flex; align-items:center; gap:6px; font:inherit; font-size:12.5px; padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:var(--card-2); color:var(--fg); cursor:pointer; transition:background .12s, border-color .12s, opacity .12s; }
+  button { display:inline-flex; align-items:center; justify-content:center; gap:6px; min-height:30px; font:inherit; font-size:12.5px; padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:var(--card-2); color:var(--fg); cursor:pointer; transition:background .12s, border-color .12s, opacity .12s; }
   button:hover { background:var(--bg-soft); }
   button .icon { width:14px; height:14px; }
   button.primary { background:var(--accent); border-color:transparent; color:var(--on-accent); font-weight:600; }
@@ -1563,6 +1631,7 @@ const pageHTML = `<!doctype html>
     <span class="hint" id="restart-hint">__RESTART_HINT__</span>
   </footer>
 </main>
+<div id="help-tip-float" role="tooltip" aria-hidden="true"></div>
 <script>
   function text(id, value) {
     var el = document.getElementById(id);
@@ -1575,6 +1644,78 @@ const pageHTML = `<!doctype html>
   var runtimeError = "";
   var viewErrors = __ERRORS__;
   var actionMessages = { notices: [], failures: [] };
+  var dismissedAlerts = {};
+  var closeNoticeLabel = __CLOSE_LABEL__;
+  var lastAlerts = null;
+  // Help hints live in one fixed node. A pseudo-element could not measure the
+  // pane, so it guessed a side and spilled over the edge at some widths.
+  var helpTipFloat = document.getElementById("help-tip-float");
+  function hideHelpTip() {
+    if (!helpTipFloat) return;
+    helpTipFloat.classList.remove("is-open");
+    helpTipFloat.setAttribute("aria-hidden", "true");
+  }
+  function placeHelpTip(target) {
+    if (!helpTipFloat || !target) return;
+    var text = target.getAttribute("data-tip") || "";
+    if (!text) return;
+    helpTipFloat.textContent = text;
+    helpTipFloat.style.maxWidth = "";
+    helpTipFloat.classList.add("is-open");
+    helpTipFloat.setAttribute("aria-hidden", "false");
+    var r = target.getBoundingClientRect();
+    var pane = target.closest(".settings-pane");
+    var bounds = pane ? pane.getBoundingClientRect() : {
+      left: 0,
+      right: window.innerWidth
+    };
+    var margin = 12;
+    var gap = 8;
+    var available = Math.max(80, bounds.right - bounds.left - margin * 2);
+    var box = helpTipFloat.getBoundingClientRect();
+    if (box.width > available) {
+      helpTipFloat.style.maxWidth = available + "px";
+      box = helpTipFloat.getBoundingClientRect();
+    }
+    var top = r.bottom + gap;
+    // Flip above the icon when the hint would leave the window at the bottom.
+    if (top + box.height > window.innerHeight - margin && r.top - gap - box.height >= margin) {
+      top = r.top - gap - box.height;
+    }
+    if (top + box.height > window.innerHeight - margin) {
+      top = Math.max(margin, window.innerHeight - margin - box.height);
+    }
+    // Centre on the icon, then slide back inside the settings pane. The pane
+    // is narrower than the window, so clamping to it keeps the hint off the
+    // navigation on the left and off the edge on the right.
+    var left = r.left + r.width / 2 - box.width / 2;
+    var minLeft = bounds.left + margin;
+    var maxLeft = bounds.right - margin - box.width;
+    if (left > maxLeft) left = maxLeft;
+    if (left < minLeft) left = minLeft;
+    helpTipFloat.style.top = Math.round(top) + "px";
+    helpTipFloat.style.left = Math.round(left) + "px";
+  }
+  function helpTipTarget(node) {
+    return node && node.closest ? node.closest(".help-tip") : null;
+  }
+  document.addEventListener("mouseover", function (event) {
+    var target = helpTipTarget(event.target);
+    if (target) placeHelpTip(target);
+  });
+  document.addEventListener("mouseout", function (event) {
+    var target = helpTipTarget(event.target);
+    if (target && !target.contains(event.relatedTarget)) hideHelpTip();
+  });
+  document.addEventListener("focusin", function (event) {
+    var target = helpTipTarget(event.target);
+    if (target) placeHelpTip(target);
+  });
+  document.addEventListener("focusout", function (event) {
+    if (helpTipTarget(event.target)) hideHelpTip();
+  });
+  document.addEventListener("scroll", hideHelpTip, true);
+  window.addEventListener("resize", hideHelpTip);
   function visibleSections() {
     var visible = {};
     var sections = document.querySelectorAll("#settings-pane [data-section]");
@@ -1583,19 +1724,15 @@ const pageHTML = `<!doctype html>
     }
     return visible;
   }
-  function renderAlerts() {
-    var host = document.getElementById("messages");
-    if (!host) return;
-    host.textContent = "";
+  function alertItems() {
+    var items = [];
     var shown = {};
     function add(message, kind) {
       message = message || "";
-      if (!message || shown[kind + "\n" + message]) return;
-      shown[kind + "\n" + message] = true;
-      var p = document.createElement("p");
-      p.className = kind;
-      p.textContent = message;
-      host.appendChild(p);
+      var key = kind + "\n" + message;
+      if (!message || shown[key] || dismissedAlerts[key]) return;
+      shown[key] = true;
+      items.push({ kind: kind, message: message, key: key });
     }
     (actionMessages.notices || []).forEach(function (line) { add(line, "notice"); });
     if (runtimeError) add(runtimeError, "failure");
@@ -1606,6 +1743,49 @@ const pageHTML = `<!doctype html>
       add(item.message, "failure");
     });
     (actionMessages.failures || []).forEach(function (line) { add(line, "failure"); });
+    return items;
+  }
+  function alertSignature(items) {
+    var parts = [];
+    for (var i = 0; i < items.length; i++) {
+      parts.push(items[i].kind + "\n" + items[i].message);
+    }
+    return parts.join("\n\u001e\n");
+  }
+  function renderAlerts() {
+    var host = document.getElementById("messages");
+    if (!host) return;
+    var items = alertItems();
+    var signature = alertSignature(items);
+    // A status tick must not clear and rebuild an unchanged banner. The
+    // embedded WebKit compositor paints the moving scroll layer over the
+    // navigation when this list churns on every health probe.
+    if (signature === lastAlerts) return;
+    lastAlerts = signature;
+    host.textContent = "";
+    for (var i = 0; i < items.length; i++) {
+      (function (item) {
+        var p = document.createElement("p");
+        p.className = item.kind;
+        var label = document.createElement("span");
+        label.className = "message-text";
+        label.textContent = item.message;
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "message-close";
+        close.title = closeNoticeLabel;
+        close.setAttribute("aria-label", closeNoticeLabel);
+        close.innerHTML = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+        close.addEventListener("click", function () {
+          dismissedAlerts[item.key] = true;
+          p.remove();
+          lastAlerts = alertSignature(alertItems());
+        });
+        p.appendChild(label);
+        p.appendChild(close);
+        host.appendChild(p);
+      })(items[i]);
+    }
   }
   function renderStatus(s) {
     var labels = s.labels || {};
@@ -1815,6 +1995,9 @@ const pageHTML = `<!doctype html>
     } catch (e) {}
   }
   function renderSettings(v) {
+    // The hovered question mark is about to be replaced, so its hint must go
+    // with it; a retained node would float over the rebuilt screen.
+    hideHelpTip();
     var host = document.getElementById("settings");
     var pane = document.getElementById("settings-pane");
     var fields = document.querySelector("#settings .server-fields");
@@ -1944,6 +2127,8 @@ const pageHTML = `<!doctype html>
       notices: (m && m.notices) || [],
       failures: (m && m.failures) || []
     };
+    dismissedAlerts = {};
+    lastAlerts = null;
     renderAlerts();
   }
   function setLevel(level) {
@@ -1997,6 +2182,8 @@ const pageHTML = `<!doctype html>
       notices: failure ? [] : [String(message || "")],
       failures: failure ? [String(message || "")] : []
     };
+    dismissedAlerts = {};
+    lastAlerts = null;
     renderAlerts();
   }
   function sendIntent(intent, button) {

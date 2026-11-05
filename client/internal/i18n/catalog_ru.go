@@ -45,6 +45,8 @@ var russian = map[string]string{
 	"section.servers":              "Серверы и устройства",
 	"section.spool":                "Сохранённые записи",
 
+	"notice.close": "Закрыть уведомление",
+
 	"nav.server": "Сервер",
 
 	"server.profiles":         "Профили серверов",

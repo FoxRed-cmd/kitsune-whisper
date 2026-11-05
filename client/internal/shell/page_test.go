@@ -209,13 +209,59 @@ func TestPageLaysServerSettingsOutInColumns(t *testing.T) {
 	}
 }
 
+func TestPageDismissesNoticesAndErrors(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	for _, want := range []string{
+		`var dismissedAlerts = {}`,
+		`var closeNoticeLabel =`,
+		`close.className = "message-close"`,
+		`close.setAttribute("aria-label", closeNoticeLabel)`,
+		`dismissedAlerts[item.key] = true`,
+		`dismissedAlerts = {}`,
+		`if (signature === lastAlerts) return;`,
+		`.messages { position:relative; z-index:3;`,
+		`#settings { position:relative; z-index:1;`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestServerScreenSplitsCardsAndUsesIconProfileActions(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	for _, want := range []string{
+		`data-section="server-pair"`,
+		`data-section="server-control"`,
+		`class="icon-button" data-action="refresh-servers"`,
+		`class="icon-button" data-action="use-profile"`,
+		`class="icon-button danger" data-action="remove-profile"`,
+		`class="server-actions"`,
+		`class="help-tip"`,
+		`data-tip="`,
+		`id="help-tip-float"`,
+		`#help-tip-float.is-open { display:block; }`,
+		`helpTipFloat.style.top =`,
+		`var pane = target.closest(".settings-pane");`,
+		`helpTipFloat.style.maxWidth = available + "px";`,
+		`if (left > maxLeft) left = maxLeft;`,
+		`if (left < minLeft) left = minLeft;`,
+		`overflow-y:auto; overflow-x:hidden;`,
+		`class="group group-wide server-settings"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
 func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, managementView())
 	for _, want := range []string{
 		`id="settings-nav"`,
 		`data-nav="general" data-targets="general"`,
 		`data-nav="dictation" data-targets="dictation"`,
-		`data-nav="server" data-targets="servers,devices,exposure,server-settings"`,
+		`data-nav="server" data-targets="servers,server-pair,server-control,exposure,devices,server-settings"`,
 		`data-nav="diagnostics" data-targets="diagnostics"`,
 		`id="settings-pane"`,
 		`function selectSection(`,

@@ -455,6 +455,10 @@ type Shell struct {
 	// diagnosticsLoading guards the automatic Diagnostics preload so opening
 	// the window while the page is loading does not fetch twice.
 	diagnosticsLoading bool
+	// configLoading guards the background Server settings retry. The first
+	// window load can race a Local Server that is still starting, so a health
+	// poll that finds it online retries the configuration once.
+	configLoading bool
 
 	// wizardOffered is true once the shell auto-opened the wizard or the user
 	// closed it, so a close is respected until the next process.
@@ -976,6 +980,10 @@ func (s *Shell) checkProfiles(ctx context.Context, syncDevices bool) {
 			go s.loadDevices(ctx)
 		}
 		go s.loadModelsForCheck(ctx)
+		// The Server settings form needs the same retry: a first load that
+		// raced the Local Server's startup would otherwise leave the card
+		// telling the user to refresh Diagnostics by hand.
+		go s.loadServerConfigForCheck(ctx)
 	}
 }
 

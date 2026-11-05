@@ -90,6 +90,45 @@ func (s *Shell) loadDiagnostics(profileID string) []string {
 	return failures
 }
 
+// loadServerConfigForCheck retries the active Server's configuration after a
+// health poll finds it online. The first window load can race a Local Server
+// that is still starting, and without this retry the Server settings card
+// would stay unavailable until the user refreshed Diagnostics by hand. A
+// configuration already in the view is left alone, so a running form is never
+// rebuilt by a background poll.
+func (s *Shell) loadServerConfigForCheck(ctx context.Context) {
+	if s.opts.Servers == nil {
+		return
+	}
+	profileID := s.activeServerID()
+	if profileID == "" {
+		return
+	}
+	view := s.opts.Servers.View()
+	if view.ActiveID != profileID || view.Config != nil {
+		return
+	}
+	s.mu.Lock()
+	if s.configLoading {
+		s.mu.Unlock()
+		return
+	}
+	s.configLoading = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		s.configLoading = false
+		s.mu.Unlock()
+	}()
+	loadCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	if _, err := s.opts.Servers.LoadConfig(loadCtx, profileID); err != nil {
+		s.log.Debug("server settings: %v", err)
+		return
+	}
+	s.pushSettings()
+}
+
 // primeDiagnostics fills the Diagnostics cache when the Settings window opens
 // or the page loads. It never shows a success notice: the first visit to the
 // screen should simply have data. A second request while one is running is
