@@ -226,6 +226,7 @@ type ServerLabels struct {
 // ModelLabels are the translated strings for the Model catalog screen.
 type ModelLabels struct {
 	Title             string `json:"title"`
+	CatalogTitle      string `json:"catalogTitle"`
 	Help              string `json:"help"`
 	Refresh           string `json:"refresh"`
 	NoCatalog         string `json:"noCatalog"`
@@ -588,6 +589,7 @@ func (s *Shell) modelLabels() ModelLabels {
 	catalog := s.catalog()
 	return ModelLabels{
 		Title:             catalog.T("section.models"),
+		CatalogTitle:      catalog.T("model.catalogTitle"),
 		Help:              catalog.T("model.help"),
 		Refresh:           catalog.T("action.refreshModels"),
 		NoCatalog:         catalog.T("model.noCatalog"),

@@ -111,7 +111,11 @@ func navEntries(view SettingsView) []navEntry {
 	}
 
 	if view.ModelLabels.Title != "" {
-		entries = append(entries, navEntry{Key: "models", Label: view.ModelLabels.Title, Targets: []string{"models"}})
+		entries = append(entries, navEntry{
+			Key:     "models",
+			Label:   view.ModelLabels.Title,
+			Targets: []string{"models", "models-idle", "models-local"},
+		})
 	}
 	if view.Spool.Labels.Title != "" {
 		entries = append(entries, navEntry{Key: "spool", Label: view.Spool.Labels.Title, Targets: []string{"spool"}})
@@ -525,16 +529,16 @@ func spoolHTML(view SpoolView) string {
 	return out.String()
 }
 
-// modelsHTML renders the Model catalog, download progress, activation and
-// deletion actions, the idle timeout, and the local CTranslate2 directory.
+// modelsHTML renders the Model catalog, its download and activation actions,
+// the idle timeout, and the local CTranslate2 directory as separate cards.
 func modelsHTML(view *servers.ModelsView, labels ModelLabels) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group group-wide" data-section="models">`)
-	out.WriteString(`<h2>` + pageIcon("models") + escape(labels.Title) + `</h2>`)
-	out.WriteString(`<p class="help">` + escape(labels.Help) + `</p>`)
-	out.WriteString(`<div class="actions-inline">`)
-	out.WriteString(`<button type="button" data-action="load-models">` + escape(labels.Refresh) + `</button>`)
-	out.WriteString(`</div>`)
+	out.WriteString(`<div class="card-head"><h2>` + pageIcon("models") + escape(labels.CatalogTitle) +
+		cardHelpTip(labels.Help) + `</h2>`)
+	out.WriteString(`<button type="button" class="icon-button" data-action="load-models" title="` +
+		escape(labels.Refresh) + `" aria-label="` + escape(labels.Refresh) + `">` +
+		pageIcon("refresh") + `</button></div>`)
 	if view == nil {
 		out.WriteString(`<p class="help">` + escape(labels.NoCatalog) + `</p>`)
 		out.WriteString(`</section>`)
@@ -578,19 +582,23 @@ func modelsHTML(view *servers.ModelsView, labels ModelLabels) string {
 		}
 		out.WriteString(`</tbody></table>`)
 	}
-	out.WriteString(`<h3>` + escape(labels.IdleTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(labels.IdleHelp) + `</p>`)
+	out.WriteString(`</section>`)
+
+	out.WriteString(`<section class="group" data-section="models-idle">`)
+	out.WriteString(`<h2>` + pageIcon("power") + escape(labels.IdleTitle) + cardHelpTip(labels.IdleHelp) + `</h2>`)
 	out.WriteString(`<div class="field"><div class="field-head"><label for="model-idle-seconds">` + escape(labels.IdleLabel) + `</label></div>`)
 	out.WriteString(`<div class="inline-field">`)
 	out.WriteString(`<input type="number" min="0" step="30" id="model-idle-seconds" value="` + escape(strconv.Itoa(view.IdleUnloadSeconds)) + `">`)
 	out.WriteString(`<button type="button" data-action="idle-timeout">` + escape(labels.IdleSave) + `</button>`)
 	out.WriteString(`</div></div>`)
-	out.WriteString(`<h3>` + escape(labels.AdvancedTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(labels.AdvancedHelp) + `</p>`)
+	out.WriteString(`</section>`)
+
+	out.WriteString(`<section class="group" data-section="models-local">`)
+	out.WriteString(`<h2>` + pageIcon("folder") + escape(labels.AdvancedTitle) + cardHelpTip(labels.AdvancedHelp) + `</h2>`)
 	out.WriteString(`<div class="field"><label for="model-local-path">` + escape(labels.LocalPath) + `</label>`)
 	out.WriteString(`<input type="text" id="model-local-path" autocomplete="off" spellcheck="false">`)
 	out.WriteString(`<p class="help">` + escape(labels.LocalPathHint) + `</p></div>`)
-	out.WriteString(`<button type="button" data-action="activate-local">` + escape(labels.UseLocal) + `</button>`)
+	out.WriteString(`<button type="button" class="card-action" data-action="activate-local">` + escape(labels.UseLocal) + `</button>`)
 	out.WriteString(`</section>`)
 	return out.String()
 }
@@ -603,20 +611,30 @@ func savedAt(seconds float64) string {
 	return time.Unix(int64(seconds), 0).Local().Format("2006-01-02 15:04")
 }
 
-// modelActions renders the one control a catalog row offers.
+// modelActions renders the one control a catalog row offers. The actions are
+// icon buttons with tooltips, so the catalog stays compact; an active model
+// needs no action because its badge already sits beside the name.
 func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLabels) string {
 	if model.Download.InProgress() {
-		return `<button type="button" data-action="cancel-download" data-model="` + escape(model.Name) + `">` + escape(labels.Cancel) + `</button>`
+		return `<button type="button" class="icon-button" data-action="cancel-download" data-model="` +
+			escape(model.Name) + `" title="` + escape(labels.Cancel) + `" aria-label="` +
+			escape(labels.Cancel) + `">` + pageIcon("close") + `</button>`
 	}
 	if !model.Installed {
-		return `<button type="button" data-action="download-model" data-model="` + escape(model.Name) + `">` + escape(labels.Download) + `</button>`
+		return `<button type="button" class="icon-button" data-action="download-model" data-model="` +
+			escape(model.Name) + `" title="` + escape(labels.Download) + `" aria-label="` +
+			escape(labels.Download) + `">` + pageIcon("download") + `</button>`
 	}
 	if model.Name == view.ActiveModel {
-		return `<span class="badge active">` + escape(labels.Active) + `</span>`
+		return ""
 	}
 	var out strings.Builder
-	out.WriteString(`<button type="button" data-action="activate-model" data-model="` + escape(model.Name) + `">` + escape(labels.Activate) + `</button>`)
-	out.WriteString(` <button type="button" data-action="delete-model" data-model="` + escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `">` + escape(labels.Delete) + `</button>`)
+	out.WriteString(`<button type="button" class="icon-button" data-action="activate-model" data-model="` +
+		escape(model.Name) + `" title="` + escape(labels.Activate) + `" aria-label="` +
+		escape(labels.Activate) + `">` + pageIcon("check") + `</button>`)
+	out.WriteString(` <button type="button" class="icon-button danger" data-action="delete-model" data-model="` +
+		escape(model.Name) + `" data-confirm="` + escape(labels.DeleteConfirm) + `" title="` +
+		escape(labels.Delete) + `" aria-label="` + escape(labels.Delete) + `">` + pageIcon("trash") + `</button>`)
 	return out.String()
 }
 
@@ -1498,12 +1516,9 @@ const pageHTML = `<!doctype html>
   .devices th, .models th { color:var(--muted); font-weight:600; font-size:11px; border-top:none; }
   .devices td:last-child, .models .model-actions { text-align:right; white-space:nowrap; }
   .models .model-progress td { color:var(--muted); font-size:11.5px; border-top:none; }
-  /* Every row's action occupies the same column width, so the download
-     buttons line up instead of growing with the model name. A status badge
-     stays compact: stretching a word across a button-sized slot reads as an
-     empty button. */
-  .models .model-actions button { width:152px; justify-content:center; }
-  .models .model-actions .badge { display:inline-flex; align-items:center; justify-content:center; }
+  /* Catalog row actions are icon buttons, so every row keeps one narrow
+     action column while a status badge stays beside the model name. */
+  .models .model-actions .icon-button { width:30px; justify-content:center; }
   .model-state { margin:8px 0 0; }
   .messages { position:relative; z-index:3; display:flex; flex-direction:column; gap:5px; flex:0 0 auto; width:100%; max-height:20vh; overflow-y:auto; background:var(--bg); }
   .messages:empty { display:none; }

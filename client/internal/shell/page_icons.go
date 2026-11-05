@@ -102,4 +102,6 @@ var pageIconPaths = map[string]string{
 	"play":     `<path d="M8.5 5.5l9 6.5-9 6.5z"/>`,
 	"download": `<path d="M12 4v10.5"/><path d="M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19.5h14"/>`,
 	"power":    `<path d="M12 3.5v8"/><path d="M7.2 6.4a7.5 7.5 0 1 0 9.6 0"/>`,
+	"folder":   `<path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>`,
+	"close":    `<path d="M6 6l12 12"/><path d="M18 6L6 18"/>`,
 }

@@ -192,6 +192,7 @@ var english = map[string]string{
 	"spool.deleteConfirm": "Delete this saved Utterance? Its audio cannot be recovered.",
 
 	"section.models":          "Models",
+	"model.catalogTitle":      "Model catalog",
 	"model.help":              "Download a Whisper model to this Server, then activate it. The recommendation follows the Server's device; a model stays in memory until the idle timeout.",
 	"model.noCatalog":         "Load the catalog to see the available models.",
 	"model.name":              "Model",
@@ -212,7 +213,7 @@ var english = map[string]string{
 	"model.idleTitle":         "Idle unload",
 	"model.idleHelp":          "Unload the model after this many seconds without a request. 0 keeps it in memory until the Server restarts.",
 	"model.idleLabel":         "Idle seconds",
-	"model.advancedTitle":     "Advanced: local model directory",
+	"model.advancedTitle":     "Local model directory",
 	"model.advancedHelp":      "Run a CTranslate2 directory outside the catalog, for example a converted or shared model. Activation checks the directory on the Server.",
 	"model.localPath":         "CTranslate2 directory",
 	"help.model.localPath":    "An absolute path on the Server host. The directory must contain config.json and model.bin.",

@@ -297,7 +297,7 @@ func TestSettingsNavigationGroupsRelatedScreens(t *testing.T) {
 		`data-nav="general" data-targets="general,startup,updates"`,
 		`data-nav="dictation" data-targets="dictation"`,
 		`data-nav="appearance" data-targets="appearance"`,
-		`data-nav="models" data-targets="models"`,
+		`data-nav="models" data-targets="models,models-idle,models-local"`,
 		`data-nav="spool" data-targets="spool"`,
 		// The grouped labels follow the Russian interface language.
 		`Общие</button>`,
@@ -311,6 +311,39 @@ func TestSettingsNavigationGroupsRelatedScreens(t *testing.T) {
 	}
 	if got := strings.Count(page, `data-nav="`); got != 7 {
 		t.Errorf("navigation has %d entries, want 7 grouped entries", got)
+	}
+}
+
+func TestModelsScreenSplitsIntoLogicalCards(t *testing.T) {
+	view := sampleView()
+	view.ModelLabels = shell.ModelLabels{
+		Title:         "Модели",
+		CatalogTitle:  "Каталог моделей",
+		Refresh:       "Обновить",
+		NoCatalog:     "Загрузите каталог.",
+		IdleTitle:     "Выгрузка при простое",
+		AdvancedTitle: "Локальная папка модели",
+	}
+	view.Servers.Models = &servers.ModelsView{}
+	page := shell.SettingsHTML(view)
+
+	wantNav := `data-nav="models" data-targets="models,models-idle,models-local"`
+	if !strings.Contains(page, wantNav) {
+		t.Errorf("models navigation does not show every card: %s", page)
+	}
+	// The catalog takes the full row; the two compact form cards share the
+	// next one, like the Dictation and Server screens.
+	for _, want := range []string{
+		`class="group group-wide" data-section="models"`,
+		`class="group" data-section="models-idle"`,
+		`class="group" data-section="models-local"`,
+		`>Каталог моделей</h2>`,
+		`>Выгрузка при простое</h2>`,
+		`>Локальная папка модели</h2>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("Models screen missing card %q", want)
+		}
 	}
 }
 
@@ -1106,6 +1139,7 @@ func TestPageRendersTheModelCatalogProgressAndIdleTimeout(t *testing.T) {
 	view := sampleView()
 	view.ModelLabels = shell.ModelLabels{
 		Title:             "Модели",
+		CatalogTitle:      "Каталог моделей",
 		Help:              "Скачайте модель.",
 		Refresh:           "Обновить модели",
 		NoCatalog:         "Загрузите каталог.",
@@ -1157,6 +1191,7 @@ func TestPageRendersTheModelCatalogProgressAndIdleTimeout(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, view)
 	for _, want := range []string{
 		"Модели",
+		"Каталог моделей",
 		"Рекомендация",
 		"145.0 MB",
 		"600.0 MB",
@@ -1164,6 +1199,7 @@ func TestPageRendersTheModelCatalogProgressAndIdleTimeout(t *testing.T) {
 		"хорошее",
 		`data-model="base"`,
 		`data-action="download-model"`,
+		`title="Скачать" aria-label="Скачать"`,
 		`data-action="activate-model"`,
 		`data-action="delete-model"`,
 		`data-confirm="Удалить модель?"`,
