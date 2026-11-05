@@ -85,12 +85,18 @@ func navEntries(view SettingsView) []navEntry {
 	}
 
 	dictationTargets := sectionTargets(view, "dictation")
-	dictationTargets = append(dictationTargets, sectionTargets(view, "appearance")...)
 	if len(dictationTargets) > 0 {
 		entries = append(entries, navEntry{
 			Key:     "dictation",
 			Label:   catalog.T("section.dictation"),
 			Targets: dictationTargets,
+		})
+	}
+	if appearance := sectionTargets(view, "appearance"); len(appearance) > 0 {
+		entries = append(entries, navEntry{
+			Key:     "appearance",
+			Label:   catalog.T("section.appearance"),
+			Targets: appearance,
 		})
 	}
 
@@ -121,6 +127,17 @@ func navEntries(view SettingsView) []navEntry {
 	return entries
 }
 
+// sectionIsWide marks the long Settings screens from the rendered section
+// list that need every column. The hand-built screens set group-wide where
+// they are rendered. Short cards share a row.
+func sectionIsWide(id string) bool {
+	switch id {
+	case "dictation", "appearance":
+		return true
+	}
+	return false
+}
+
 // sectionTargets returns id when the view rendered that section.
 func sectionTargets(view SettingsView, id string) []string {
 	for _, section := range view.Sections {
@@ -142,8 +159,13 @@ func SettingsHTML(view SettingsView) string {
 	}
 	var out strings.Builder
 	for _, section := range view.Sections {
-		out.WriteString(`<section class="group" data-section="` + escape(section.ID) + `">`)
+		classes := "group"
+		if sectionIsWide(section.ID) {
+			classes += " group-wide"
+		}
+		out.WriteString(`<section class="` + classes + `" data-section="` + escape(section.ID) + `">`)
 		out.WriteString(`<h2>` + sectionIcon(section.ID) + escape(section.Title) + `</h2>`)
+		out.WriteString(`<div class="field-grid">`)
 		// GNOME's system keybindings belong to the hotkeys they bind: the offer
 		// sits directly under the last hotkey field of the Dictation screen, not
 		// on a screen of its own or at the bottom of the pane.
@@ -164,7 +186,7 @@ func SettingsHTML(view SettingsView) string {
 				out.WriteString(gnomeShortcutsHTML(view.Gnome))
 			}
 		}
-		out.WriteString(`</section>`)
+		out.WriteString(`</div></section>`)
 	}
 	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelLabels, view.ModelState))
 	out.WriteString(spoolHTML(view.Spool))
@@ -225,7 +247,7 @@ func gnomeShortcutsHTML(view GnomeShortcutsView) string {
 // rebuilding any other screen.
 func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels, modelState string) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="servers">`)
+	out.WriteString(`<section class="group group-wide" data-section="servers">`)
 	out.WriteString(`<h2>` + pageIcon("server") + escape(labels.Title) + `</h2>`)
 	if len(view.Profiles) == 0 {
 		out.WriteString(`<p class="help">` + escape(labels.NoServers) + `</p>`)
@@ -304,7 +326,7 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
-	out.WriteString(`<section class="group" data-section="exposure">`)
+	out.WriteString(`<section class="group group-wide" data-section="exposure">`)
 	out.WriteString(`<h2>` + escape(labels.ExposureTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.ExposureHelp) + `</p>`)
 	live := activeNetwork(view)
@@ -354,7 +376,7 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
-	out.WriteString(`<section class="group" data-section="devices">`)
+	out.WriteString(`<section class="group group-wide" data-section="devices">`)
 	out.WriteString(`<h2>` + escape(labels.Devices) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.DevicesFor) + `</p>`)
 	out.WriteString(`<div class="actions-inline">`)
@@ -445,7 +467,7 @@ func spoolHTML(view SpoolView) string {
 		return ""
 	}
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="spool">`)
+	out.WriteString(`<section class="group group-wide" data-section="spool">`)
 	out.WriteString(`<h2>` + pageIcon("spool") + escape(view.Labels.Title) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.Help) + `</p>`)
 	if view.Error != "" {
@@ -493,7 +515,7 @@ func spoolHTML(view SpoolView) string {
 // deletion actions, the idle timeout, and the local CTranslate2 directory.
 func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="models">`)
+	out.WriteString(`<section class="group group-wide" data-section="models">`)
 	out.WriteString(`<h2>` + pageIcon("models") + escape(labels.Title) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.Help) + `</p>`)
 	out.WriteString(`<div class="actions-inline">`)
@@ -676,7 +698,7 @@ func startupHTML(view StartupView, labels ServerLabels) string {
 		return ""
 	}
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="startup">`)
+	out.WriteString(`<section class="group group-wide" data-section="startup">`)
 	out.WriteString(`<h2>` + pageIcon("power") + escape(labels.StartupTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.StartupHelp) + `</p>`)
 	out.WriteString(`<div class="field field-toggle" data-startup="switch">`)
@@ -807,7 +829,7 @@ func updatesHTML(view UpdateView) string {
 // are read-only.
 func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group server-settings" data-section="server-settings">`)
+	out.WriteString(`<section class="group group-wide server-settings" data-section="server-settings">`)
 	out.WriteString(`<h2>` + pageIcon("gear") + escape(labels.SettingsTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.SettingsHelp) + `</p>`)
 	if view.ConfigError != "" {
@@ -992,7 +1014,7 @@ func writeServerLanguages(out *strings.Builder, id, path, value, disabled string
 // user pastes into a bug report.
 func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="diagnostics">`)
+	out.WriteString(`<section class="group group-wide" data-section="diagnostics">`)
 	out.WriteString(`<h2>` + pageIcon("activity") + escape(labels.DiagnosticsTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.DiagnosticsHelp) + `</p>`)
 	out.WriteString(`<dl class="diagnostics-versions">`)
@@ -1291,7 +1313,7 @@ const pageHTML = `<!doctype html>
   .status-meta > div { display:flex; align-items:baseline; gap:5px; }
   .status-meta dt { color:var(--muted); font-size:11px; }
   .status-meta dd { margin:0; font-size:12px; overflow-wrap:anywhere; }
-  .settings-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:186px minmax(0,1fr); gap:12px; }
+  .settings-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:206px minmax(0,1fr); gap:12px; }
   #settings { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
   .settings-single { grid-template-columns:minmax(0,1fr); }
   .settings-nav { display:flex; flex-direction:column; gap:2px; overflow-y:auto; overflow-x:hidden; min-height:0; padding:2px 4px 2px 0; scrollbar-width:thin; }
@@ -1301,16 +1323,39 @@ const pageHTML = `<!doctype html>
   .nav-item.is-active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
   .nav-item.is-active .icon { opacity:1; }
   .settings-pane { display:flex; flex-direction:column; gap:10px; min-height:0; overflow-y:auto; padding:2px 6px 8px 2px; scrollbar-width:thin; }
+  /* Short cards share a line and grow to fill it, so two cards split the row
+     and three split it three ways. Wide content marks itself .group-wide and
+     always starts a line of its own. Cards on one line stretch to one height. */
+  .settings-layout:not(.settings-single) .settings-pane { flex-direction:row; flex-wrap:wrap; align-content:flex-start; align-items:stretch; }
+  .settings-layout:not(.settings-single) .settings-pane > .group { flex:1 1 300px; min-width:0; }
+  .settings-layout:not(.settings-single) .settings-pane > .group-wide { flex:1 1 100%; }
+  .settings-layout:not(.settings-single) .settings-pane > .config-path,
+  .settings-layout:not(.settings-single) .settings-pane > .device-error { flex:1 1 100%; }
+  /* Three short General-screen cards share one row; the taller autostart
+     card follows at full width instead of stretching a nearly empty card
+     beside it. */
+  .settings-pane > [data-section='updates'] { order:1; }
+  .settings-pane > [data-section='wizard-launcher'] { order:2; }
+  .settings-pane > [data-section='startup'] { order:3; }
+  .settings-pane > .config-path, .settings-pane > .device-error { order:4; }
+  /* A card with many short fields uses two columns of fields, so it stays
+     compact without turning every input into a half-width control. */
+  .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:2px 20px; align-items:start; }
+  .field-grid > .field { border-top:none; padding:6px 0; }
+  .field-grid > .gnome-offer { grid-column:1 / -1; margin:6px 0 2px; }
+  .group[data-section='dictation'] > .field-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 900px) {
+    .group[data-section='dictation'] > .field-grid, .server-fields { grid-template-columns:minmax(0, 1fr); }
+  }
   /* Author display rules (notably the flex Server form) otherwise beat the
      user-agent [hidden] rule, so the Server screen stayed visible on every
      other screen. */
   .settings-pane [data-section][hidden] { display:none !important; }
   .settings-pane > .group { flex:0 0 auto; }
-  /* The Server form is long: its fields scroll on their own so the Save
-     button stays at the bottom of the pane whatever the form height is. */
-  .settings-pane > .group.server-settings { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
-  .server-fields { flex:1 1 auto; min-height:0; overflow-y:auto; padding-right:4px; scrollbar-width:thin; }
-  .server-save { flex:0 0 auto; display:flex; justify-content:flex-end; margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); }
+  .server-fields { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:2px 20px; align-items:start; }
+  .server-fields > h3 { grid-column:1 / -1; }
+  .server-fields > .field { border-top:none; padding:6px 0; }
+  .server-save { display:flex; justify-content:flex-end; margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); }
   .settings-single .settings-pane { overflow:hidden; }
   .settings-single .wizard { flex:1 1 auto; display:grid; grid-template-columns:224px minmax(0,1fr); min-height:0; padding:0; overflow:hidden; }
   /* The rail carries the sequence; the main column carries one task. The
@@ -1397,7 +1442,9 @@ const pageHTML = `<!doctype html>
   .gnome-head h3 { margin:0; font-size:12.5px; font-weight:600; color:var(--fg); text-transform:none; letter-spacing:0; }
   .gnome-offer .help { margin-top:2px; }
   .gnome-offer .actions-inline { margin:8px 0 0; }
-  .shortcut-offer { margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); }
+  /* The shortcut offer is a wizard panel already; an extra margin and a
+     smaller padding made it start lower and end higher than the card beside
+     it. */
   .shortcut-offer h4 { margin:0 0 3px; font-size:12.5px; }
   .config-path { color:var(--muted); font-size:11.5px; margin:0 4px; }
   .config-path code { overflow-wrap:anywhere; }
@@ -1431,13 +1478,10 @@ const pageHTML = `<!doctype html>
   .health[data-health="offline"], .health[data-health="unauthenticated"], .health[data-health="mismatch"] { color:var(--danger); }
   .wizard-progress { color:var(--muted); font-size:11.5px; margin:0 0 3px; }
   .wizard-steps { flex:1 1 auto; min-height:0; list-style:none; display:flex; flex-direction:column; gap:1px; padding:0 2px 0 0; margin:0; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; }
-  .wizard-steps li { position:relative; display:flex; align-items:flex-start; gap:9px; padding:5px 7px; border-radius:7px; color:var(--muted); }
-  .wizard-steps li:not(:last-child)::before { content:""; position:absolute; left:15px; top:23px; bottom:-1px; width:1px; background:var(--line); }
+  .wizard-steps li { position:relative; display:flex; align-items:center; gap:9px; min-height:28px; padding:3px 7px; border-radius:7px; color:var(--muted); }
+  .wizard-steps li:not(:last-child)::before { content:""; position:absolute; left:15px; top:22px; bottom:-1px; width:1px; background:var(--line); }
   .wizard-step-number { position:relative; z-index:1; display:inline-flex; align-items:center; justify-content:center; flex:0 0 18px; width:18px; height:18px; border-radius:999px; border:1px solid var(--line); background:var(--card); font-size:10px; }
-  .wizard-step-text { display:flex; flex-direction:column; gap:1px; min-width:0; }
-  .wizard-step-title { font-size:12px; font-weight:600; }
-  .wizard-step-status { font-size:10.5px; color:var(--muted); }
-  .wizard-steps li[data-status="pending"] .wizard-step-status { display:none; }
+  .wizard-step-title { min-width:0; font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   .wizard-steps li[data-status="current"] { background:var(--accent-soft); color:var(--accent); }
   .wizard-steps li[data-status="current"] .wizard-step-number { background:var(--accent); color:var(--on-accent); border-color:transparent; }
   .wizard-steps li[data-status="done"] .wizard-step-number { background:#2f9e441f; color:var(--ok); border-color:transparent; }
@@ -1447,7 +1491,7 @@ const pageHTML = `<!doctype html>
   button.ghost { background:transparent; border-color:transparent; color:var(--muted); padding:4px 6px; }
   button.ghost:hover { background:var(--bg-soft); color:var(--fg); }
   .wizard h3 { display:flex; align-items:center; gap:7px; font-size:15px; margin:0 0 4px; color:var(--fg); letter-spacing:-.005em; text-transform:none; }
-  .wizard-lede { color:var(--muted); font-size:12px; margin:0 0 14px; max-width:66ch; }
+  .wizard-lede { color:var(--muted); font-size:12px; margin:0 0 10px; max-width:66ch; }
   .wizard h4 { font-size:12.5px; margin:0 0 5px; color:var(--fg); }
   .wizard-panel { padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card-2); }
   .wizard-panel > :last-child { margin-bottom:0; }
@@ -1472,9 +1516,9 @@ const pageHTML = `<!doctype html>
   .wizard-panel-fill textarea { flex:1 1 auto; min-height:112px; }
   .wizard-facts { list-style:none; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; padding:0; margin:0; }
   .wizard-facts li { padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); font-size:12.5px; font-weight:600; overflow-wrap:anywhere; }
-  .wizard-table { margin-top:10px; border:1px solid var(--line); border-radius:9px; overflow-x:auto; }
+  .wizard-table { margin-top:8px; border:1px solid var(--line); border-radius:9px; overflow-x:auto; }
   .wizard-table .models { margin:0; }
-  .wizard-table .models th, .wizard-table .models td { padding:7px 10px; }
+  .wizard-table .models th, .wizard-table .models td { padding:5px 10px; }
   .wizard-try-status { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin:0 0 10px; font-size:12px; color:var(--muted); }
   .wizard-try-label { opacity:.75; }
   .wizard-sep { opacity:.5; }
@@ -1484,7 +1528,13 @@ const pageHTML = `<!doctype html>
   .wizard-footer-actions { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-left:auto; }
   .wizard-footer-actions .primary { margin-left:8px; }
   .wizard textarea { resize:vertical; }
-  .shortcut-offer h4 { margin-bottom:2px; }
+  @media (max-height: 600px) {
+    /* Seven single-line steps fit even the shortest window: drop the
+       explanatory subtitle and tighten the rail instead of scrolling it. */
+    .wizard-rail { gap:8px; padding:10px 12px; }
+    .wizard-subtitle { display:none; }
+    .wizard-rail-actions { padding-top:6px; }
+  }
   @media (max-width: 820px) {
     .settings-single .wizard { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); }
     .wizard-rail { flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 12px; border-right:none; border-bottom:1px solid var(--line-soft); overflow:visible; }
@@ -1763,9 +1813,11 @@ const pageHTML = `<!doctype html>
     var host = document.getElementById("settings");
     var pane = document.getElementById("settings-pane");
     var fields = document.querySelector("#settings .server-fields");
+    var wizardBody = document.querySelector("#settings .wizard-body");
     var previousSection = activeSection;
     var previousScroll = pane ? pane.scrollTop : 0;
     var previousFields = fields ? fields.scrollTop : 0;
+    var previousWizardBody = wizardBody ? wizardBody.scrollTop : 0;
     var edits = captureEdits(host);
     var focus = captureFocus(host);
     if (host) host.innerHTML = (v && v.html) || "";
@@ -1807,14 +1859,17 @@ const pageHTML = `<!doctype html>
     if (previousSection && previousSection === activeSection) {
       var nextPane = document.getElementById("settings-pane");
       var nextFields = document.querySelector("#settings .server-fields");
+      var nextWizardBody = document.querySelector("#settings .wizard-body");
       if (nextPane) nextPane.scrollTop = previousScroll;
       if (nextFields) nextFields.scrollTop = previousFields;
+      if (nextWizardBody) nextWizardBody.scrollTop = previousWizardBody;
       // WebKit can apply the new layout after the assignment; repeat on the
       // next frame so the position survives a taller or shorter render.
       if (window.requestAnimationFrame) {
         window.requestAnimationFrame(function () {
           if (nextPane && nextPane.isConnected) nextPane.scrollTop = previousScroll;
           if (nextFields && nextFields.isConnected) nextFields.scrollTop = previousFields;
+          if (nextWizardBody && nextWizardBody.isConnected) nextWizardBody.scrollTop = previousWizardBody;
         });
       }
     }
@@ -1852,6 +1907,12 @@ const pageHTML = `<!doctype html>
     var current = host.querySelector("[data-section='wizard']");
     var edits = captureEdits(current);
     var focus = captureFocus(current);
+    // A download progress tick re-renders the whole wizard. Remember where the
+    // step content was scrolled so the table does not jump back to the top.
+    var body = current ? current.querySelector(".wizard-body") : null;
+    var bodyScroll = body ? body.scrollTop : 0;
+    var steps = current ? current.querySelector(".wizard-steps") : null;
+    var stepsScroll = steps ? steps.scrollTop : 0;
     var holder = document.createElement("div");
     holder.innerHTML = (v && v.html) || "";
     var next = holder.firstElementChild;
@@ -1864,6 +1925,16 @@ const pageHTML = `<!doctype html>
     var output = document.getElementById("wizard-try-output");
     if (output && output.focus) output.focus();
     else restoreFocus(rendered, focus);
+    var nextBody = rendered ? rendered.querySelector(".wizard-body") : null;
+    var nextSteps = rendered ? rendered.querySelector(".wizard-steps") : null;
+    if (nextBody) nextBody.scrollTop = bodyScroll;
+    if (nextSteps) nextSteps.scrollTop = stepsScroll;
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () {
+        if (nextBody && nextBody.isConnected) nextBody.scrollTop = bodyScroll;
+        if (nextSteps && nextSteps.isConnected) nextSteps.scrollTop = stepsScroll;
+      });
+    }
     revealWizardStep();
   }
   function renderMessages(m) {

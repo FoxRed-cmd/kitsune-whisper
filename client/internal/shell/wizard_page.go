@@ -74,12 +74,18 @@ func wizardStepsHTML(view wizard.View) string {
 		case wizard.StatusSkipped:
 			status = view.Labels.StepSkipped
 		}
-		out.WriteString(`<li data-step="` + escape(string(step.ID)) + `" data-status="` + escape(string(step.Status)) + `">`)
+		// The colour of the number already tells a done step from a pending
+		// one; a second status line doubled every row and pushed the list out
+		// of the rail. Keep the wording for screen readers only.
+		current := ""
+		if step.Status == wizard.StatusCurrent {
+			current = ` aria-current="step"`
+		}
+		out.WriteString(`<li data-step="` + escape(string(step.ID)) + `" data-status="` + escape(string(step.Status)) +
+			`" title="` + escape(status) + `"` + current + `>`)
 		out.WriteString(`<span class="wizard-step-number">` + fmt.Sprint(step.Number) + `</span>`)
-		out.WriteString(`<span class="wizard-step-text">`)
 		out.WriteString(`<span class="wizard-step-title">` + escape(step.Title) + `</span>`)
-		out.WriteString(`<span class="wizard-step-status">` + escape(status) + `</span>`)
-		out.WriteString(`</span></li>`)
+		out.WriteString(`</li>`)
 	}
 	out.WriteString(`</ol>`)
 	return out.String()
@@ -261,8 +267,6 @@ func wizardModelHTML(view wizard.View) string {
 		}
 		out.WriteString(`</tbody></table></div>`)
 	}
-	out.WriteString(`<div class="actions-inline"><button type="button" data-action="wizard-model-defer">` +
-		escape(view.Labels.ModelDefer) + `</button></div>`)
 	if view.DeferredModel != "" {
 		out.WriteString(`<p class="help">` + escape(fmt.Sprintf(view.Labels.ModelDeferred, view.DeferredModel)) + `</p>`)
 	}
@@ -289,19 +293,9 @@ func wizardServerHTML(view wizard.View) string {
 	var out strings.Builder
 	server := view.Server
 	out.WriteString(`<h3>` + escape(view.Labels.ServerTitle) + `</h3>`)
-	if len(server.Profiles) > 0 {
-		out.WriteString(`<div class="wizard-panel">`)
-		out.WriteString(`<h4>` + escape(view.Labels.ServerProfiles) + `</h4>`)
-		for _, profile := range server.Profiles {
-			out.WriteString(`<div class="row" data-profile="` + escape(profile.Name) + `"><strong>` + escape(profile.Name) + `</strong>`)
-			if profile.Active {
-				out.WriteString(` <span class="badge">` + escape(view.Labels.ServerActive) + `</span>`)
-			}
-			out.WriteString(` <span class="health">` + escape(profile.Health) + `</span>`)
-			out.WriteString(` <code>` + escape(profile.URL) + `</code></div>`)
-		}
-		out.WriteString(`</div>`)
-	}
+	// The status bar already names the active profile, so repeating the whole
+	// profile list here only stole height from the two forms. Pairing with a
+	// remote server switches to it automatically.
 	out.WriteString(`<div class="wizard-columns">`)
 	if server.LocalAvailable {
 		out.WriteString(`<div class="wizard-panel wizard-panel-stack">`)
@@ -392,8 +386,8 @@ func wizardFooterHTML(view wizard.View) string {
 		out.WriteString(`<button type="button" data-action="wizard-back">` + escape(view.Labels.Back) + `</button>`)
 	}
 	out.WriteString(`<div class="wizard-footer-actions">`)
-	out.WriteString(`<button type="button" class="ghost" data-action="wizard-skip">` + escape(view.Labels.Skip) + `</button>`)
 	out.WriteString(`<button type="button" class="ghost" data-action="wizard-skip-all">` + escape(view.Labels.SkipAll) + `</button>`)
+	out.WriteString(`<button type="button" class="ghost" data-action="wizard-skip">` + escape(view.Labels.Skip) + `</button>`)
 	next := view.Labels.Next
 	if view.Step == wizard.StepTry {
 		next = view.Labels.Finish

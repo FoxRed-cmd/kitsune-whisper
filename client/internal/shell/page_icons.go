@@ -17,6 +17,8 @@ func navIcon(key string) string {
 	switch key {
 	case "general":
 		return "sliders"
+	case "appearance":
+		return "monitor"
 	case "dictation":
 		return "mic"
 	case "server":

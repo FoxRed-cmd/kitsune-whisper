@@ -14,6 +14,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
 
 func sampleView() shell.SettingsView {
@@ -192,16 +193,19 @@ func TestPageUsesTheFullWindowWidthAndPreloadsDiagnostics(t *testing.T) {
 	}
 }
 
-func TestPageFitsAServerSettingsFormToThePaneHeight(t *testing.T) {
+func TestPageLaysServerSettingsOutInColumns(t *testing.T) {
 	page := shell.Page(shell.Snapshot{Version: "1.0.0"}, managementView())
-	if !strings.Contains(page, `class="group server-settings"`) {
-		t.Fatal("the Server settings form does not fill the pane")
+	if !strings.Contains(page, `class="group group-wide server-settings"`) {
+		t.Fatal("the Server settings form does not span the pane")
 	}
 	if !strings.Contains(page, `class="server-fields"`) || !strings.Contains(page, `class="server-save"`) {
 		t.Fatal("the Server settings body and its Save footer are not split")
 	}
-	if !strings.Contains(page, ".server-fields { flex:1 1 auto; min-height:0; overflow-y:auto;") {
-		t.Fatal("the Server fields are not the scrolling part")
+	if !strings.Contains(page, ".server-fields { display:grid;") {
+		t.Fatal("the Server fields are not laid out in columns")
+	}
+	if strings.Contains(page, ".server-fields { flex:1 1 auto;") {
+		t.Fatal("the Server fields collapsed into a nested scroller")
 	}
 }
 
@@ -245,20 +249,22 @@ func TestSettingsNavigationGroupsRelatedScreens(t *testing.T) {
 	page := shell.SettingsHTML(view)
 	for _, want := range []string{
 		`data-nav="general" data-targets="general,startup,updates"`,
-		`data-nav="dictation" data-targets="dictation,appearance"`,
+		`data-nav="dictation" data-targets="dictation"`,
+		`data-nav="appearance" data-targets="appearance"`,
 		`data-nav="models" data-targets="models"`,
 		`data-nav="spool" data-targets="spool"`,
 		// The grouped labels follow the Russian interface language.
 		`Общие</button>`,
 		`Распознавание речи</button>`,
+		`Индикатор на экране</button>`,
 		`Сервер</button>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing grouped entry %q", want)
 		}
 	}
-	if got := strings.Count(page, `data-nav="`); got != 6 {
-		t.Errorf("navigation has %d entries, want 6 grouped entries", got)
+	if got := strings.Count(page, `data-nav="`); got != 7 {
+		t.Errorf("navigation has %d entries, want 7 grouped entries", got)
 	}
 }
 
@@ -291,7 +297,7 @@ func TestSettingsPageRendersIndicatorPlacementAndLivePreview(t *testing.T) {
 	})
 	page := shell.Page(shell.Snapshot{}, view)
 	for _, want := range []string{
-		`data-nav="dictation" data-targets="dictation,appearance"`,
+		`data-nav="appearance" data-targets="appearance"`,
 		`data-section="appearance"`,
 		`class="position-grid"`,
 		`data-indicator-anchor="bottom-left" aria-pressed="true"`,
@@ -1267,6 +1273,100 @@ func TestServerSettingsHideTextProcessingAndSecuritySwitches(t *testing.T) {
 	} {
 		if strings.Contains(html, hidden) {
 			t.Errorf("the Server settings form still offers %s", hidden)
+		}
+	}
+}
+
+func TestWizardServerStepShowsOnlyTheConnectionForms(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	_ = wiz.GoTo(wizard.StepServer)
+	data := wizard.Data{
+		Catalog: i18n.For(i18n.Russian),
+		Servers: servers.View{
+			ActiveID: "local",
+			Profiles: []servers.Profile{{ID: "local", Name: "Local Server", URL: "https://localhost:8765", Active: true}},
+		},
+	}
+	page := shell.SettingsHTML(shell.SettingsView{Wizard: wiz.View(data)})
+	if strings.Contains(page, `data-profile="Local Server"`) {
+		t.Fatal("the Server step repeats the active profile that the status bar already names")
+	}
+	if !strings.Contains(page, `data-action="wizard-pair-remote"`) {
+		t.Fatal("the Server step lost its remote pairing form")
+	}
+}
+
+func TestWizardModelStepFitsWithoutTheDeferButton(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	_ = wiz.GoTo(wizard.StepModel)
+	data := wizard.Data{
+		Catalog: i18n.For(i18n.Russian),
+		Servers: servers.View{Models: &servers.ModelsView{
+			Device: "cpu", State: "loaded",
+			Models: []servers.Model{
+				{Name: "base", DiskBytes: 145_000_000, MemoryBytes: 600_000_000, Installed: true},
+				{Name: "small", DiskBytes: 484_000_000, MemoryBytes: 1_300_000_000},
+			},
+		}},
+	}
+	page := shell.SettingsHTML(shell.SettingsView{Wizard: wiz.View(data)})
+	if strings.Contains(page, `data-action="wizard-model-defer"`) {
+		t.Fatal("the Model step still offers a second skip button")
+	}
+	if !strings.Contains(page, `data-action="wizard-model-download"`) {
+		t.Fatal("the Model step lost its download action")
+	}
+}
+
+func TestWizardRailAndFooterStayCompact(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	page := shell.SettingsHTML(shell.SettingsView{Wizard: wiz.View(wizard.Data{Catalog: i18n.For(i18n.Russian)})})
+	if strings.Contains(page, "wizard-step-status") {
+		t.Fatal("the step list still prints a second status line under every step")
+	}
+	skipAll := strings.Index(page, `data-action="wizard-skip-all"`)
+	skip := strings.Index(page, `data-action="wizard-skip"`)
+	if skipAll < 0 || skip < 0 || skipAll > skip {
+		t.Fatal("Skip setup must come before Skip this step")
+	}
+}
+
+func TestWizardKeepsTheStepScrollAcrossARefresh(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	start := strings.Index(page, "function renderWizard(v)")
+	if start < 0 {
+		t.Fatal("the page has no wizard renderer")
+	}
+	end := strings.Index(page[start:], "function renderMessages(")
+	if end < 0 {
+		t.Fatal("could not delimit the wizard renderer")
+	}
+	renderer := page[start : start+end]
+	for _, want := range []string{
+		`querySelector(".wizard-body")`,
+		`nextBody.scrollTop = bodyScroll`,
+		`nextSteps.scrollTop = stepsScroll`,
+		"window.requestAnimationFrame",
+	} {
+		if !strings.Contains(renderer, want) {
+			t.Errorf("the wizard renderer does not preserve the step scroll: missing %q", want)
+		}
+	}
+}
+
+func TestSettingsPaneLaysShortCardsInColumns(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	for _, want := range []string{
+		`.settings-layout:not(.settings-single) .settings-pane { flex-direction:row; flex-wrap:wrap;`,
+		`.settings-layout:not(.settings-single) .settings-pane > .group-wide { flex:1 1 100%; }`,
+		`.field-grid { display:grid;`,
+		`class="group group-wide server-settings"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the Settings pane does not lay cards out in columns: missing %q", want)
 		}
 	}
 }
