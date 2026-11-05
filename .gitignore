@@ -5,6 +5,7 @@
 /kitsune.yaml
 /config/kitsune.yaml
 /.env
+/mise.local.toml
 
 ### Go ###
 *.exe
@@ -23,6 +24,7 @@ __pycache__/
 
 ### Installer outputs ###
 /dist/
+/dist-local/
 /wizard.json
 /packaging/windows/.cache/
 /packaging/windows/app.ico

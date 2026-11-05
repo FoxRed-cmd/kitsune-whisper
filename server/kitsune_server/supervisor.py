@@ -9,6 +9,12 @@ The Server is a background service, so it is supervised on every platform:
   and restart-on-failure. The command must be a windowless ``pythonw.exe``
   launcher; the bundle generates one.
 
+Registration and running are separate acts. :func:`install` writes the unit or
+task but leaves it disabled: Linux writes the unit and reloads systemd without
+enabling it, and Windows writes the task with its logon trigger disabled. The
+Server therefore starts on demand (:func:`start`) or after :func:`enable` and
+the next login, never as a side effect of installing.
+
 All side effects go through :class:`Environment`, whose command runner is
 injected, so generation and lifecycle are tested without touching a real
 session. Failures raise :class:`SupervisorError` with a single actionable line.
@@ -19,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import os
 import subprocess
+import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,6 +34,7 @@ from .config import config_home, platform_name
 
 UNIT_NAME = "kitsune-server.service"
 TASK_NAME = "kitsune-server"
+TASK_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 
 # APP_DIR_NAME names the per-user directory under the OS config home, next to
 # kitsune.yaml; the cached task XML lives there.
@@ -79,10 +87,11 @@ class SupervisorOptions:
 
 @dataclass(frozen=True)
 class SupervisorStatus:
-    """Whether the supervisor is installed and whether the Server is running."""
+    """Whether the supervisor is installed, running, and enabled at login."""
 
     installed: bool
     running: bool
+    enabled: bool = False
     detail: str = ""
 
 
@@ -167,11 +176,13 @@ WantedBy=default.target
 """
 
 
-def task_xml(options: SupervisorOptions) -> str:
-    """Render the per-user Task Scheduler definition registered at logon.
+def task_xml(options: SupervisorOptions, *, logon_trigger: bool = False) -> str:
+    """Render the per-user Task Scheduler definition.
 
     ``<Hidden>true</Hidden>`` plus a ``pythonw.exe`` command keeps the Server
-    invisible; restart-on-failure matches the systemd unit.
+    invisible; restart-on-failure matches the systemd unit. The logon trigger is
+    disabled by default so registration alone never starts the Server, while the
+    task-level ``<Enabled>true</Enabled>`` keeps ``schtasks /Run`` working.
     """
     user_id = ""
     if options.user:
@@ -179,6 +190,7 @@ def task_xml(options: SupervisorOptions) -> str:
         user_id = f"\n      <UserId>{escaped_user}</UserId>"
     arguments = " ".join(_windows_quote(part) for part in options.invocation.args)
     command = _xml_escape(options.invocation.command)
+    trigger_enabled = "true" if logon_trigger else "false"
     return f"""<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -187,7 +199,7 @@ def task_xml(options: SupervisorOptions) -> str:
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
-      <Enabled>true</Enabled>{user_id}
+      <Enabled>{trigger_enabled}</Enabled>{user_id}
     </LogonTrigger>
   </Triggers>
   <Principals>
@@ -245,18 +257,42 @@ def _xml_escape(value: str) -> str:
 
 
 def install(env: Environment, options: SupervisorOptions) -> None:
-    """Write the unit/task and enable it to start at login."""
+    """Write the unit/task and register it *disabled*. Never starts the Server.
+
+    Linux writes the unit and reloads the user manager; the unit is not enabled,
+    so it does not start at login until :func:`enable`. Windows creates the task
+    with its logon trigger disabled, so it never fires by itself while
+    ``schtasks /Run`` still starts it on demand.
+    """
     if env.os_name == "linux":
         _write_file(unit_path(env), systemd_unit(options))
         _check(env, ["systemctl", "--user", "daemon-reload"])
-        _check(env, ["systemctl", "--user", "enable", "--now", UNIT_NAME])
         return
     if env.os_name == "windows":
         _write_utf16_file(task_path(env), task_xml(options))
         _check(env, ["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(task_path(env)), "/F"])
-        # systemctl enable --now starts the unit; Task Scheduler only triggers
-        # at the next logon, so start it now to match.
-        _check(env, ["schtasks", "/Run", "/TN", TASK_NAME])
+        return
+    raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
+
+
+def enable(env: Environment) -> None:
+    """Enable the installed registration at login. Does not start the Server."""
+    if env.os_name == "linux":
+        _check(env, ["systemctl", "--user", "enable", UNIT_NAME])
+        return
+    if env.os_name == "windows":
+        _set_windows_logon_trigger(env, enabled=True)
+        return
+    raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
+
+
+def disable(env: Environment) -> None:
+    """Disable the installed registration at login. Does not stop the Server."""
+    if env.os_name == "linux":
+        _check(env, ["systemctl", "--user", "disable", UNIT_NAME])
+        return
+    if env.os_name == "windows":
+        _set_windows_logon_trigger(env, enabled=False)
         return
     raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
 
@@ -316,15 +352,17 @@ def restart(env: Environment) -> None:
 
 
 def status(env: Environment) -> SupervisorStatus:
-    """Report whether the supervisor is installed and the Server is running."""
+    """Report whether the supervisor is installed, enabled, and running."""
     if env.os_name == "linux":
         if not unit_path(env).is_file():
             return SupervisorStatus(installed=False, running=False)
         result = env.run(["systemctl", "--user", "is-active", UNIT_NAME])
+        enabled_result = env.run(["systemctl", "--user", "is-enabled", UNIT_NAME])
         detail = _one_line(result.stdout) or _one_line(result.stderr) or f"exit {result.returncode}"
         return SupervisorStatus(
             installed=True,
             running=result.ok and detail == "active",
+            enabled=_unit_enabled(enabled_result),
             detail=detail,
         )
     if env.os_name == "windows":
@@ -343,9 +381,82 @@ def status(env: Environment) -> SupervisorStatus:
         return SupervisorStatus(
             installed=True,
             running=detail.lower() == "running",
+            enabled=_windows_logon_enabled(env),
             detail=detail,
         )
     raise SupervisorError(f"unsupported platform {env.os_name!r}: only Linux and Windows")
+
+
+def _unit_enabled(result: CommandResult) -> bool:
+    state = _one_line(result.stdout) or _one_line(result.stderr)
+    return state in ("enabled", "enabled-runtime")
+
+
+def _windows_logon_enabled(env: Environment) -> bool:
+    """Read the logon trigger state from the registered task, falling back to its cache."""
+    query = env.run(["schtasks", "/Query", "/TN", TASK_NAME, "/XML"])
+    if query.ok:
+        parsed = _parse_logon_trigger(query.stdout)
+        if parsed is not None:
+            return parsed
+    try:
+        cached = task_path(env).read_text(encoding="utf-16")
+    except OSError:
+        return False
+    return _parse_logon_trigger(cached) or False
+
+
+def _set_windows_logon_trigger(env: Environment, *, enabled: bool) -> None:
+    """Rewrite the cached task with the logon trigger on/off and re-register it."""
+    path = task_path(env)
+    try:
+        current = path.read_text(encoding="utf-16")
+    except FileNotFoundError as exc:
+        raise SupervisorError(
+            "the Server task is not installed; run 'kitsune-server install' first"
+        ) from exc
+    _write_utf16_file(path, _with_logon_trigger(current, enabled=enabled))
+    _check(env, ["schtasks", "/Create", "/TN", TASK_NAME, "/XML", str(path), "/F"])
+
+
+def _parse_logon_trigger(xml: str) -> bool | None:
+    """Return the logon trigger's Enabled flag, or None when it cannot be read."""
+    root = _parse_task_xml(xml)
+    if root is None:
+        return None
+    trigger = root.find(f"{{{TASK_NAMESPACE}}}Triggers/{{{TASK_NAMESPACE}}}LogonTrigger")
+    if trigger is None:
+        return None
+    flag = trigger.find(f"{{{TASK_NAMESPACE}}}Enabled")
+    if flag is None:
+        return True
+    return (flag.text or "").strip().lower() == "true"
+
+
+def _with_logon_trigger(xml: str, *, enabled: bool) -> str:
+    root = _parse_task_xml(xml)
+    if root is None:
+        raise SupervisorError("the cached task definition is not valid XML")
+    trigger = root.find(f"{{{TASK_NAMESPACE}}}Triggers/{{{TASK_NAMESPACE}}}LogonTrigger")
+    if trigger is None:
+        raise SupervisorError("the cached task definition has no logon trigger")
+    flag = trigger.find(f"{{{TASK_NAMESPACE}}}Enabled")
+    if flag is None:
+        flag = ET.SubElement(trigger, f"{{{TASK_NAMESPACE}}}Enabled")
+    flag.text = "true" if enabled else "false"
+    ET.register_namespace("", TASK_NAMESPACE)
+    body = ET.tostring(root, encoding="unicode")
+    return '<?xml version="1.0" encoding="UTF-16"?>\n' + body + "\n"
+
+
+def _parse_task_xml(xml: str) -> ET.Element | None:
+    # ``schtasks /Query /XML`` may emit a UTF-16 stream that a text-mode pipe
+    # decoded byte by byte; drop the leftovers so the document still parses.
+    cleaned = xml.lstrip("\ufeff").replace("\x00", "")
+    try:
+        return ET.fromstring(cleaned)
+    except ET.ParseError:
+        return None
 
 
 def _command_for(
@@ -416,6 +527,8 @@ __all__ = [
     "SupervisorError",
     "SupervisorOptions",
     "SupervisorStatus",
+    "disable",
+    "enable",
     "install",
     "restart",
     "start",

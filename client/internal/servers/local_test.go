@@ -38,7 +38,7 @@ func (f *fakeLocalPair) pair(_ context.Context, url, name, pinned string) (trust
 	}, nil
 }
 
-func newLocalService(t *testing.T, pair *fakeLocalPair) (*servers.Service, *settings.Store, *trust.TokenStore) {
+func newLocalService(t *testing.T, pair *fakeLocalPair, onPaired func(string, string)) (*servers.Service, *settings.Store, *trust.TokenStore) {
 	t.Helper()
 	store, err := settings.Open(settings.Options{
 		Path: t.TempDir() + "/kitsune.yaml",
@@ -52,13 +52,14 @@ func newLocalService(t *testing.T, pair *fakeLocalPair) (*servers.Service, *sett
 		Store:     store,
 		Tokens:    tokens,
 		PairLocal: pair.pair,
+		OnPaired:  onPaired,
 	})
 	return service, store, tokens
 }
 
 func TestEnsureLocalCreatesAndSelectsTheProfile(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:abc"}
-	service, store, tokens := newLocalService(t, pair)
+	service, store, tokens := newLocalService(t, pair, nil)
 
 	profile, err := service.EnsureLocal(context.Background(), "")
 	if err != nil {
@@ -85,9 +86,57 @@ func TestEnsureLocalCreatesAndSelectsTheProfile(t *testing.T) {
 	}
 }
 
+func TestEnsureLocalReportsThePinToTheRunningTrustManager(t *testing.T) {
+	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:abc"}
+	var pairedIDs, pairedPins []string
+	service, _, _ := newLocalService(t, pair, func(profileID, fingerprint string) {
+		pairedIDs = append(pairedIDs, profileID)
+		pairedPins = append(pairedPins, fingerprint)
+	})
+
+	if _, err := service.EnsureLocal(context.Background(), ""); err != nil {
+		t.Fatalf("ensure local: %v", err)
+	}
+	if len(pairedIDs) != 1 {
+		t.Fatalf("pairing reported %d profiles, want 1", len(pairedIDs))
+	}
+	if pairedIDs[0] != config.LocalServerID || pairedPins[0] != "sha256:abc" {
+		t.Fatalf("reported profile = %q, pin = %q", pairedIDs[0], pairedPins[0])
+	}
+
+	// A no-op check of the now paired profile must not report the pin again.
+	if _, err := service.EnsureLocal(context.Background(), ""); err != nil {
+		t.Fatalf("second ensure: %v", err)
+	}
+	if len(pairedIDs) != 1 {
+		t.Fatalf("an already paired profile reported again: %d", len(pairedIDs))
+	}
+}
+
+func TestRepairLocalReportsTheReplacedPin(t *testing.T) {
+	pair := &fakeLocalPair{token: "ktn_old", fingerprint: "sha256:old"}
+	var pairedPins []string
+	service, _, _ := newLocalService(t, pair, func(_, fingerprint string) {
+		pairedPins = append(pairedPins, fingerprint)
+	})
+	profile, err := service.EnsureLocal(context.Background(), "")
+	if err != nil {
+		t.Fatalf("first ensure: %v", err)
+	}
+
+	pair.token = "ktn_new"
+	pair.fingerprint = "sha256:new"
+	if _, err := service.RepairLocal(context.Background(), profile.ID); err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if len(pairedPins) != 2 || pairedPins[1] != "sha256:new" {
+		t.Fatalf("reported pins = %v", pairedPins)
+	}
+}
+
 func TestEnsureLocalReusesAnExistingPairedProfile(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:abc"}
-	service, store, tokens := newLocalService(t, pair)
+	service, store, tokens := newLocalService(t, pair, nil)
 	if _, err := service.EnsureLocal(context.Background(), ""); err != nil {
 		t.Fatalf("first ensure: %v", err)
 	}
@@ -115,7 +164,7 @@ func TestEnsureLocalReusesAnExistingPairedProfile(t *testing.T) {
 
 func TestRepairLocalReplacesThePinAndToken(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_old", fingerprint: "sha256:old"}
-	service, store, tokens := newLocalService(t, pair)
+	service, store, tokens := newLocalService(t, pair, nil)
 	profile, err := service.EnsureLocal(context.Background(), "")
 	if err != nil {
 		t.Fatalf("first ensure: %v", err)
@@ -146,7 +195,7 @@ func TestRepairLocalReplacesThePinAndToken(t *testing.T) {
 
 func TestRepairLocalDoesNotSwitchAwayFromARemoteServer(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:old"}
-	service, store, _ := newLocalService(t, pair)
+	service, store, _ := newLocalService(t, pair, nil)
 	profile, err := service.EnsureLocal(context.Background(), "")
 	if err != nil {
 		t.Fatalf("first ensure: %v", err)
@@ -168,7 +217,7 @@ func TestRepairLocalDoesNotSwitchAwayFromARemoteServer(t *testing.T) {
 
 func TestRepairLocalKeepsTheOldCredentialsWhenPairingFails(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_old", fingerprint: "sha256:old"}
-	service, store, tokens := newLocalService(t, pair)
+	service, store, tokens := newLocalService(t, pair, nil)
 	profile, err := service.EnsureLocal(context.Background(), "")
 	if err != nil {
 		t.Fatalf("first ensure: %v", err)
@@ -190,7 +239,7 @@ func TestRepairLocalKeepsTheOldCredentialsWhenPairingFails(t *testing.T) {
 
 func TestRepairLocalRejectsANonLocalProfile(t *testing.T) {
 	pair := &fakeLocalPair{}
-	service, store, _ := newLocalService(t, pair)
+	service, store, _ := newLocalService(t, pair, nil)
 	profiles := []any{map[string]any{
 		"id": "remote", "name": "Remote", "url": "https://desktop.local:8765",
 		"fingerprint": "", "auto_pair": false,
@@ -209,7 +258,7 @@ func TestRepairLocalRejectsANonLocalProfile(t *testing.T) {
 
 func TestEnsureLocalSavesTheProfileWhenPairingFails(t *testing.T) {
 	pair := &fakeLocalPair{err: errors.New("connection refused")}
-	service, store, _ := newLocalService(t, pair)
+	service, store, _ := newLocalService(t, pair, nil)
 
 	profile, err := service.EnsureLocal(context.Background(), "")
 	if err == nil {
@@ -225,7 +274,7 @@ func TestEnsureLocalSavesTheProfileWhenPairingFails(t *testing.T) {
 
 func TestEnsureLocalRejectsANonLoopbackAddress(t *testing.T) {
 	pair := &fakeLocalPair{}
-	service, store, _ := newLocalService(t, pair)
+	service, store, _ := newLocalService(t, pair, nil)
 	before := store.Snapshot().Config.ActiveServer
 
 	_, err := service.EnsureLocal(context.Background(), "https://desktop.local:8765")
@@ -242,7 +291,7 @@ func TestEnsureLocalRejectsANonLoopbackAddress(t *testing.T) {
 
 func TestEnsureLocalUpdatesTheAddressWhenGiven(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:abc"}
-	service, store, _ := newLocalService(t, pair)
+	service, store, _ := newLocalService(t, pair, nil)
 
 	profile, err := service.EnsureLocal(context.Background(), "http://127.0.0.1:9999")
 	if err != nil {
@@ -270,7 +319,7 @@ func TestEnsureLocalUpdatesTheAddressWhenGiven(t *testing.T) {
 
 func TestProfileViewCarriesAutoPair(t *testing.T) {
 	pair := &fakeLocalPair{}
-	service, _, _ := newLocalService(t, pair)
+	service, _, _ := newLocalService(t, pair, nil)
 	view := service.View()
 	if len(view.Profiles) != 1 {
 		t.Fatalf("profiles = %+v", view.Profiles)
@@ -282,7 +331,7 @@ func TestProfileViewCarriesAutoPair(t *testing.T) {
 
 func TestEnsureLocalLeavesAnUnchangedPairedProfileOnDisk(t *testing.T) {
 	pair := &fakeLocalPair{token: "ktn_local", fingerprint: "sha256:abc"}
-	service, store, _ := newLocalService(t, pair)
+	service, store, _ := newLocalService(t, pair, nil)
 	if _, err := service.EnsureLocal(context.Background(), ""); err != nil {
 		t.Fatalf("first ensure: %v", err)
 	}

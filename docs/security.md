@@ -148,8 +148,9 @@ Before exposing a Server:
 - remember that `/health` is intentionally unauthenticated, so a port scanner
   can confirm the Server is alive.
 
-`/health` reports liveness and the release version only. It never reveals the
-model, device, Devices, or configuration.
+`/health` reports liveness, the release version, and whether a model is loaded
+(plus its catalog name when loaded). It never reveals the device, the configured
+model path, Devices, or configuration.
 
 ## Docker
 

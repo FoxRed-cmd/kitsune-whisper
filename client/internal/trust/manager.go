@@ -57,10 +57,18 @@ func (m *Manager) Pin(profileID string) string {
 	return m.profiles[profileID]
 }
 
-func (m *Manager) remember(profile config.ServerProfile) {
+// RememberPin records one profile's fingerprint for this process. Pairing
+// flows that do not go through Ensure call it after they save a new pin, so a
+// transcriber built before the pairing picks up the certificate without a
+// runtime restart.
+func (m *Manager) RememberPin(profileID, fingerprint string) {
 	m.mu.Lock()
-	m.profiles[profile.ID] = NormalizeFingerprint(profile.Fingerprint)
+	m.profiles[profileID] = NormalizeFingerprint(fingerprint)
 	m.mu.Unlock()
+}
+
+func (m *Manager) remember(profile config.ServerProfile) {
+	m.RememberPin(profile.ID, profile.Fingerprint)
 }
 
 // Token returns the stored token for a profile, or ErrNoToken.

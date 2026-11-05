@@ -5,15 +5,82 @@
 Installs, upgrades, or removes kitsune-whisper on Windows without elevation.
 
 .DESCRIPTION
-Downloads the per-user setup executable from the release, verifies its SHA-256
-against checksums.txt, and runs it. The setup installs the Client with its Tray
-and Settings window, the native Server bundle, WebView2 when missing, the Start
-Menu entry, and both per-user logon tasks.
+Downloads the release's Client archive and/or native Server bundle, verifies
+checksums.txt against the release's detached ECDSA P-256 signature, verifies
+every archive against checksums.txt, and only then installs it under the
+current user's own programs directory:
 
-Re-run it to upgrade. Existing configuration, models, Devices, certificates, and
-logs are kept. Use -Uninstall to remove the binaries and tasks; add
--RemoveModels or -RemoveServerData for those data classes, or -Purge to remove
-all user data.
+  %LOCALAPPDATA%\Programs\kitsune-whisper\bin      Client and Server launcher
+  %LOCALAPPDATA%\Programs\kitsune-whisper\Server   native Server bundle
+  %LOCALAPPDATA%\Programs\kitsune-whisper\uninstall.ps1
+
+The installer writes an Apps & Features entry, adds the bin directory to the
+user PATH, and stops there. It never asks for administrator rights, never
+starts the Client or the Server, and never enables a logon task: the Server's
+Task Scheduler registration is created disabled, so `schtasks /Run` starts it on
+demand but nothing starts at login.
+
+Re-run the script to upgrade in place. Configuration in
+%APPDATA%\kitsune-whisper and models are kept. An existing CUDA runtime
+directory (Server\lib\nvidia) is preserved across an upgrade.
+
+The Microsoft Edge WebView2 Runtime and every other dependency are not
+installed or downloaded. A missing dependency produces a warning that points at
+the README Dependencies section; the README (quick reference) and
+docs/dependencies.md (full matrix) own the package commands.
+
+The installer writes %LOCALAPPDATA%\kitsune-whisper\install.json with the
+version, the Components and a UTC timestamp. Re-running upgrades in place; a
+lower version is refused unless -Force is passed. -Check reports installed
+versus available versions and changes nothing.
+
+.PARAMETER Version
+Install VERSION instead of the latest release (also KITSUNE_VERSION).
+
+.PARAMETER Check
+Report the manifest path, installed and available versions, and installed
+Components; change nothing. Works non-interactively.
+
+.PARAMETER Force
+Allow installing a version older than the manifest's. An equal version is
+always allowed.
+
+.PARAMETER ClientOnly
+Install only the Client. The Server bundle and its task are not installed.
+
+.PARAMETER ServerOnly
+Install only the Server bundle and launcher. No Client, config or shortcut.
+
+.PARAMETER From
+Install from release artifacts in this directory (also
+KITSUNE_ARTIFACTS_DIR). The directory must contain checksums.txt and
+checksums.txt.sig (unless -Insecure).
+
+.PARAMETER ForceConfig
+Overwrite an existing %APPDATA%\kitsune-whisper\kitsune.yaml.
+
+.PARAMETER DryRun
+Print the plan and change nothing.
+
+.PARAMETER Insecure
+Skip the release signature check. For local development only; the SHA-256
+checksums are still verified. Never use it for a download you do not control.
+
+.PARAMETER Uninstall
+Remove the binaries, Server bundle, supervisor tasks, Start Menu shortcut, PATH
+entry and Apps & Features entry. Configuration, models, certificates, pairing
+state and logs are kept.
+
+.PARAMETER Purge
+With -Uninstall: also remove configuration, models, cache/state, certificates,
+pairing state, logs, spool, stored tokens and the install directory, leaving
+nothing of ours.
+
+.PARAMETER RemoveModels
+With -Uninstall: delete downloaded models only.
+
+.PARAMETER RemoveServerData
+With -Uninstall: delete Server certificates, Devices, logs and soft-stop state.
 
 One-liner:
 
@@ -22,9 +89,18 @@ One-liner:
 .EXAMPLE
 ./install.ps1
 ./install.ps1 -Version v1.2.3
+./install.ps1 -ClientOnly
+./install.ps1 -ServerOnly
+./install.ps1 -Check
+./install.ps1 -Check -From .\dist
+./install.ps1 -Force -Version v1.0.0
+./install.ps1 -ForceConfig
+./install.ps1 -DryRun -From .\dist
+./install.ps1 -Insecure -From .\dist
 ./install.ps1 -Uninstall
-./install.ps1 -Uninstall -RemoveModels -RemoveServerData
 ./install.ps1 -Uninstall -Purge
+./install.ps1 -Uninstall -RemoveModels
+./install.ps1 -Uninstall -RemoveServerData
 #>
 [CmdletBinding()]
 param(
@@ -33,94 +109,1130 @@ param(
     [switch]$Purge,
     [switch]$RemoveModels,
     [switch]$RemoveServerData,
-    [switch]$ForceConfig
+    [switch]$ClientOnly,
+    [switch]$ServerOnly,
+    [switch]$ForceConfig,
+    [switch]$Force,
+    [switch]$Check,
+    [switch]$DryRun,
+    [switch]$Insecure,
+    [string]$From = $(if ($env:KITSUNE_ARTIFACTS_DIR) { $env:KITSUNE_ARTIFACTS_DIR } else { '' })
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$ProgressPreference = 'SilentlyContinue'
+
+if (-not $env:LOCALAPPDATA) {
+    throw 'kitsune-whisper releases are built for 64-bit Windows; run this script on Windows.'
+}
+
+$Repo = 'FoxRed-cmd/kitsune-whisper'
+$ClientAsset = 'kitsune-client_windows_amd64.zip'
+$ServerAsset = 'kitsune-server_windows_amd64.tar.gz'
+
+# The release key that signs checksums.txt. It is the same PEM committed at
+# packaging/keys/kitsune-release-public.pem; pinning it here means a compromised
+# download host cannot substitute both the checksums and their signature.
+$ReleasePublicKeyPem = @'
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEGh5umJxHjCLuQS4EVIkydw0zrLKU
+f+HckG02s6mF/HzNPpGCLIZ6RBotAeC5KTfg6B0mmMnLopxnc1WKln/kYQ==
+-----END PUBLIC KEY-----
+'@
+
+# The per-user programs convention, not a machine-wide directory.
+$InstallRoot = Join-Path $env:LOCALAPPDATA 'Programs\kitsune-whisper'
+$BinDir = Join-Path $InstallRoot 'bin'
+$ServerRoot = Join-Path $InstallRoot 'Server'
+$UninstallShim = Join-Path $InstallRoot 'uninstall.ps1'
+$ConfigDir = Join-Path $env:APPDATA 'kitsune-whisper'
+$ConfigPath = Join-Path $ConfigDir 'kitsune.yaml'
+$StateDir = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
+$ManifestPath = Join-Path $StateDir 'install.json'
+$HomeDir = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { '' }
+$ModelDir = if ($HomeDir) { Join-Path $HomeDir '.cache\kitsune-whisper\models' } else { '' }
+$StartMenuShortcut = Join-Path $env:APPDATA `
+    'Microsoft\Windows\Start Menu\Programs\kitsune-whisper.lnk'
+$UninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\kitsune-whisper'
+$WebView2Client = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+$WebView2Help = 'https://developer.microsoft.com/microsoft-edge/webview2/'
+$ReadmeDependencies = "https://github.com/$Repo/blob/main/README.md#dependencies"
+
+# Stable dependency identifiers. The README Dependencies section and the tests
+# may rely on them; warnings never print a package-manager command.
+$DepWebView2 = 'webview2'
+$DepWindowsVersion = 'windows-version'
+$DepWindows64 = 'windows-64-bit'
+$MinimumWindowsBuild = 17763  # Windows 10 1809, the oldest serviced release.
+
+$Temp = ''
+$AvailableVersion = ''
+
+function Write-Step {
+    param([string]$Message)
+    Write-Host "kitsune-whisper: $Message"
+}
+
+function Get-BaseUrl {
+    if ($Version -eq 'latest') {
+        return "https://github.com/$Repo/releases/latest/download"
+    }
+    return "https://github.com/$Repo/releases/download/$Version"
+}
+
+# -- versions and the install manifest ------------------------------------
+
+function Get-VersionNumber {
+    param([string]$Value)
+    return ($Value -replace '^[vV]', '')
+}
+
+# Get-LocalArtifactVersion reads the version an offline artifact directory
+# carries: a VERSION file, or the Server bundle's own manifest. It mirrors
+# install.sh, so -From works without network access.
+function Get-LocalArtifactVersion {
+    if (-not $From) {
+        return ''
+    }
+    $versionFile = Join-Path $From 'VERSION'
+    if (Test-Path -LiteralPath $versionFile -PathType Leaf) {
+        return ((Get-Content -LiteralPath $versionFile -Raw) -replace '\s', '')
+    }
+    $archive = Join-Path $From $ServerAsset
+    if (Test-Path -LiteralPath $archive -PathType Leaf) {
+        try {
+            $json = & (Get-TarExecutable) '-xOf' $archive 'bundle.json' 2>$null
+            if ($LASTEXITCODE -eq 0 -and $json) {
+                $bundle = ($json -join "`n") | ConvertFrom-Json
+                if ($bundle.PSObject.Properties['version'] -and $bundle.version) {
+                    return [string]$bundle.version
+                }
+            }
+        }
+        catch {
+            Write-Verbose "could not read bundle.json from $archive"
+        }
+    }
+    return ''
+}
+
+# Get-LatestReleaseVersion asks the GitHub release API for the tag, then falls
+# back to the redirect target of /releases/latest when the API is rate-limited.
+function Get-LatestReleaseVersion {
+    try {
+        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
+            -ErrorAction Stop
+        if ($release.PSObject.Properties['tag_name'] -and $release.tag_name) {
+            return (Get-VersionNumber ([string]$release.tag_name))
+        }
+    }
+    catch {
+        Write-Verbose "could not resolve the latest release from the API"
+    }
+    $response = $null
+    try {
+        $response = Invoke-WebRequest -Uri "https://github.com/$Repo/releases/latest" `
+            -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop
+    }
+    catch {
+        $response = $_.Exception.Response
+    }
+    if ($response -and $response.Headers) {
+        $location = [string]$response.Headers.Location
+        if ($location -match '/tag/([^/?#]+)') {
+            return (Get-VersionNumber $Matches[1])
+        }
+    }
+    return ''
+}
+
+# Resolve-AvailableVersion mirrors install.sh: an explicit -Version wins, then
+# the local -From directory, then the latest release tag.
+function Resolve-AvailableVersion {
+    if ($Version -ne 'latest') {
+        return (Get-VersionNumber $Version)
+    }
+    if ($From) {
+        return (Get-LocalArtifactVersion)
+    }
+    return (Get-LatestReleaseVersion)
+}
+
+# Test-VersionIsLower compares dotted release versions the way sort -V does for
+# the tags we publish. A non-numeric component falls back to ordinal ordering,
+# and an absent component counts as zero, so 1.2 and 1.2.0 are equal.
+function Test-VersionIsLower {
+    param([string]$Candidate, [string]$Installed)
+    $left = Get-VersionNumber $Candidate
+    $right = Get-VersionNumber $Installed
+    if (-not $left -or -not $right) {
+        return $false
+    }
+    $leftParts = @($left -split '[.+-]')
+    $rightParts = @($right -split '[.+-]')
+    $count = [Math]::Max($leftParts.Count, $rightParts.Count)
+    for ($index = 0; $index -lt $count; $index++) {
+        $a = if ($index -lt $leftParts.Count) { $leftParts[$index] } else { '0' }
+        $b = if ($index -lt $rightParts.Count) { $rightParts[$index] } else { '0' }
+        $an = [long]0
+        $bn = [long]0
+        if ([long]::TryParse($a, [ref]$an) -and [long]::TryParse($b, [ref]$bn)) {
+            if ($an -lt $bn) { return $true }
+            if ($an -gt $bn) { return $false }
+            continue
+        }
+        $comparison = [string]::CompareOrdinal($a, $b)
+        if ($comparison -lt 0) { return $true }
+        if ($comparison -gt 0) { return $false }
+    }
+    return $false
+}
+
+function Get-InstallManifest {
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return (Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json)
+    }
+    catch {
+        Write-Verbose "could not read $ManifestPath"
+        return $null
+    }
+}
+
+function Get-ManifestVersion {
+    $manifest = Get-InstallManifest
+    if ($manifest -and $manifest.PSObject.Properties['version'] -and $manifest.version) {
+        return [string]$manifest.version
+    }
+    return ''
+}
+
+function Get-ManifestComponents {
+    $manifest = Get-InstallManifest
+    if (-not $manifest -or -not $manifest.PSObject.Properties['components']) {
+        return ''
+    }
+    return (@($manifest.components) -join ', ')
+}
+
+function Get-InstalledComponents {
+    $found = @()
+    if (Test-Path -LiteralPath (Join-Path $BinDir 'kitsune-client.exe') -PathType Leaf) {
+        $found += 'client'
+    }
+    if (Test-Path -LiteralPath (Join-Path $BinDir 'kitsune-server.cmd') -PathType Leaf) {
+        $found += 'server'
+    }
+    return ($found -join ', ')
+}
+
+function Assert-NoDowngrade {
+    param([string]$Available)
+    $installed = Get-ManifestVersion
+    if (-not $installed -or $installed -eq 'unknown') {
+        return
+    }
+    if (-not $Available) {
+        if ($From) {
+            Write-Warning -Message ("cannot determine the artifact version in $From; " +
+                "the downgrade guard is disabled") -WarningAction Continue
+        }
+        else {
+            Write-Warning -Message ("could not resolve the latest release version; " +
+                "the downgrade guard is disabled") -WarningAction Continue
+        }
+        return
+    }
+    if (Test-VersionIsLower $Available $installed) {
+        if ($Force) {
+            Write-Step "downgrading from $installed to $Available (-Force)"
+        }
+        else {
+            throw ("refusing to downgrade from $installed to $Available; " +
+                'pass -Force to install it anyway')
+        }
+    }
+}
+
+function Write-InstallManifest {
+    param([string]$Version)
+    $components = @()
+    if (Test-Path -LiteralPath (Join-Path $BinDir 'kitsune-client.exe') -PathType Leaf) {
+        $components += 'client'
+    }
+    if (Test-Path -LiteralPath (Join-Path $BinDir 'kitsune-server.cmd') -PathType Leaf) {
+        $components += 'server'
+    }
+    if ($components.Count -eq 0) {
+        return
+    }
+    $versionText = $Version -replace '\\', '\\\\' -replace '"', '\"'
+    $jsonComponents = ($components | ForEach-Object { '"' + $_ + '"' }) -join ', '
+    $installedAt = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss') + 'Z'
+    $json = @"
+{
+  "version": "$versionText",
+  "components": [$jsonComponents],
+  "installed_at": "$installedAt"
+}
+"@
+
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    $temporary = "$ManifestPath.tmp"
+    # Write beside the manifest and replace it atomically, like install.sh.
+    Set-Content -LiteralPath $temporary -Value $json -Encoding utf8NoBOM
+    Move-Item -LiteralPath $temporary -Destination $ManifestPath -Force
+    Write-Step "wrote the install manifest to $ManifestPath"
+}
+
+function Show-CheckStatus {
+    if ($From) {
+        if (-not (Test-Path -LiteralPath $From -PathType Container)) {
+            throw "artifact directory not found: $From"
+        }
+        $script:From = (Resolve-Path -LiteralPath $From).Path
+    }
+    $available = Resolve-AvailableVersion
+    $installed = Get-ManifestVersion
+    if (-not $installed) {
+        $client = Join-Path $BinDir 'kitsune-client.exe'
+        $launcher = Join-Path $BinDir 'kitsune-server.cmd'
+        if ((Test-Path -LiteralPath $client -PathType Leaf) -or
+            (Test-Path -LiteralPath $launcher -PathType Leaf)) {
+            $installed = 'unknown (no install manifest)'
+        }
+        else {
+            $installed = 'not installed'
+        }
+    }
+    $components = Get-ManifestComponents
+    if (-not $components) {
+        $components = Get-InstalledComponents
+    }
+    if (-not $components) {
+        $components = 'none'
+    }
+    Write-Host "Manifest: $ManifestPath"
+    Write-Host "Installed: $installed"
+    Write-Host "Components: $components"
+    if ($available) {
+        Write-Host "Available: $available"
+    }
+    else {
+        Write-Host 'Available: unknown'
+        if ($From) {
+            Write-Warning -Message ("cannot determine the artifact version in $From; " +
+                'the downgrade guard is disabled') -WarningAction Continue
+        }
+        else {
+            Write-Warning -Message ("could not resolve the latest release version; " +
+                'the downgrade guard is disabled') -WarningAction Continue
+        }
+    }
+    exit 0
+}
+
+function Get-ReleasePublicKeyPem {
+    # KITSUNE_RELEASE_PUBLIC_KEY exists only for the installer test harness, so
+    # local artifacts can be signed with a throwaway key. Production uses the
+    # pinned PEM above. The value is a path or the PEM text itself.
+    $override = $env:KITSUNE_RELEASE_PUBLIC_KEY
+    if ($override) {
+        if ($override -match '-----BEGIN PUBLIC KEY-----') {
+            return $override
+        }
+        try {
+            if (Test-Path -LiteralPath $override -PathType Leaf) {
+                return Get-Content -LiteralPath $override -Raw
+            }
+        }
+        catch {
+            # Not a path and not PEM: let ImportFromPem report the bad key.
+        }
+        return $override
+    }
+    return $ReleasePublicKeyPem
+}
+
+function Assert-ReleaseSignature {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath,
+        [Parameter(Mandatory = $true)][string]$SignaturePath
+    )
+    if (-not (Test-Path -LiteralPath $SignaturePath -PathType Leaf)) {
+        throw "missing release signature: $SignaturePath"
+    }
+    $key = [System.Security.Cryptography.ECDsa]::Create()
+    try {
+        $key.ImportFromPem((Get-ReleasePublicKeyPem))
+        $valid = $key.VerifyData(
+            [System.IO.File]::ReadAllBytes($ChecksumsPath),
+            [System.IO.File]::ReadAllBytes($SignaturePath),
+            [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+            [System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence)
+        if (-not $valid) {
+            throw 'release signature verification failed: checksums.txt.sig does not match the pinned release key'
+        }
+    }
+    catch [System.Security.Cryptography.CryptographicException] {
+        throw ("release signature verification failed: checksums.txt.sig is not a valid " +
+            "ECDSA P-256 signature ($($_.Exception.Message))")
+    }
+    finally {
+        $key.Dispose()
+    }
+    Write-Step 'verified the release signature for checksums.txt'
+}
+
+function ConvertTo-Argument {
+    param([string]$Value)
+    if ($Value -ne '' -and $Value -notmatch '[\s"]') {
+        return $Value
+    }
+    return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Invoke-Native {
+    # Start-Process waits for GUI-subsystem binaries too. The call operator
+    # does not, and $LASTEXITCODE is then unset or stale.
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [string[]]$Arguments = @()
+    )
+    $argumentLine = (@($Arguments | ForEach-Object { ConvertTo-Argument $_ }) -join ' ')
+    $process = Start-Process -FilePath $FilePath -ArgumentList $argumentLine `
+        -Wait -PassThru -NoNewWindow
+    return $process.ExitCode
+}
+
+function Get-ChecksumFor {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath,
+        [Parameter(Mandatory = $true)][string]$Asset
+    )
+    $line = Get-Content -LiteralPath $ChecksumsPath |
+        Where-Object { $_ -and (($_ -split '\s+')[-1] -replace '^\*', '') -eq $Asset } |
+        Select-Object -First 1
+    if (-not $line) {
+        throw "no checksum for $Asset in checksums.txt"
+    }
+    return (($line -split '\s+')[0]).ToLowerInvariant()
+}
+
+function Assert-Checksum {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Asset,
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath
+    )
+    $expected = Get-ChecksumFor -ChecksumsPath $ChecksumsPath -Asset $Asset
+    $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actual -ne $expected) {
+        throw "checksum mismatch for ${Asset}: expected $expected, got $actual"
+    }
+}
+
+function Get-ReleaseAsset {
+    param(
+        [Parameter(Mandatory = $true)][string]$Asset,
+        [Parameter(Mandatory = $true)][string]$ChecksumsPath,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    $target = Join-Path $Destination $Asset
+    if ($From) {
+        $source = Join-Path $From $Asset
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "missing release artifact: $source"
+        }
+        Copy-Item -LiteralPath $source -Destination $target -Force
+    }
+    else {
+        Write-Step "downloading $Asset ($Version)"
+        Invoke-WebRequest -Uri "$(Get-BaseUrl)/$Asset" -OutFile $target -UseBasicParsing
+    }
+    Assert-Checksum -Path $target -Asset $Asset -ChecksumsPath $ChecksumsPath
+    return $target
+}
+
+# -- install steps ---------------------------------------------------------
+
+function Install-Config {
+    param([string]$Template)
+    if (-not $Template -or -not (Test-Path -LiteralPath $Template)) {
+        Write-Step 'no kitsune.example.yaml was shipped; leaving the default config absent'
+        return
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ConfigPath) | Out-Null
+    if ((Test-Path -LiteralPath $ConfigPath) -and -not $ForceConfig) {
+        Write-Step "keeping existing configuration at $ConfigPath"
+        return
+    }
+    Copy-Item -LiteralPath $Template -Destination $ConfigPath -Force
+    Write-Step "wrote $ConfigPath"
+}
+
+function Stop-RunningComponents {
+    # The in-app update launches this script while the Client is running. A
+    # running kitsune-client.exe locks the binary we are about to replace, and
+    # a running Server holds files inside its bundle. Stop both best-effort:
+    # failure to stop must not abort an install whose files can still be
+    # replaced, and uninstall has its own cleanup path.
+    try {
+        Get-Process -Name 'kitsune-client' -ErrorAction SilentlyContinue |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Verbose "could not stop the Client: $($_.Exception.Message)"
+    }
+    try {
+        & schtasks.exe /End /TN 'kitsune-server' 2>$null | Out-Null
+    }
+    catch {
+        Write-Verbose "could not end the Server task: $($_.Exception.Message)"
+    }
+    try {
+        # A Server started outside Task Scheduler runs the bundle's own
+        # pythonw.exe; stop only processes whose executable is under the
+        # bundle root so an unrelated Python is never touched.
+        $prefix = $ServerRoot.TrimEnd('\') + '\'
+        Get-Process -Name 'python', 'pythonw' -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Path -and $_.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+            } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+    }
+    catch {
+        Write-Verbose "could not stop a Server process: $($_.Exception.Message)"
+    }
+}
+
+function Install-Client {
+    param([string]$Archive)
+    Stop-RunningComponents
+    $stage = Join-Path $Temp 'client'
+    Expand-Archive -LiteralPath $Archive -DestinationPath $stage -Force
+    $executable = Join-Path $stage 'kitsune-client.exe'
+    if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
+        throw "$([System.IO.Path]::GetFileName($Archive)) does not contain kitsune-client.exe"
+    }
+    New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+    Copy-Item -LiteralPath $executable -Destination (Join-Path $BinDir 'kitsune-client.exe') -Force
+    Write-Step "installed $(Join-Path $BinDir 'kitsune-client.exe')"
+    Install-Config (Join-Path $stage 'kitsune.example.yaml')
+}
+
+function Invoke-ConfigMigration {
+    $client = Join-Path $BinDir 'kitsune-client.exe'
+    if (-not (Test-Path -LiteralPath $client) -or -not (Test-Path -LiteralPath $ConfigPath)) {
+        return
+    }
+    $code = Invoke-Native -FilePath $client `
+        -Arguments @('migrate-config', '--config', $ConfigPath)
+    if ($code -ne 0) {
+        Write-Warning -Message "configuration migration failed (exit $code); the Client still applies defaults" `
+            -WarningAction Continue
+    }
+}
+
+function Get-TarExecutable {
+    $candidate = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (Test-Path -LiteralPath $candidate) {
+        return $candidate
+    }
+    return 'tar.exe'
+}
+
+function Install-ServerBundle {
+    param([string]$Archive, [string]$Sha256)
+
+    $stage = Join-Path $Temp 'server'
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    $code = Invoke-Native -FilePath (Get-TarExecutable) `
+        -Arguments @('-xzf', $Archive, '-C', $stage)
+    if ($code -ne 0) {
+        throw "could not extract the Server bundle (exit $code). The release artifact may be corrupt."
+    }
+
+    $python = Join-Path $stage 'runtime\python.exe'
+    $pythonw = Join-Path $stage 'runtime\pythonw.exe'
+    $bootstrap = Join-Path $stage 'bootstrap.py'
+    foreach ($required in @($python, $pythonw, $bootstrap)) {
+        if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+            throw "the Server bundle is incomplete: $required is missing. Rebuild the artifact with the Windows runtime."
+        }
+    }
+
+    $arguments = @(
+        '-s', $bootstrap, 'install',
+        '--artifact', $Archive,
+        '--sha256', $Sha256,
+        '--no-start'
+    )
+    if (Test-Path -LiteralPath $ConfigPath) {
+        $arguments += @('--config', $ConfigPath)
+    }
+    # --no-start installs the bundle and registers the supervisor with its
+    # logon trigger disabled. Nothing is enabled, started, or scheduled to run
+    # at login; `schtasks /Run /TN kitsune-server` starts it on demand.
+    $code = Invoke-Native -FilePath $python -Arguments $arguments
+    if ($code -ne 0) {
+        throw ("the Server bundle could not be installed (exit $code). " +
+            "Fix the error above and run the installer again, or install the Client alone with -ClientOnly.")
+    }
+    Write-Step "installed the Server bundle in $ServerRoot (registered, not started)"
+}
+
+function Install-Server {
+    param([string]$Archive, [string]$Sha256)
+
+    Stop-RunningComponents
+
+    # The bundle install replaces lib/ wholesale, while the optional CUDA
+    # runtime lives inside lib/. Keep an existing (user-provided or downloaded)
+    # runtime so an in-place upgrade of a host with server.device: cuda does not
+    # leave a Server that cannot start.
+    $cublas = Join-Path $ServerRoot 'lib\nvidia\cublas\bin\cublas64_12.dll'
+    $preserve = Join-Path $Temp 'nvidia'
+    $preserved = $false
+    try {
+        if (Test-Path -LiteralPath $cublas) {
+            New-Item -ItemType Directory -Force -Path $preserve | Out-Null
+            Copy-Item -LiteralPath (Join-Path $ServerRoot 'lib\nvidia') `
+                -Destination (Join-Path $preserve 'nvidia') -Recurse -Force
+            $preserved = $true
+            Write-Step 'preserving the CUDA runtime from the previous installation'
+        }
+
+        Install-ServerBundle -Archive $Archive -Sha256 $Sha256
+
+        if ($preserved -and -not (Test-Path -LiteralPath $cublas)) {
+            $lib = Join-Path $ServerRoot 'lib'
+            New-Item -ItemType Directory -Force -Path $lib | Out-Null
+            Copy-Item -LiteralPath (Join-Path $preserve 'nvidia') `
+                -Destination $lib -Recurse -Force
+            Write-Step 'restored the CUDA runtime into the upgraded Server bundle'
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $preserve -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Add-BinToUserPath {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $entries = @()
+    if ($userPath) {
+        $entries = @($userPath -split ';' | Where-Object { $_ })
+    }
+    if ($entries | Where-Object { $_ -ieq $BinDir }) {
+        return
+    }
+    $entries += $BinDir
+    [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
+    Write-Step "added $BinDir to the user PATH"
+}
+
+function New-StartMenuShortcut {
+    $client = Join-Path $BinDir 'kitsune-client.exe'
+    if (-not (Test-Path -LiteralPath $client)) {
+        return
+    }
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $StartMenuShortcut) | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($StartMenuShortcut)
+    $shortcut.TargetPath = $client
+    $shortcut.Arguments = 'gui'
+    $shortcut.WorkingDirectory = $BinDir
+    $shortcut.IconLocation = "$client,0"
+    $shortcut.Description = 'Private, LAN-local speech-to-text dictation'
+    $shortcut.Save()
+}
+
+function Write-UninstallShim {
+    # The shim lives next to bin/ and Server/, so Apps & Features never depends
+    # on a download or an interactive prompt. It is the single source of the
+    # uninstall and purge boundaries, and it is safe to run non-interactively.
+    param([string]$Path = $UninstallShim)
+
+    $body = @'
+#requires -Version 7
+# Generated by the kitsune-whisper installer: removes the files and
+# registrations this installation created. Without -Purge it keeps
+# configuration, models, certificates, pairing state and logs; -Purge removes
+# every trace we created. No elevation and no package changes.
+[CmdletBinding()]
+param(
+    [switch]$Purge,
+    [switch]$RemoveModels,
+    [switch]$RemoveServerData,
+    [string]$InstallRoot = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Repo = 'FoxRed-cmd/kitsune-whisper'
-$Asset = 'kitsune-whisper_windows_amd64_setup.exe'
-$InstallDir = Join-Path $env:LOCALAPPDATA 'kitsune-whisper'
-$Uninstaller = Join-Path $InstallDir 'unins000.exe'
+# Apps & Features runs the shim in place, so $PSScriptRoot is the install root.
+# The installer's temp-shim fallback passes -InstallRoot explicitly.
+$installRoot = if ($InstallRoot) { $InstallRoot } else { $PSScriptRoot }
+$bin = Join-Path $installRoot 'bin'
+$uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\kitsune-whisper'
+$shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\kitsune-whisper.lnk'
+$configDir = if ($env:APPDATA) { Join-Path $env:APPDATA 'kitsune-whisper' } else { '' }
+$stateDir = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'kitsune-whisper' } else { '' }
+$manifest = if ($stateDir) { Join-Path $stateDir 'install.json' } else { '' }
+$homeDir = if ($env:USERPROFILE) { $env:USERPROFILE } elseif ($env:HOME) { $env:HOME } else { '' }
+$modelDir = if ($homeDir) { Join-Path $homeDir '.cache\kitsune-whisper\models' } else { '' }
 
-if (-not [Environment]::Is64BitOperatingSystem) {
-    throw 'kitsune-whisper releases are built for 64-bit Windows only'
+function Remove-OurPath {
+    param([string]$Path)
+    if ($Path -and (Test-Path -LiteralPath $Path)) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
-if ($Uninstall) {
-    if (-not (Test-Path -LiteralPath $Uninstaller)) {
-        throw "kitsune-whisper is not installed (no uninstaller at $Uninstaller)"
+function Remove-InstallRoot {
+    if ($installRoot -and (Test-Path -LiteralPath $installRoot)) {
+        # Remove children first: a file still held by a just-stopped process
+        # must not take the whole tree removal down with it.
+        Get-ChildItem -LiteralPath $installRoot -Force -ErrorAction SilentlyContinue |
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $installRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    $arguments = @('/SILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
-    if ($Purge) {
-        $arguments += '/PURGE=1'
+}
+
+function Remove-PathEntry {
+    # Remove every duplicate, comparing case-insensitively: Windows paths are
+    # case-insensitive, and an older install may have appended the entry twice.
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if (-not $userPath) {
+        return
     }
-    if ($RemoveModels) {
-        $arguments += '/REMOVEMODELS=1'
+    $entries = @($userPath -split ';')
+    $kept = @($entries | Where-Object { $_ -and ($_ -ine $bin) })
+    if ($kept.Count -ne $entries.Count) {
+        [Environment]::SetEnvironmentVariable('Path', ($kept -join ';'), 'User')
     }
-    if ($RemoveServerData) {
-        $arguments += '/REMOVESERVERDATA=1'
+}
+
+function Remove-StoredCredentials {
+    # go-keyring files Windows tokens in Credential Manager as
+    # "kitsune-whisper:<profile>". Read profile ids from the config while it
+    # still exists, then sweep any target cmdkey lists for the same prefix.
+    if (-not $env:SystemRoot) {
+        return
     }
-    $process = Start-Process -FilePath $Uninstaller -ArgumentList $arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw "the uninstaller failed with exit code $($process.ExitCode)"
+    $cmdkey = Join-Path $env:SystemRoot 'System32\cmdkey.exe'
+    if (-not (Test-Path -LiteralPath $cmdkey)) {
+        return
     }
-    if ($Purge) {
-        Write-Host 'kitsune-whisper uninstalled (configuration, models, Devices, certificates, logs, and Spool purged)'
+    try {
+        $ids = @('local')
+        $configFile = Join-Path $configDir 'kitsune.yaml'
+        if ($configDir -and (Test-Path -LiteralPath $configFile)) {
+            $yaml = Get-Content -LiteralPath $configFile -Raw
+            foreach ($match in [regex]::Matches($yaml, '(?m)^\s*-\s*id:\s*["'']?([A-Za-z0-9._-]+)')) {
+                $ids += $match.Groups[1].Value
+            }
+        }
+        foreach ($id in @($ids | Select-Object -Unique)) {
+            & $cmdkey ("/delete:kitsune-whisper:$id") 2>$null | Out-Null
+        }
+        $listing = & $cmdkey '/list' 2>$null
+        foreach ($line in @($listing)) {
+            if ($line -match 'kitsune-whisper:[^\s]+') {
+                & $cmdkey ("/delete:" + $Matches[0]) 2>$null | Out-Null
+            }
+        }
     }
-    else {
-        $kept = @('configuration', 'Spool', 'Device tokens')
-        if (-not $RemoveModels) { $kept += 'models' }
-        if (-not $RemoveServerData) { $kept += 'Server data' }
-        Write-Host ("kitsune-whisper uninstalled ({0} kept)" -f ($kept -join ', '))
+    catch {
+        Write-Verbose "could not clear stored credentials: $($_.Exception.Message)"
     }
+}
+
+Get-Process -Name 'kitsune-client' -ErrorAction SilentlyContinue |
+    Stop-Process -Force -ErrorAction SilentlyContinue
+
+$client = Join-Path $bin 'kitsune-client.exe'
+if (Test-Path -LiteralPath $client) {
+    $null = Start-Process -FilePath $client -ArgumentList @('uninstall-autostart') `
+        -Wait -PassThru -NoNewWindow
+}
+
+$launcher = Join-Path $bin 'kitsune-server.cmd'
+if (Test-Path -LiteralPath $launcher) {
+    & $launcher uninstall 2>$null | Out-Null
+}
+# The launcher is gone when a previous install failed early or its uninstall
+# failed; never leave a registration that points at deleted files.
+& schtasks.exe /End /TN 'kitsune-server' 2>$null | Out-Null
+& schtasks.exe /Delete /TN 'kitsune-server' /F 2>$null | Out-Null
+& schtasks.exe /End /TN 'kitsune-client' 2>$null | Out-Null
+& schtasks.exe /Delete /TN 'kitsune-client' /F 2>$null | Out-Null
+if ($configDir) {
+    Remove-OurPath (Join-Path $configDir 'kitsune-server-task.xml')
+    Remove-OurPath (Join-Path $configDir 'autostart-task.xml')
+}
+$runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+if (Test-Path -LiteralPath $runKey) {
+    Remove-ItemProperty -Path $runKey -Name 'kitsune-whisper' -ErrorAction SilentlyContinue
+}
+
+Remove-PathEntry
+Remove-OurPath $manifest
+
+if (Test-Path -LiteralPath $uninstallKey) {
+    Remove-Item -LiteralPath $uninstallKey -Recurse -Force
+}
+Remove-Item -LiteralPath $shortcut -Force -ErrorAction SilentlyContinue
+
+if ($RemoveServerData -and -not $Purge) {
+    # Creating new Server data would invalidate the kept Client pin, so forget
+    # the Local Server pairing while the Client can still do it.
+    if (Test-Path -LiteralPath $client) {
+        $null = Start-Process -FilePath $client -ArgumentList @('reset-local-pairing') `
+            -Wait -PassThru -NoNewWindow
+    }
+    if ($stateDir) {
+        foreach ($entry in @('tls', 'devices.json', 'pairing.json', 'server.log', 'lifecycle.json')) {
+            Remove-OurPath (Join-Path $stateDir $entry)
+        }
+    }
+}
+
+if ($RemoveModels) {
+    Remove-OurPath $modelDir
+    if ($stateDir) {
+        Remove-OurPath (Join-Path $stateDir 'models')
+    }
+}
+
+if ($Purge) {
+    Remove-StoredCredentials
+    Remove-OurPath $configDir
+    Remove-OurPath $stateDir
+    Remove-OurPath $modelDir
+    if ($homeDir) {
+        Remove-OurPath (Join-Path $homeDir '.cache\kitsune-whisper')
+    }
+    Remove-InstallRoot
+    Write-Host 'kitsune-whisper was purged (configuration, models, certificates, Devices, spool, logs, tokens).'
     return
 }
 
-if ($Version -eq 'latest') {
-    $Base = "https://github.com/$Repo/releases/latest/download"
+Remove-InstallRoot
+Write-Host 'kitsune-whisper was removed; configuration, models and pairing state were kept.'
+'@
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Path) | Out-Null
+    Set-Content -LiteralPath $Path -Value $body -Encoding utf8NoBOM
+}
+
+function Register-UninstallEntry {
+    $command = '"{0}" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{1}"' -f `
+        (Join-Path $PSHOME 'pwsh.exe'), $UninstallShim
+    $icon = Join-Path $BinDir 'kitsune-client.exe'
+    if (-not (Test-Path -LiteralPath $icon)) {
+        $icon = Join-Path $ServerRoot 'runtime\pythonw.exe'
+    }
+
+    New-Item -Path $UninstallKey -Force | Out-Null
+    Set-ItemProperty -Path $UninstallKey -Name DisplayName -Value 'kitsune-whisper'
+    Set-ItemProperty -Path $UninstallKey -Name DisplayVersion -Value (Get-DisplayVersion)
+    Set-ItemProperty -Path $UninstallKey -Name Publisher -Value 'FoxRed-cmd'
+    Set-ItemProperty -Path $UninstallKey -Name InstallLocation -Value $InstallRoot
+    Set-ItemProperty -Path $UninstallKey -Name DisplayIcon -Value $icon
+    Set-ItemProperty -Path $UninstallKey -Name UninstallString -Value $command
+    Set-ItemProperty -Path $UninstallKey -Name QuietUninstallString -Value $command
+    Set-ItemProperty -Path $UninstallKey -Name URLInfoAbout `
+        -Value "https://github.com/$Repo"
+    Set-ItemProperty -Path $UninstallKey -Name NoModify -Value 1 -Type DWord
+    Set-ItemProperty -Path $UninstallKey -Name NoRepair -Value 1 -Type DWord
+}
+
+function Get-DisplayVersion {
+    if ($Version -ne 'latest') {
+        return ($Version -replace '^[vV]', '')
+    }
+    if ($script:AvailableVersion) {
+        return $script:AvailableVersion
+    }
+    $installed = Get-ManifestVersion
+    if ($installed -and $installed -ne 'unknown') {
+        return $installed
+    }
+    $manifest = Join-Path $ServerRoot 'bundle.json'
+    if (Test-Path -LiteralPath $manifest) {
+        try {
+            return (Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).version
+        }
+        catch {
+            Write-Verbose "could not read $manifest"
+        }
+    }
+    $client = Join-Path $BinDir 'kitsune-client.exe'
+    if (Test-Path -LiteralPath $client) {
+        $info = (Get-Item -LiteralPath $client).VersionInfo
+        if ($info.ProductVersion) {
+            return $info.ProductVersion
+        }
+    }
+    return 'unknown'
+}
+
+function Test-WebView2Installed {
+    $keys = @(
+        "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$WebView2Client",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$WebView2Client",
+        "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$WebView2Client"
+    )
+    foreach ($key in $keys) {
+        if (-not (Test-Path -LiteralPath $key)) {
+            continue
+        }
+        $item = Get-ItemProperty -LiteralPath $key -ErrorAction SilentlyContinue
+        if ($item -and $item.PSObject.Properties['pv']) {
+            $version = $item.pv
+            if ($version -and $version -ne '0.0.0.0') {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+function Write-DependencyWarning {
+    param(
+        [Parameter(Mandatory = $true)][string]$Identifier,
+        [Parameter(Mandatory = $true)][string]$Detail
+    )
+    # The README (quick reference) and docs/dependencies.md (full matrix) own
+    # the package commands. Vary the wording of the fix, never the installation
+    # itself. Continue explicitly: a caller with $WarningPreference = 'Stop'
+    # must not turn a warning into a failure.
+    Write-Warning -Message ("dependency '$Identifier' is missing: $Detail " +
+        "See the README Dependencies section: $ReadmeDependencies") `
+        -WarningAction Continue
+}
+
+function Write-WebView2Warning {
+    if (Test-WebView2Installed) {
+        return
+    }
+    # Never download the runtime: it is a system component with its own
+    # installer and terms, and the fix is documented for the user.
+    Write-DependencyWarning $DepWebView2 ("the Microsoft Edge WebView2 Runtime was not found, " +
+        "so the Settings window and Tray cannot open. Install it once from " +
+        "$WebView2Help.")
+}
+
+function Write-WindowsDependencyWarnings {
+    # These checks run after the selected binaries are in place. They only
+    # report: a missing dependency never changes the install's exit status.
+    try {
+        if (-not $ServerOnly) {
+            Write-WebView2Warning
+        }
+        $build = [Environment]::OSVersion.Version.Build
+        if ($build -gt 0 -and $build -lt $MinimumWindowsBuild) {
+            Write-DependencyWarning $DepWindowsVersion ("this is Windows build $build, but the " +
+                "releases target Windows 10 build $MinimumWindowsBuild or newer.")
+        }
+        if (-not [Environment]::Is64BitOperatingSystem) {
+            Write-DependencyWarning $DepWindows64 ("this is a 32-bit Windows installation, but the " +
+                "release artifacts are built for windows/amd64.")
+        }
+    }
+    catch {
+        # Detection itself must never fail an install that placed its files.
+        Write-Verbose "dependency detection was skipped: $($_.Exception.Message)"
+    }
+}
+
+function Write-InstallPlan {
+    $clientPlan = if ($ClientOnly) { 'disabled' } else { Join-Path $BinDir 'kitsune-client.exe' }
+    $serverPlan = if ($ServerOnly) { 'disabled' } else { $ServerRoot }
+    $signaturePlan = if ($Insecure) {
+        'skipped (-Insecure; checksums still verified)'
+    }
+    else {
+        'verified against the pinned release key'
+    }
+    Write-Host 'kitsune-whisper install plan'
+    Write-Host "  version:   $Version"
+    Write-Host "  client:    $clientPlan"
+    Write-Host "  server:    $serverPlan"
+    Write-Host "  path:      $BinDir"
+    Write-Host "  install:   $InstallRoot"
+    Write-Host "  manifest:  $ManifestPath"
+    Write-Host "  signature: $signaturePlan"
+    Write-Host '  starts:    nothing (the Server supervisor registration is disabled)'
+    Write-Host 'Nothing has been changed.'
+}
+
+function Install-Kitsune {
+    if ($From) {
+        if (-not (Test-Path -LiteralPath $From -PathType Container)) {
+            throw "artifact directory not found: $From"
+        }
+        $script:From = (Resolve-Path -LiteralPath $From).Path
+    }
+
+    if ($DryRun) {
+        Write-InstallPlan
+        return
+    }
+
+    $script:Temp = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ('kitsune-install-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $Temp | Out-Null
+    try {
+        $checksums = Join-Path $Temp 'checksums.txt'
+        if ($From) {
+            $source = Join-Path $From 'checksums.txt'
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+                throw "missing release artifact: $source"
+            }
+            Copy-Item -LiteralPath $source -Destination $checksums -Force
+        }
+        else {
+            Write-Step "downloading checksums.txt ($Version)"
+            Invoke-WebRequest -Uri "$(Get-BaseUrl)/checksums.txt" -OutFile $checksums -UseBasicParsing
+        }
+
+        # The signature covers checksums.txt, so verify it before trusting any
+        # digest and before fetching or extracting an archive.
+        $signature = Join-Path $Temp 'checksums.txt.sig'
+        if ($Insecure) {
+            Write-Warning -Message '-Insecure: skipping the release signature check' `
+                -WarningAction Continue
+        }
+        else {
+            if ($From) {
+                $signatureSource = Join-Path $From 'checksums.txt.sig'
+                if (-not (Test-Path -LiteralPath $signatureSource -PathType Leaf)) {
+                    throw "missing release signature: $signatureSource"
+                }
+                Copy-Item -LiteralPath $signatureSource -Destination $signature -Force
+            }
+            else {
+                Write-Step "downloading checksums.txt.sig ($Version)"
+                try {
+                    Invoke-WebRequest -Uri "$(Get-BaseUrl)/checksums.txt.sig" `
+                        -OutFile $signature -UseBasicParsing
+                }
+                catch {
+                    throw ("missing release signature: could not download " +
+                        "$(Get-BaseUrl)/checksums.txt.sig ($($_.Exception.Message))")
+                }
+            }
+            Assert-ReleaseSignature -ChecksumsPath $checksums -SignaturePath $signature
+        }
+
+        # Resolve the available version before any archive is extracted, so a
+        # downgrade is refused before it can replace a working install.
+        $script:AvailableVersion = Resolve-AvailableVersion
+        Assert-NoDowngrade -Available $script:AvailableVersion
+
+        $assets = @()
+        if (-not $ServerOnly) {
+            $assets += $ClientAsset
+        }
+        if (-not $ClientOnly) {
+            $assets += $ServerAsset
+        }
+        $paths = @{}
+        foreach ($asset in $assets) {
+            $paths[$asset] = Get-ReleaseAsset -Asset $asset -ChecksumsPath $checksums `
+                -Destination $Temp
+        }
+
+        if (-not $ServerOnly) {
+            Install-Client -Archive $paths[$ClientAsset]
+        }
+        if (-not $ClientOnly) {
+            Install-Server -Archive $paths[$ServerAsset] `
+                -Sha256 (Get-ChecksumFor -ChecksumsPath $checksums -Asset $ServerAsset)
+        }
+
+        Invoke-ConfigMigration
+        Add-BinToUserPath
+        Write-UninstallShim
+        Register-UninstallEntry
+        New-StartMenuShortcut
+        $manifestVersion = if ($script:AvailableVersion) {
+            $script:AvailableVersion
+        }
+        else {
+            'unknown'
+        }
+        Write-InstallManifest -Version $manifestVersion
+        Write-WindowsDependencyWarnings
+
+        Write-Step "installed to $InstallRoot"
+        Write-Step 'nothing was started; the Server task is registered disabled'
+        Write-Step 'run install.ps1 -Uninstall or use Apps & features to remove it'
+    }
+    finally {
+        Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Uninstall-Kitsune {
+    $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    # Run a fresh copy of the current boundaries rather than a shim left by an
+    # older installer. The shim receives the install root explicitly because
+    # its $PSScriptRoot is the temp directory. Removal is idempotent, so this
+    # also works when a partial install left no shim.
+    $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) `
+        ('kitsune-uninstall-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+    $shim = Join-Path $tempDir 'uninstall.ps1'
+    Write-UninstallShim -Path $shim
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $shim,
+        '-InstallRoot', $InstallRoot
+    )
+    if ($Purge) {
+        $arguments += '-Purge'
+    }
+    if ($RemoveModels) {
+        $arguments += '-RemoveModels'
+    }
+    if ($RemoveServerData) {
+        $arguments += '-RemoveServerData'
+    }
+    try {
+        & $pwsh @arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw "the uninstaller failed with exit code $LASTEXITCODE"
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+if ($ClientOnly -and $ServerOnly) {
+    throw '-ClientOnly and -ServerOnly are mutually exclusive'
+}
+
+if (-not $Uninstall -and ($Purge -or $RemoveModels -or $RemoveServerData)) {
+    throw '-Purge, -RemoveModels and -RemoveServerData are only valid together with -Uninstall'
+}
+
+if ($Check -and $Uninstall) {
+    throw '-Check and -Uninstall are mutually exclusive'
+}
+
+if ($Check) {
+    Show-CheckStatus
+}
+
+if ($Uninstall) {
+    Uninstall-Kitsune
 }
 else {
-    $Base = "https://github.com/$Repo/releases/download/$Version"
+    Install-Kitsune
 }
-
-$Temp = Join-Path ([System.IO.Path]::GetTempPath()) ("kitsune-install-" + [guid]::NewGuid())
-New-Item -ItemType Directory -Force -Path $Temp | Out-Null
-try {
-    $Setup = Join-Path $Temp $Asset
-    $Checksums = Join-Path $Temp 'checksums.txt'
-
-    Write-Host "Downloading $Asset ($Version)..."
-    Invoke-WebRequest -Uri "$Base/$Asset" -OutFile $Setup
-    Invoke-WebRequest -Uri "$Base/checksums.txt" -OutFile $Checksums
-
-    $expected = $null
-    foreach ($line in Get-Content -LiteralPath $Checksums) {
-        $parts = -split $line
-        if ($parts.Length -ge 2 -and $parts[-1] -eq $Asset) { $expected = $parts[0]; break }
-    }
-    if (-not $expected) { throw "no checksum for $Asset in checksums.txt" }
-    $actual = (Get-FileHash -LiteralPath $Setup -Algorithm SHA256).Hash.ToLowerInvariant()
-    if ($actual -ne $expected.ToLowerInvariant()) {
-        throw "checksum mismatch for ${Asset}: expected $expected, got $actual"
-    }
-
-    Write-Host 'Running the per-user installer...'
-    $arguments = @('/SILENT', '/NORESTART')
-    if ($ForceConfig) {
-        $arguments += '/FORCECONFIG=1'
-    }
-    $process = Start-Process -FilePath $Setup -ArgumentList $arguments -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw ("the installer exited with code $($process.ExitCode). " +
-            'If this machine is offline, install the WebView2 Evergreen Runtime from ' +
-            'https://developer.microsoft.com/microsoft-edge/webview2/ and run this command again. ' +
-            "Run $Setup interactively to see the exact error.")
-    }
-}
-finally {
-    Remove-Item -LiteralPath $Temp -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-Write-Host 'Installed kitsune-whisper. Press Ctrl+Shift+Space to dictate.'

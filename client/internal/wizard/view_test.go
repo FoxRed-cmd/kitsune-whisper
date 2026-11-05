@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
@@ -210,5 +211,78 @@ func TestViewHardwareExplainsPinnedCUDA(t *testing.T) {
 	}
 	if len(view.Hardware.Options) != 3 {
 		t.Fatalf("options = %+v", view.Hardware.Options)
+	}
+}
+
+func TestClientOnlyServerViewOffersRemoteOnly(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true})
+	_ = service.Open()
+	for i := 0; i < 3; i++ {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if service.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", service.Step())
+	}
+	view := service.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	if view.Server.LocalAvailable {
+		t.Fatal("a Client-only installation offered the Local Server")
+	}
+}
+
+func TestClientOnlyProgressCountsOnlyAvailableSteps(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true})
+	_ = service.Open()
+	for i := 0; i < 3; i++ {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if service.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", service.Step())
+	}
+	view := service.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	// Welcome, Microphone, Hotkey, Server, Try: Hardware and Model are skipped.
+	if view.StepCount != 5 || view.StepNumber != 4 {
+		t.Fatalf("progress = %d of %d, want 4 of 5", view.StepNumber, view.StepCount)
+	}
+	if !strings.Contains(view.Progress, "4") || !strings.Contains(view.Progress, "5") {
+		t.Fatalf("progress text = %q", view.Progress)
+	}
+}
+
+func TestBothComponentsServerViewKeepsTheLocalOption(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true, Server: true})
+	_ = service.Open()
+	for i := 0; i < 5; i++ {
+		if err := service.Next(); err != nil {
+			t.Fatalf("next: %v", err)
+		}
+	}
+	if service.Step() != wizard.StepServer {
+		t.Fatalf("step = %q, want server", service.Step())
+	}
+	view := service.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	if !view.Server.LocalAvailable {
+		t.Fatal("a Client and Server installation lost the Local Server option")
+	}
+}
+
+func TestClientOnlyStepListMarksTheLocalStepsSkipped(t *testing.T) {
+	service := newServiceWith(t, tempState(t), components.Set{Client: true})
+	_ = service.Open()
+	view := service.View(wizard.Data{Catalog: i18n.For(i18n.English)})
+	statuses := map[wizard.Step]wizard.StepStatus{}
+	for _, step := range view.Steps {
+		statuses[step.ID] = step.Status
+	}
+	for _, step := range []wizard.Step{wizard.StepHardware, wizard.StepModel} {
+		if statuses[step] != wizard.StatusSkipped {
+			t.Fatalf("%s status = %q, want skipped", step, statuses[step])
+		}
+	}
+	if statuses[wizard.StepServer] != wizard.StatusPending {
+		t.Fatalf("server status = %q, want pending", statuses[wizard.StepServer])
 	}
 }

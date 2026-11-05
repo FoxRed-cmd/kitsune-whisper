@@ -70,31 +70,168 @@ jobs:
       - name: Build the desktop shell (purego, no GTK dev headers)
         run: go build -tags "desktop purego" ./...
 
+  install-smoke-linux:
+    name: install smoke (linux container)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Ensure build deps (X11 headers for golang.design/x/hotkey)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libx11-dev
+
+      - name: Resolve a standalone 3.11 runtime and the Server environment
+        run: |
+          set -euo pipefail
+          uv python install 3.11
+          uv venv --python 3.11 .bundle-venv
+          uv pip install --python .bundle-venv/bin/python ./server
+          echo "KITSUNE_SERVER_RUNTIME=$(dirname "$(dirname "$(uv python find 3.11)")")" >> "$GITHUB_ENV"
+          echo "KITSUNE_SERVER_SITE_PACKAGES=$(ls -d .bundle-venv/lib/python3.11/site-packages)" >> "$GITHUB_ENV"
+          echo "KITSUNE_SERVER_PYTHON=.bundle-venv/bin/python" >> "$GITHUB_ENV"
+
+      - name: Build and sign a throwaway artifact set
+        run: |
+          set -euo pipefail
+          version="$(cat VERSION)"
+          scripts/build-linux-artifacts.sh --output dist --version "$version"
+          cp install.sh dist/install.sh
+          (cd dist && sha256sum install.sh >> checksums.txt)
+          umask 077
+          openssl ecparam -name prime256v1 -genkey -noout -out "$RUNNER_TEMP/ci-signing-key.pem"
+          openssl ec -in "$RUNNER_TEMP/ci-signing-key.pem" -pubout -out dist/ci-public-key.pem
+          chmod 644 dist/ci-public-key.pem
+          scripts/sign-release-checksums.sh \
+            --key "$RUNNER_TEMP/ci-signing-key.pem" \
+            --checksums dist/checksums.txt \
+            --public-key dist/ci-public-key.pem
+          rm -f "$RUNNER_TEMP/ci-signing-key.pem"
+
+      - name: Install from local artifacts in a clean container
+        env:
+          KITSUNE_CONTAINER_ENGINE: docker
+        run: |
+          set -euo pipefail
+          scripts/ci-install-smoke.sh --container \
+            --artifacts dist \
+            --version "$(cat VERSION)" \
+            --public-key dist/ci-public-key.pem
+
+  install-smoke-windows:
+    name: install smoke (windows)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Ensure a C compiler
+        shell: pwsh
+        run: |
+          if (-not (Get-Command gcc -ErrorAction SilentlyContinue)) {
+            choco install mingw --no-progress -y
+          }
+
+      - name: Build the Client zip
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          ./packaging/windows/build-client.ps1 -Version $version -Output dist/kitsune-client.exe -Console
+          Copy-Item kitsune.example.yaml dist/
+          Compress-Archive -Path dist/kitsune-client.exe, dist/kitsune.example.yaml `
+            -DestinationPath "dist/kitsune-client_windows_amd64.zip" -Force
+          Remove-Item dist/kitsune-client.exe, dist/kitsune.example.yaml
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Resolve a standalone 3.11 runtime and build the Server bundle
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          uv python install 3.11
+          $python = (uv python find 3.11).Trim()
+          $runtime = Split-Path -Parent $python
+          if (-not (Test-Path -LiteralPath (Join-Path $runtime "pythonw.exe"))) {
+            throw "the standalone runtime has no pythonw.exe, so the Server cannot start hidden"
+          }
+          uv venv --python 3.11 .bundle-venv
+          uv pip install --python .bundle-venv\Scripts\python.exe ./server
+          $sitePackages = (Resolve-Path -LiteralPath .bundle-venv\Lib\site-packages).Path
+          & .bundle-venv\Scripts\python.exe -m kitsune_server bundle build `
+            --output dist/kitsune-server_windows_amd64.tar.gz `
+            --runtime $runtime `
+            --site-packages $sitePackages `
+            --platform windows --arch amd64 --version $version
+
+      - name: Generate checksums and sign them with an ephemeral key
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Copy-Item install.ps1 dist/install.ps1
+          $files = Get-ChildItem -LiteralPath dist -File |
+            Where-Object { $_.Name -like 'kitsune-*' -or $_.Name -eq 'install.ps1' } |
+            Sort-Object Name
+          $lines = foreach ($file in $files) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$hash  $($file.Name)"
+          }
+          Set-Content -LiteralPath dist/checksums.txt -Value $lines -Encoding ascii
+          $ecdsa = [System.Security.Cryptography.ECDsa]::Create(
+            [System.Security.Cryptography.ECCurve]::CreateFromFriendlyName('nistP256'))
+          try {
+            $signature = $ecdsa.SignData(
+              [System.IO.File]::ReadAllBytes((Join-Path $PWD 'dist/checksums.txt')),
+              [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+              [System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence)
+            [System.IO.File]::WriteAllBytes((Join-Path $PWD 'dist/checksums.txt.sig'), $signature)
+            [System.IO.File]::WriteAllText(
+              (Join-Path $PWD 'dist/ci-public-key.pem'),
+              $ecdsa.ExportSubjectPublicKeyInfoPem())
+          }
+          finally {
+            $ecdsa.Dispose()
+          }
+
+      - name: Install from local artifacts and assert the result
+        shell: pwsh
+        run: |
+          $version = (Get-Content VERSION -Raw).Trim()
+          pwsh -NoProfile -File scripts/ci-install-smoke.ps1 -Artifacts dist -Version $version
+
   packaging-windows:
-    name: packaging (windows setup)
+    name: packaging (windows scripts)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Inno Setup 6
-        shell: pwsh
-        run: choco install innosetup --no-progress -y
-
-      - name: Compile the setup from placeholder artifacts
+      - name: Parse the remaining PowerShell entry points
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Set-Content -LiteralPath dist\kitsune-client.exe -Value 'placeholder'
-          Set-Content -LiteralPath dist\kitsune-server_windows_amd64.tar.gz -Value 'placeholder'
-          ./packaging/windows/build-installer.ps1 `
-            -Client dist\kitsune-client.exe `
-            -ServerArtifact dist\kitsune-server_windows_amd64.tar.gz `
-            -Version dev -Output dist
-
-      - name: Parse the PowerShell entry points
-        shell: pwsh
-        run: |
-          foreach ($path in @('install.ps1', 'packaging/windows/setup.ps1', 'packaging/windows/build-installer.ps1')) {
+          foreach ($path in @('install.ps1', 'packaging/windows/build-client.ps1', 'scripts/ci-install-smoke.ps1')) {
             $errors = $null
             $null = [System.Management.Automation.Language.Parser]::ParseFile(
               (Resolve-Path -LiteralPath $path), [ref]$null, [ref]$errors)
@@ -103,28 +240,3 @@ jobs:
               exit 1
             }
           }
-
-  packaging:
-    name: packaging (deb, rpm, appimage)
-    runs-on: ubuntu-24.04
-    defaults:
-      run:
-        working-directory: server
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-          cache-dependency-glob: server/uv.lock
-
-      - name: Install rpmbuild and appimagetool
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y rpm
-          sudo curl -fsSL -o /usr/local/bin/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
-          sudo chmod +x /usr/local/bin/appimagetool
-
-      - run: uv sync --frozen
-      - run: uv run pytest tests/test_installer.py

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
@@ -13,6 +14,7 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/spool"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
 )
 
 func sampleView() shell.SettingsView {
@@ -191,16 +193,19 @@ func TestPageUsesTheFullWindowWidthAndPreloadsDiagnostics(t *testing.T) {
 	}
 }
 
-func TestPageFitsAServerSettingsFormToThePaneHeight(t *testing.T) {
+func TestPageLaysServerSettingsOutInColumns(t *testing.T) {
 	page := shell.Page(shell.Snapshot{Version: "1.0.0"}, managementView())
-	if !strings.Contains(page, `class="group server-settings"`) {
-		t.Fatal("the Server settings form does not fill the pane")
+	if !strings.Contains(page, `class="group group-wide server-settings"`) {
+		t.Fatal("the Server settings form does not span the pane")
 	}
 	if !strings.Contains(page, `class="server-fields"`) || !strings.Contains(page, `class="server-save"`) {
 		t.Fatal("the Server settings body and its Save footer are not split")
 	}
-	if !strings.Contains(page, ".server-fields { flex:1 1 auto; min-height:0; overflow-y:auto;") {
-		t.Fatal("the Server fields are not the scrolling part")
+	if !strings.Contains(page, ".server-fields { display:grid;") {
+		t.Fatal("the Server fields are not laid out in columns")
+	}
+	if strings.Contains(page, ".server-fields { flex:1 1 auto;") {
+		t.Fatal("the Server fields collapsed into a nested scroller")
 	}
 }
 
@@ -208,10 +213,9 @@ func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, managementView())
 	for _, want := range []string{
 		`id="settings-nav"`,
-		`data-nav="general"`,
-		`data-nav="dictation"`,
-		`data-nav="servers" data-targets="servers,devices,exposure"`,
-		`data-nav="server" data-targets="server-settings"`,
+		`data-nav="general" data-targets="general"`,
+		`data-nav="dictation" data-targets="dictation"`,
+		`data-nav="server" data-targets="servers,devices,exposure,server-settings"`,
 		`data-nav="diagnostics" data-targets="diagnostics"`,
 		`id="settings-pane"`,
 		`function selectSection(`,
@@ -230,8 +234,37 @@ func TestSettingsPageSplitsScreensIntoANavigationMenu(t *testing.T) {
 	if strings.Contains(page, `data-nav="wizard"`) {
 		t.Error("the wizard launcher is listed without a wizard view")
 	}
-	if strings.Index(page, `data-nav="servers"`) > strings.Index(page, `data-nav="server"`) {
+	if strings.Index(page, `data-nav="dictation"`) > strings.Index(page, `data-nav="server"`) {
 		t.Error("the navigation order is wrong")
+	}
+}
+
+func TestSettingsNavigationGroupsRelatedScreens(t *testing.T) {
+	view := managementView()
+	view.Sections = append(view.Sections, dictation.Section{ID: "appearance", Title: "Indicator"})
+	view.ModelLabels.Title = "Models"
+	view.Spool.Labels.Title = "Spool"
+	view.Startup.Available = true
+	view.Update = shell.UpdateView{UpdateLabels: shell.UpdateLabels{Title: "Updates"}}
+	page := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-nav="general" data-targets="general,startup,updates"`,
+		`data-nav="dictation" data-targets="dictation"`,
+		`data-nav="appearance" data-targets="appearance"`,
+		`data-nav="models" data-targets="models"`,
+		`data-nav="spool" data-targets="spool"`,
+		// The grouped labels follow the Russian interface language.
+		`Общие</button>`,
+		`Распознавание речи</button>`,
+		`Индикатор на экране</button>`,
+		`Сервер</button>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing grouped entry %q", want)
+		}
+	}
+	if got := strings.Count(page, `data-nav="`); got != 7 {
+		t.Errorf("navigation has %d entries, want 7 grouped entries", got)
 	}
 }
 
@@ -386,21 +419,31 @@ func TestServersHTMLShowsASoftStoppedServerAsStopped(t *testing.T) {
 	}
 }
 
-func TestPageRendersStartupSwitchesAndTheUnifiedLogLevel(t *testing.T) {
+func TestPageRendersTheAutostartSwitchAndModeSelector(t *testing.T) {
 	view := managementView()
-	view.Startup = shell.StartupView{Available: true, Client: true, Server: false, ServerAvailable: false}
+	view.Startup = shell.StartupView{
+		Available:       true,
+		Enabled:         false,
+		Mode:            components.ModeClientAndServer,
+		Modes:           []components.Mode{components.ModeClientAndServer, components.ModeClientOnly},
+		ClientInstalled: true,
+		ServerInstalled: true,
+	}
 	view.Labels.StartupTitle = "Autostart"
-	view.Labels.StartupHelp = "Start both at login."
-	view.Labels.StartupClient = "Client at login"
-	view.Labels.StartupClientHelp = "Starts hidden."
-	view.Labels.StartupServer = "Server at login"
-	view.Labels.StartupServerHelp = "Starts the local Server."
+	view.Labels.StartupHelp = "Choose what starts at login."
+	view.Labels.StartupSwitch = "Start at login"
+	view.Labels.StartupMode = "What starts at login"
+	view.Labels.StartupModeClientServer = "Client and Server"
+	view.Labels.StartupModeClientServerHelp = "Starts both."
+	view.Labels.StartupModeClient = "Client only"
+	view.Labels.StartupModeClientHelp = "The Server starts on demand."
 	page := shell.SettingsHTML(view)
 	for _, want := range []string{
 		`data-section="startup"`,
-		`data-nav="startup"`,
-		`data-startup-component="client"`,
-		`data-startup-component="server"`,
+		`data-nav="general" data-targets="general,startup"`,
+		`data-startup-switch`,
+		`data-startup-mode="client-server"`,
+		`data-startup-mode="client"`,
 		`id="diagnostics-log-level"`,
 		`<option value="info" selected>Info</option>`,
 	} {
@@ -408,14 +451,36 @@ func TestPageRendersStartupSwitchesAndTheUnifiedLogLevel(t *testing.T) {
 			t.Errorf("page missing %q", want)
 		}
 	}
-	if !strings.Contains(page, `id="startup-client" data-startup-component="client" checked`) {
-		t.Error("the Client switch is not enabled")
+	if strings.Contains(page, `data-startup-switch checked`) {
+		t.Error("a fresh install must render autostart switched off")
 	}
-	if strings.Contains(page, `id="startup-client" data-startup-component="client" checked disabled`) {
-		t.Error("the Client switch is disabled even though the controller manages it")
+	if !strings.Contains(page, `data-startup-modes disabled`) {
+		t.Error("the mode selector must be read-only while autostart is off")
 	}
-	if !strings.Contains(page, `id="startup-server" data-startup-component="server" disabled`) {
-		t.Error("the unavailable Server switch is not disabled")
+	if !strings.Contains(page, `value="client-server" data-startup-mode="client-server" checked`) {
+		t.Error("the selector does not default to Client and Server")
+	}
+	if strings.Contains(page, `data-startup-mode="server"`) {
+		t.Error("the page offers a mode whose Component is not installed")
+	}
+
+	view.Startup.Enabled = true
+	page = shell.SettingsHTML(view)
+	if !strings.Contains(page, `data-startup-switch checked`) {
+		t.Error("an enabled autostart switch is not checked")
+	}
+	if strings.Contains(page, `data-startup-modes disabled`) {
+		t.Error("the mode selector must be editable while autostart is on")
+	}
+
+	const hostile = `</fieldset><img src=x onerror="alert(1)">&`
+	view.Labels.StartupModeClient = hostile
+	page = shell.SettingsHTML(view)
+	if strings.Contains(page, hostile) {
+		t.Fatal("the mode selector embedded an unescaped label")
+	}
+	if !strings.Contains(page, "&lt;/fieldset&gt;") {
+		t.Fatal("the mode selector did not escape the label's angle brackets")
 	}
 }
 
@@ -599,7 +664,7 @@ func TestPageKeepsUnsavedEditsAcrossASettingsRefresh(t *testing.T) {
 		"function restoreFocus(",
 		// A control that saves itself on change must follow Go, not the page.
 		`el.dataset.path === "client.ui_language"`,
-		`el.closest("[data-startup-component], [data-log-level]")`,
+		`el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page does not keep unsaved edits: missing %q", want)
@@ -1208,6 +1273,100 @@ func TestServerSettingsHideTextProcessingAndSecuritySwitches(t *testing.T) {
 	} {
 		if strings.Contains(html, hidden) {
 			t.Errorf("the Server settings form still offers %s", hidden)
+		}
+	}
+}
+
+func TestWizardServerStepShowsOnlyTheConnectionForms(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	_ = wiz.GoTo(wizard.StepServer)
+	data := wizard.Data{
+		Catalog: i18n.For(i18n.Russian),
+		Servers: servers.View{
+			ActiveID: "local",
+			Profiles: []servers.Profile{{ID: "local", Name: "Local Server", URL: "https://localhost:8765", Active: true}},
+		},
+	}
+	page := shell.SettingsHTML(shell.SettingsView{Wizard: wiz.View(data)})
+	if strings.Contains(page, `data-profile="Local Server"`) {
+		t.Fatal("the Server step repeats the active profile that the status bar already names")
+	}
+	if !strings.Contains(page, `data-action="wizard-pair-remote"`) {
+		t.Fatal("the Server step lost its remote pairing form")
+	}
+}
+
+func TestWizardModelStepFitsWithoutTheDeferButton(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	_ = wiz.GoTo(wizard.StepModel)
+	data := wizard.Data{
+		Catalog: i18n.For(i18n.Russian),
+		Servers: servers.View{Models: &servers.ModelsView{
+			Device: "cpu", State: "loaded",
+			Models: []servers.Model{
+				{Name: "base", DiskBytes: 145_000_000, MemoryBytes: 600_000_000, Installed: true},
+				{Name: "small", DiskBytes: 484_000_000, MemoryBytes: 1_300_000_000},
+			},
+		}},
+	}
+	page := shell.SettingsHTML(shell.SettingsView{Wizard: wiz.View(data)})
+	if strings.Contains(page, `data-action="wizard-model-defer"`) {
+		t.Fatal("the Model step still offers a second skip button")
+	}
+	if !strings.Contains(page, `data-action="wizard-model-download"`) {
+		t.Fatal("the Model step lost its download action")
+	}
+}
+
+func TestWizardRailAndFooterStayCompact(t *testing.T) {
+	wiz, _ := newWizardService(t)
+	_ = wiz.Open()
+	page := shell.SettingsHTML(shell.SettingsView{Wizard: wiz.View(wizard.Data{Catalog: i18n.For(i18n.Russian)})})
+	if strings.Contains(page, "wizard-step-status") {
+		t.Fatal("the step list still prints a second status line under every step")
+	}
+	skipAll := strings.Index(page, `data-action="wizard-skip-all"`)
+	skip := strings.Index(page, `data-action="wizard-skip"`)
+	if skipAll < 0 || skip < 0 || skipAll > skip {
+		t.Fatal("Skip setup must come before Skip this step")
+	}
+}
+
+func TestWizardKeepsTheStepScrollAcrossARefresh(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	start := strings.Index(page, "function renderWizard(v)")
+	if start < 0 {
+		t.Fatal("the page has no wizard renderer")
+	}
+	end := strings.Index(page[start:], "function renderMessages(")
+	if end < 0 {
+		t.Fatal("could not delimit the wizard renderer")
+	}
+	renderer := page[start : start+end]
+	for _, want := range []string{
+		`querySelector(".wizard-body")`,
+		`nextBody.scrollTop = bodyScroll`,
+		`nextSteps.scrollTop = stepsScroll`,
+		"window.requestAnimationFrame",
+	} {
+		if !strings.Contains(renderer, want) {
+			t.Errorf("the wizard renderer does not preserve the step scroll: missing %q", want)
+		}
+	}
+}
+
+func TestSettingsPaneLaysShortCardsInColumns(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	for _, want := range []string{
+		`.settings-layout:not(.settings-single) .settings-pane { flex-direction:row; flex-wrap:wrap;`,
+		`.settings-layout:not(.settings-single) .settings-pane > .group-wide { flex:1 1 100%; }`,
+		`.field-grid { display:grid;`,
+		`class="group group-wide server-settings"`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the Settings pane does not lay cards out in columns: missing %q", want)
 		}
 	}
 }

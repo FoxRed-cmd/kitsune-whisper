@@ -3,6 +3,7 @@ package wizard
 import (
 	"fmt"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
@@ -53,13 +54,14 @@ type Labels struct {
 	StepPending string `json:"stepPending"`
 	StepSkipped string `json:"stepSkipped"`
 
-	WelcomeTitle   string `json:"welcomeTitle"`
-	WelcomeIntro   string `json:"welcomeIntro"`
-	WelcomeClient  string `json:"welcomeClient"`
-	WelcomeProfile string `json:"welcomeProfile"`
-	WelcomeServer  string `json:"welcomeServer"`
-	WelcomeModel   string `json:"welcomeModel"`
-	WelcomeCheck   string `json:"welcomeCheck"`
+	WelcomeTitle     string `json:"welcomeTitle"`
+	WelcomeIntro     string `json:"welcomeIntro"`
+	WelcomeClient    string `json:"welcomeClient"`
+	WelcomeProfile   string `json:"welcomeProfile"`
+	WelcomeServer    string `json:"welcomeServer"`
+	WelcomeModel     string `json:"welcomeModel"`
+	WelcomeModelNone string `json:"welcomeModelNone"`
+	WelcomeCheck     string `json:"welcomeCheck"`
 
 	MicTitle     string `json:"micTitle"`
 	MicHelp      string `json:"micHelp"`
@@ -139,6 +141,9 @@ type Labels struct {
 	TryError       string `json:"tryError"`
 	TryFinish      string `json:"tryFinish"`
 	TryStartServer string `json:"tryStartServer"`
+	TryPhase       string `json:"tryPhase"`
+	TryState       string `json:"tryState"`
+	TryTranscript  string `json:"tryTranscript"`
 	GotoStep       string `json:"gotoStep"`
 
 	NoticeSaved          string `json:"noticeSaved"`
@@ -209,11 +214,12 @@ type ProfileView struct {
 
 // ServerView is the Server step's rendered state.
 type ServerView struct {
-	Profiles     []ProfileView `json:"profiles"`
-	ActiveID     string        `json:"activeId"`
-	ActiveName   string        `json:"activeName"`
-	LocalAddress string        `json:"localAddress"`
-	HasLocal     bool          `json:"hasLocal"`
+	Profiles       []ProfileView `json:"profiles"`
+	ActiveID       string        `json:"activeId"`
+	ActiveName     string        `json:"activeName"`
+	LocalAddress   string        `json:"localAddress"`
+	HasLocal       bool          `json:"hasLocal"`
+	LocalAvailable bool          `json:"localAvailable"`
 }
 
 // ReasonView is one translated missing prerequisite.
@@ -286,6 +292,7 @@ func (s *Service) View(data Data) View {
 		catalog = i18n.For(i18n.English)
 	}
 	state := s.State()
+	installed := s.installed()
 	labels := labelsFor(catalog)
 	view := View{
 		Enabled:        true,
@@ -293,7 +300,7 @@ func (s *Service) View(data Data) View {
 		Completed:      state.Completed,
 		SkippedAll:     state.SkippedAll,
 		Step:           state.Step,
-		StepCount:      len(AllSteps),
+		StepCount:      len(availableSteps(installed)),
 		Labels:         labels,
 		Version:        data.Version,
 		ProfileName:    profileName(data.Servers),
@@ -303,9 +310,9 @@ func (s *Service) View(data Data) View {
 		Hotkey:         data.Hotkey,
 		DeferredModel:  state.DeferredModel,
 	}
-	view.StepNumber = stepIndex(state.Step) + 1
+	view.StepNumber = availableStepNumber(state.Step, installed)
 	view.Progress = catalog.T("wizard.progress", view.StepNumber, view.StepCount)
-	view.Steps = stepViews(catalog, state)
+	view.Steps = stepViews(catalog, state, installed)
 	view.ServerState = serverHealthLabel(catalog, data.Server)
 	view.ModelName, view.ModelState = ActiveModel(data)
 	if view.ModelState != "" {
@@ -313,7 +320,7 @@ func (s *Service) View(data Data) View {
 	}
 	view.Hardware = hardwareView(catalog, PlanHardware(data))
 	view.Model = modelView(catalog, data)
-	view.Server = serverView(catalog, data.Servers)
+	view.Server = serverView(catalog, data.Servers, s.installed().Server)
 	view.Try = tryView(catalog, labels, s, data)
 	return view
 }
@@ -339,13 +346,14 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		StepPending: catalog.T("wizard.step.pending"),
 		StepSkipped: catalog.T("wizard.step.skipped"),
 
-		WelcomeTitle:   catalog.T("wizard.welcome.title"),
-		WelcomeIntro:   catalog.T("wizard.welcome.intro"),
-		WelcomeClient:  catalog.T("wizard.welcome.client"),
-		WelcomeProfile: catalog.T("wizard.welcome.profile"),
-		WelcomeServer:  catalog.T("wizard.welcome.server"),
-		WelcomeModel:   catalog.T("wizard.welcome.model"),
-		WelcomeCheck:   catalog.T("wizard.welcome.check"),
+		WelcomeTitle:     catalog.T("wizard.welcome.title"),
+		WelcomeIntro:     catalog.T("wizard.welcome.intro"),
+		WelcomeClient:    catalog.T("wizard.welcome.client"),
+		WelcomeProfile:   catalog.T("wizard.welcome.profile"),
+		WelcomeServer:    catalog.T("wizard.welcome.server"),
+		WelcomeModel:     catalog.T("wizard.welcome.model"),
+		WelcomeModelNone: catalog.T("wizard.welcome.modelNone"),
+		WelcomeCheck:     catalog.T("wizard.welcome.check"),
 
 		MicTitle:     catalog.T("wizard.mic.title"),
 		MicHelp:      catalog.T("wizard.mic.help"),
@@ -425,6 +433,9 @@ func labelsFor(catalog i18n.Catalog) Labels {
 		TryError:       catalog.T("wizard.try.error"),
 		TryFinish:      catalog.T("wizard.try.finish"),
 		TryStartServer: catalog.T("wizard.try.startServer"),
+		TryPhase:       catalog.T("wizard.try.phase"),
+		TryState:       catalog.T("wizard.try.state"),
+		TryTranscript:  catalog.T("wizard.try.transcript"),
 		GotoStep:       catalog.T("wizard.gotoStep"),
 
 		NoticeSaved:          catalog.T("wizard.notice.saved"),
@@ -435,7 +446,31 @@ func labelsFor(catalog i18n.Catalog) Labels {
 	}
 }
 
-func stepViews(catalog i18n.Catalog, state State) []StepView {
+// availableSteps are the steps this installation actually visits. The
+// progress count and position must describe that list, not AllSteps, or a
+// Client-only install would claim "step 4 of 7" on its last setup screen.
+func availableSteps(installed components.Set) []Step {
+	steps := make([]Step, 0, len(AllSteps))
+	for _, step := range AllSteps {
+		if stepAvailable(step, installed) {
+			steps = append(steps, step)
+		}
+	}
+	return steps
+}
+
+// availableStepNumber is the one-based position of step among availableSteps.
+// A step outside the flow (an old state file being normalized) reports 1.
+func availableStepNumber(step Step, installed components.Set) int {
+	for index, candidate := range availableSteps(installed) {
+		if candidate == step {
+			return index + 1
+		}
+	}
+	return 1
+}
+
+func stepViews(catalog i18n.Catalog, state State, installed components.Set) []StepView {
 	steps := make([]StepView, 0, len(AllSteps))
 	for index, step := range AllSteps {
 		status := StatusPending
@@ -446,6 +481,8 @@ func stepViews(catalog i18n.Catalog, state State) []StepView {
 			status = StatusSkipped
 		case containsStep(state.Done, step):
 			status = StatusDone
+		case !stepAvailable(step, installed):
+			status = StatusSkipped
 		}
 		steps = append(steps, StepView{
 			ID:     step,
@@ -581,10 +618,11 @@ func serverHealthLabel(catalog i18n.Catalog, status trust.Status) string {
 	return catalog.T("server." + string(state))
 }
 
-func serverView(catalog i18n.Catalog, view servers.View) ServerView {
+func serverView(catalog i18n.Catalog, view servers.View, localAvailable bool) ServerView {
 	out := ServerView{
-		ActiveID: view.ActiveID,
-		Profiles: make([]ProfileView, 0, len(view.Profiles)),
+		ActiveID:       view.ActiveID,
+		LocalAvailable: localAvailable,
+		Profiles:       make([]ProfileView, 0, len(view.Profiles)),
 	}
 	for _, profile := range view.Profiles {
 		out.Profiles = append(out.Profiles, ProfileView{
@@ -667,7 +705,7 @@ func LabelKeys() []string {
 		"wizard.step.done", "wizard.step.current", "wizard.step.pending", "wizard.step.skipped",
 		"wizard.welcome.title", "wizard.welcome.intro", "wizard.welcome.client",
 		"wizard.welcome.profile", "wizard.welcome.server", "wizard.welcome.model",
-		"wizard.welcome.check",
+		"wizard.welcome.modelNone", "wizard.welcome.check",
 		"wizard.mic.title", "wizard.mic.help", "wizard.mic.device", "wizard.mic.test",
 		"wizard.mic.stop", "wizard.mic.noDevices", "wizard.mic.listError",
 		"wizard.hotkey.title", "wizard.hotkey.help", "wizard.hotkey.label",
@@ -692,7 +730,8 @@ func LabelKeys() []string {
 		"wizard.try.title", "wizard.try.help", "wizard.try.ready", "wizard.try.start",
 		"wizard.try.stop", "wizard.try.confirm", "wizard.try.retry", "wizard.try.passed",
 		"wizard.try.notPassed", "wizard.try.missingTitle", "wizard.try.error", "wizard.try.finish",
-		"wizard.try.startServer", "wizard.gotoStep", "wizard.try.missing.profile", "wizard.try.missing.server",
+		"wizard.try.startServer", "wizard.gotoStep", "wizard.try.phase", "wizard.try.state",
+		"wizard.try.transcript", "wizard.try.missing.profile", "wizard.try.missing.server",
 		"wizard.try.missing.runtime", "wizard.try.missing.unauthenticated",
 		"wizard.try.missing.unpinned", "wizard.try.missing.mismatch",
 		"wizard.try.missing.model", "wizard.try.missing.modelFailed", "wizard.try.missing.stopped",

@@ -1,29 +1,41 @@
 # Linux installer live check
 
-A manual, repeatable check of the all-in-one Linux installer
-(`install.sh`) and the `.deb` finisher. Run it on a disposable machine or with a
-backup of your user configuration; it installs user units and one system udev
-rule.
+A manual, repeatable check of the Linux installer (`install.sh`) on a clean
+machine. It proves the scripts-only contract: per-user files, no elevation, no
+packages, no udev rule, and nothing enabled or started.
+
+CI automates the same black-box check on every PR: `install-smoke-linux` in
+`.github/workflows/ci.yml` runs `scripts/ci-install-smoke.sh` against freshly
+built and throwaway-signed artifacts inside a clean `ubuntu:24.04` container.
+The steps below remain the real-desktop check (menu entry, GTK/WebKit, hotkey
+and microphone) that a container cannot cover.
+
+Run it on a disposable machine or with a backup of your user configuration.
+Unlike the old installers, `install.sh` writes nothing outside your home
+directory and `/tmp`.
 
 ## What it proves
 
-- The installer verifies `checksums.txt` before touching the system.
-- It adds **kitsune-whisper** to the application menu with the fox icon, and
-  the entry opens Settings.
-- It asks for `sudo` at most once: to install the selected GTK/WebKitGTK stack,
-  the `/dev/uinput` `uaccess` rule, and the `modules-load.d` entry.
-- A second run detects those pieces and does not ask again.
-- The `uaccess` ACL appears for the logged-in user without a group change or a
-  re-login, and the bundled `ydotoold` user unit starts at
-  `$XDG_RUNTIME_DIR/.ydotool_socket`.
-- The bundled `wtype`/`ydotool` path is on the Client unit's `PATH`.
-- `kitsune-client.service`, `kitsune-server.service`, and
-  `kitsune-ydotoold.service` are active.
-- The local Server answers `/health`, auto-pairs a loopback Client, and
-  transcribes speech.
-- A real Dictation cycle records from the microphone, transcribes on the local
-  Server, and injects the text through the bundled `ydotool` on GNOME Wayland.
-- Stopping the Client service returns in under a second.
+- The installer verifies `checksums.txt.sig` against the pinned release key
+  before trusting any archive checksum, and aborts on a bad or missing
+  signature.
+- `--dry-run` and `--check` change nothing.
+- No `sudo`, `pkexec`, package manager, udev, or `modules-load.d` command runs.
+- No systemd unit is enabled or started; no autostart registration is written.
+- `--client-only`, `--server-only`, and the default install exactly the
+  selected tree; `--client-only` creates no Server unit or bundle.
+- The Client binary, menu entry, and icons are placed under `$HOME`; the Server
+  bundle is registered disabled and is not started.
+- The dependency warnings name the missing identifier and point at the README;
+  a missing dependency does not change the exit status.
+- Re-running upgrades in place and keeps `kitsune.yaml`, models, and pairing;
+  `--check` reports installed versus available; a lower version is refused
+  without `--force`.
+- `--uninstall` keeps configuration, models, and pairing; `--purge` removes
+  every trace we created; neither touches user-installed packages or a udev
+  rule the tester added.
+- A clean install does not include `ydotool`, `wtype`, a `ydotoold` unit, or a
+  `/dev/uinput` rule.
 
 ## Run
 
@@ -33,62 +45,85 @@ cd /path/to/kitsune-whisper
 ./install.sh --from dist          # or the curl one-liner
 ```
 
-The one privileged step should print the package list and the rule path. Once it
-finishes:
+Start from a home directory with no previous install. The installer must not
+prompt for a password. Once it finishes:
 
 ```sh
-systemctl --user is-active kitsune-client kitsune-server kitsune-ydotoold
-getfacl /dev/uinput | grep "user:$USER"
-ls -l "$XDG_RUNTIME_DIR/.ydotool_socket"
+# Nothing should exist yet: the installer starts nothing.
+systemctl --user is-active kitsune-client kitsune-server  # inactive / unknown
+ls -l ~/.local/bin/kitsune-client
 ls -l ~/.local/share/applications/kitsune-whisper.desktop \
       ~/.local/share/icons/hicolor/scalable/apps/io.github.FoxRed-cmd.kitsune-whisper.svg
-ydotool type "installer check"     # focused text field, then remove the text
-curl -sk https://127.0.0.1:8765/health
+cat ~/.local/state/kitsune-whisper/install.json
+systemctl --user is-enabled kitsune-server.service        # disabled or not found
 ```
 
-Open the application menu and launch **kitsune-whisper**: Settings should appear
-with the fox icon in the window list and the Tray.
+If the host has GTK4/WebKitGTK, ALSA, and X11 installed, no dependency warning
+should appear. To see one, temporarily run the installer with a fake missing
+library in the automated suite rather than damaging the host.
 
-Re-running `./install.sh --from dist` should not prompt for a password.
+Launch **kitsune-whisper** from the application menu: Settings should appear
+with the fox icon and the Tray. The first-run wizard should offer the model
+download with progress; nothing should have been downloaded before that.
 
-## Package variants
-
-The same checks apply to the system packages and the AppImage:
+## Component and bookkeeping checks
 
 ```sh
-# Fedora/RHEL
-sudo dnf install ./dist/kitsune-whisper-<version>-1.x86_64.rpm
-kitsune-whisper-setup
-rpm -q --requires kitsune-whisper     # gtk4, webkitgtk6.0
+# A client-only run must leave no Server tree.
+./install.sh --client-only --from dist
+test ! -e ~/.local/lib/kitsune-whisper/server
+test ! -e ~/.local/bin/kitsune-server
 
-# Debian/Ubuntu
-sudo apt install ./dist/kitsune-whisper_<version>_amd64.deb
+# A server-only run must leave no Client binary or config.
+./install.sh --server-only --from dist
+test ! -e ~/.local/bin/kitsune-client
 
-# AppImage (no system install)
-chmod +x dist/kitsune-whisper-<version>-x86_64.AppImage
-./dist/kitsune-whisper-<version>-x86_64.AppImage --version
-./dist/kitsune-whisper-<version>-x86_64.AppImage
+# Check mode reports the manifest, components, and available version.
+./install.sh --check
+
+# Dry run changes nothing.
+./install.sh --dry-run --server-only --from dist
 ```
 
-For the AppImage, check that the bundled Server answers `/health` while the
-window is open, that `ydotool type "hello"` reaches a focused field, and that
-both children exit with the Client. The AppImage deliberately does not write
-the udev rule, so on a host without it the ydotoold child stays down and
-injection is clipboard-only.
+A downgrade must be refused unless forced:
+
+```sh
+./install.sh --from <older-artifacts>          # error: refusing to downgrade
+./install.sh --from <older-artifacts> --force  # allowed
+```
+
+## Uninstall and purge
+
+```sh
+# Keep config, models, certificates, Devices, logs, and tokens.
+./install.sh --uninstall
+test -f ~/.config/kitsune-whisper/kitsune.yaml
+test -d ~/.cache/kitsune-whisper/models
+
+# Remove everything we created.
+./install.sh --uninstall --purge
+test ! -e ~/.config/kitsune-whisper
+test ! -e ~/.local/state/kitsune-whisper
+test ! -e ~/.local/lib/kitsune-whisper
+```
+
+Confirm that the purge did not remove a package the tester installed, and that
+a `/dev/uinput` rule the tester added is still present (the removal is manual;
+see [dependencies.md](../dependencies.md#removing-a-rule-you-added)).
 
 ## Dictation cycle
 
-Use **Settings → Servers and Devices** (or the Setup wizard) to make the Local
-Server profile active, then press the hotkey and speak. On GNOME 50+ the log
-should show the portal session:
+After the wizard downloads a model, press the hotkey and speak. On GNOME
+Wayland the log should show the portal session or the external-trigger
+fallback:
 
-```
+```text
 hotkey: portal session /org/freedesktop/portal/desktop/session/... bound to CTRL+SHIFT+space / Escape
 ```
 
 and a completed cycle:
 
-```
+```text
 dictation cycle: started
 dictation cycle: processing
 dictation cycle: delivering
@@ -96,26 +131,17 @@ inject: pasted; previous clipboard restored
 dictation cycle: finished
 ```
 
-If the portal is denied, bind `kitsune-client toggle` in **Settings → Keyboard →
-Custom Shortcuts** (or the compositor config); the Client logs the fallback and
-keeps dictating.
+Injection uses the `wtype` or `ydotool` the tester installed and configured, not
+a bundled helper. If the portal is denied, bind `kitsune-client toggle` in
+**Settings → Keyboard → Custom Shortcuts** (or the compositor config); the
+Client logs the fallback and keeps dictating.
 
 ## Recorded result
 
-Host: Fedora 44, GNOME Shell 50.6, Wayland, 2026-11-01, release artifacts built
-from the `feature/65-desktop-install` tree.
+| Date | Release | Host | Result |
+| --- | --- | --- | --- |
+| — | 1.0.0 | — | **Pending** for the scripts-only installer |
 
-| Check | Result |
-| --- | --- |
-| One `sudo` prompt, re-run does not prompt | pass |
-| `/dev/uinput` ACL for the user, no re-login | pass |
-| `kitsune-ydotoold.service` socket in `$XDG_RUNTIME_DIR` | pass |
-| Local Server `/health` and auto-paired `/transcribe` | pass |
-| GTK4 Settings window/Tray process | pass |
-| GlobalShortcuts portal session bound | pass (after the host-registry fix) |
-| Speech → Server → `ydotool` injection into a focused GTK field | pass: “Hello world, this is Kitsune with the dictation test.” |
-| `systemctl --user stop kitsune-client` | pass, 0 s |
-
-The same run also exercised `transcribe-file`, which returned
-“Hello world, this is Kitsune with the meditation test.” from an `espeak-ng`
-WAV; the misheard word is a model accuracy note, not a pipeline failure.
+The 1.0.0 evidence for the earlier package/helper installer is historical and
+does not apply to this contract. Record a new run before the release; a failure
+opens a ticket and is not marked passed.

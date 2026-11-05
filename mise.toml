@@ -1,0 +1,264 @@
+# Development environment for kitsune-whisper.
+#
+#   mise install         # toolchains pinned below
+#   mise run setup       # toolchains + server/.venv + system dependency check
+#   mise tasks           # every task with its description
+#
+# Local overrides (not committed) go in mise.local.toml.
+
+[tools]
+go = "1.26"
+uv = "0.13"
+golangci-lint = "2.14.0" # keep in sync with .github/workflows/ci.yml
+zig = "0.17"            # portable C compiler for cgo when gcc is absent
+"go:golang.org/x/tools/gopls" = "0.23.0" # newest release that builds with Go 1.26
+
+[env]
+# malgo (microphone) and the X11 hotkey use cgo.
+CGO_ENABLED = "1"
+# Fail instead of silently downloading a toolchain that mise did not pin.
+GOTOOLCHAIN = "local"
+# Test against the same Python minor the release bundle ships.
+UV_PYTHON = "3.11"
+# Prefer the system gcc; fall back to the zig mise installs. Windows tasks use
+# `zig cc` directly, which the packaging script expects when gcc is absent.
+CC = "{{ 'zig cc' if os() == 'windows' else exec(command='command -v gcc >/dev/null 2>&1 && printf gcc || printf \"zig cc\"') }}"
+# Tools and LSP servers installed by `uv sync` (ruff, basedpyright, pytest).
+_.path = ["{{ config_root }}/server/.venv/{{ os(windows='Scripts', linux='bin', macos='bin') }}"]
+
+# --- Setup -----------------------------------------------------------------
+
+[tasks.setup]
+description = "Install the toolchain, server/.venv, and check system packages"
+shell = "bash -c"
+run = '''
+mise install
+(cd server && uv sync)
+echo
+echo "Toolchain and Python environment are ready."
+if ! mise run deps:check 2>/dev/null; then
+  echo
+  echo "Install the missing Linux packages with: mise run deps:install"
+fi
+'''
+
+[tasks."deps:check"]
+description = "Report Linux system packages needed to build and run the Client"
+shell = "bash -c"
+run = '''
+status=0
+case "$(uname -s)" in
+  Linux) ;;
+  *) echo "system packages: not Linux, skipping checks"; exit 0 ;;
+esac
+cc="${CC:-cc}"
+if ! command -v gcc >/dev/null 2>&1 && ! command -v zig >/dev/null 2>&1; then
+  echo "missing: C compiler — install gcc (mise run deps:install)"
+  status=1
+elif ! printf '#include <X11/Xlib.h>\n' | $cc -E -x c - >/dev/null 2>&1; then
+  echo "missing: X11 headers (cgo hotkey) — libX11-devel / libx11-dev"
+  status=1
+fi
+if ! printf '#include <alsa/asoundlib.h>\n' | $cc -E -x c - >/dev/null 2>&1; then
+  echo "missing: ALSA headers (cgo microphone) — alsa-lib-devel / libasound2-dev"
+  status=1
+fi
+if command -v ldconfig >/dev/null 2>&1; then
+  ldconfig -p 2>/dev/null | grep -q 'libgtk-4\.so\.1' ||
+    { echo "missing: GTK4 runtime (Settings window) — gtk4 / libgtk-4-1"; status=1; }
+  ldconfig -p 2>/dev/null | grep -q 'libwebkitgtk-6\.0\.so' ||
+    { echo "missing: WebKitGTK 6.0 runtime (Settings window) — webkitgtk6.0 / libwebkitgtk-6.0-4"; status=1; }
+fi
+if [ "$status" -eq 0 ]; then
+  echo "system packages: OK"
+fi
+exit "$status"
+'''
+
+[tasks."deps:install"]
+description = "Install the Linux build and desktop runtime packages (uses sudo)"
+shell = "bash -c"
+run = '''
+set -eu
+if command -v dnf >/dev/null 2>&1; then
+  sudo dnf install -y gcc libX11-devel alsa-lib-devel gtk4 webkitgtk6.0
+elif command -v apt-get >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y build-essential libx11-dev libasound2-dev libgtk-4-1 libwebkitgtk-6.0-4
+elif command -v pacman >/dev/null 2>&1; then
+  sudo pacman -S --needed --noconfirm gcc libx11 alsa-lib gtk4 webkitgtk-6.0
+elif command -v zypper >/dev/null 2>&1; then
+  sudo zypper install -y gcc libX11-devel alsa-devel libgtk-4-1 libwebkitgtk-6_0-4
+else
+  echo "unknown package manager; see README.md -> Dependencies -> Linux" >&2
+  exit 1
+fi
+mise run deps:check
+'''
+
+# --- Build -----------------------------------------------------------------
+
+[tasks.build]
+description = "Build the desktop Client (client/kitsune-client)"
+depends = ["build:client"]
+
+[tasks."build:client"]
+description = "Build the desktop Client into client/kitsune-client"
+dir = "client"
+run = 'go build -tags "desktop purego" ./cmd/kitsune-client'
+
+[tasks."build:windows"]
+description = "Build the Windows Client with GUI subsystem and resources (run on Windows)"
+run = 'pwsh -NoProfile -Command "& ./packaging/windows/build-client.ps1 -Version ((Get-Content VERSION -Raw).Trim()) -Output dist-local/kitsune-client.exe"'
+
+[tasks."build:server"]
+description = "Build the Server wheel into dist-local/"
+dir = "server"
+run = "uv build --wheel --out-dir ../dist-local"
+
+[tasks."build:artifacts"]
+description = "Build a full Linux release set in dist/, including install.sh"
+alias = "dist"
+shell = "bash -c"
+run = '''
+set -eu
+if [ "$(uname -s)" != "Linux" ]; then
+  echo "error: build:artifacts builds Linux artifacts only" >&2
+  exit 1
+fi
+version="$(cat VERSION)"
+uv python install 3.11
+uv venv --clear --python 3.11 .bundle-venv
+uv pip install --python .bundle-venv/bin/python ./server
+runtime="$(dirname "$(dirname "$(uv python find 3.11)")")"
+site_packages="$(.bundle-venv/bin/python -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')"
+mkdir -p dist
+KITSUNE_SERVER_RUNTIME="$runtime" \
+KITSUNE_SERVER_SITE_PACKAGES="$site_packages" \
+KITSUNE_SERVER_PYTHON="$PWD/.bundle-venv/bin/python" \
+  scripts/build-linux-artifacts.sh --output dist --version "$version"
+cp install.sh dist/install.sh
+cp VERSION dist/VERSION
+(cd dist && sha256sum install.sh >> checksums.txt)
+echo
+echo "Artifacts are ready in dist/. Install this build with:"
+echo "  bash dist/install.sh --from dist --insecure"
+'''
+
+# --- Test ------------------------------------------------------------------
+
+[tasks.test]
+description = "Run the Client and Server test suites (CI parity)"
+depends = ["test:client", "test:server"]
+
+[tasks."test:client"]
+description = "Run the Client unit tests"
+dir = "client"
+run = "go test ./..."
+
+[tasks."test:desktop"]
+description = "Run the desktop-tagged Wails adapter tests"
+dir = "client"
+run = 'go test -tags "desktop purego" ./internal/shell/wails'
+
+[tasks."test:server"]
+description = "Run the Server test suite"
+dir = "server"
+run = "uv run pytest"
+
+# --- Lint, format, types ---------------------------------------------------
+
+[tasks.check]
+description = "Run everything CI runs: format check, lint, types, tests"
+depends = ["fmt:check", "lint", "typecheck", "test"]
+
+[tasks.lint]
+description = "Run the Client and Server linters"
+depends = ["lint:client", "lint:server"]
+
+[tasks."lint:client"]
+description = "Run golangci-lint with the repository config"
+dir = "client"
+run = 'golangci-lint run --config ../.golangci.yml && golangci-lint run --config ../.golangci.yml --build-tags "desktop purego"'
+
+[tasks."lint:server"]
+description = "Run ruff check on the Server"
+dir = "server"
+run = "uv run ruff check ."
+
+[tasks.typecheck]
+description = "Type-check the Server with basedpyright"
+dir = "server"
+run = "uv run basedpyright"
+
+[tasks.fmt]
+description = "Format Go and Python sources"
+shell = "bash -c"
+run = '''
+gofmt -w client
+(cd server && uv run ruff format .)
+'''
+
+[tasks."fmt:check"]
+description = "Check formatting without changing files"
+shell = "bash -c"
+run = '''
+out=$(gofmt -l client)
+if [ -n "$out" ]; then
+  printf 'gofmt would change:\n%s\n' "$out"
+  exit 1
+fi
+(cd server && uv run ruff format --check .)
+'''
+
+# --- Run -------------------------------------------------------------------
+
+[tasks."run:server"]
+description = "Run the Server in the foreground from the working tree"
+dir = "server"
+shell = "bash -c"
+run = '''
+if [ ! -f ../kitsune.yaml ]; then
+  cp ../kitsune.example.yaml ../kitsune.yaml
+  echo "created kitsune.yaml from kitsune.example.yaml"
+fi
+uv run kitsune-server --config ../kitsune.yaml start --verbose
+'''
+
+[tasks."run:client"]
+description = "Build and run the Client dictation loop"
+dir = "client"
+depends = ["build:client"]
+shell = "bash -c"
+run = '''
+if [ ! -f ../kitsune.yaml ]; then
+  cp ../kitsune.example.yaml ../kitsune.yaml
+  echo "created kitsune.yaml from kitsune.example.yaml"
+fi
+./kitsune-client --config ../kitsune.yaml run
+'''
+
+[tasks."run:client-gui"]
+description = "Build and run the Client with the Settings window and Tray"
+dir = "client"
+depends = ["build:client"]
+shell = "bash -c"
+run = '''
+if [ ! -f ../kitsune.yaml ]; then
+  cp ../kitsune.example.yaml ../kitsune.yaml
+  echo "created kitsune.yaml from kitsune.example.yaml"
+fi
+./kitsune-client --config ../kitsune.yaml gui
+'''
+
+# --- End-to-end ------------------------------------------------------------
+
+[tasks."e2e:live"]
+description = "Run the live dictation slice (needs a model and a desktop)"
+shell = "bash -c"
+run = "scripts/e2e-live.sh"
+
+[tasks."e2e:trust"]
+description = "Run the pairing/trust slice (needs a model)"
+shell = "bash -c"
+run = "scripts/e2e-trust.sh"

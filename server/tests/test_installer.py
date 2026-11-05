@@ -1,19 +1,24 @@
 """Behaviour of the Linux release installer, exercised in a sandboxed HOME.
 
 The installer is a public seam: its contract is the files it writes, the
-commands it runs, and what it prints. These tests put a temporary HOME and a
-fake PATH in front of it, so no real package manager, sudo, systemd, or
-release download is touched.
+commands it runs, and what it prints. These tests put a temporary HOME, a
+temporary XDG tree and a fake PATH in front of it, so no real privilege
+escalation, service manager, package manager, or release download is touched.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
+import re
+import shutil
 import stat
 import subprocess
 import tarfile
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,19 +26,78 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL_SH = REPO_ROOT / "install.sh"
+RELEASE_PUBLIC_KEY = REPO_ROOT / "packaging" / "keys" / "kitsune-release-public.pem"
+WAYLAND_BUILDER = REPO_ROOT / "scripts" / "build-wayland-tools.sh"
 
-GTK4_LIBS = (
-    "libgtk-4.so.1 (libc6,x86-64) => /usr/lib64/libgtk-4.so.1\n"
-    "libwebkitgtk-6.0.so.4 (libc6,x86-64) => /usr/lib64/libwebkitgtk-6.0.so.4\n"
+HELP_FLAGS = (
+    "--client-only",
+    "--server-only",
+    "--from",
+    "--force-config",
+    "--force",
+    "--dry-run",
+    "--uninstall",
+    "--purge",
+    "--remove-models",
+    "--remove-server-data",
+    "--version",
+    "--check",
+    "--insecure",
+    "--help",
 )
-GTK3_LIBS = (
-    "libgtk-3.so.0 (libc6,x86-64) => /usr/lib64/libgtk-3.so.0\n"
-    "libwebkit2gtk-4.1.so.0 (libc6,x86-64) => /usr/lib64/libwebkit2gtk-4.1.so.0\n"
+
+
+@dataclass(frozen=True)
+class ReleaseKey:
+    """A throwaway ECDSA P-256 keypair used to sign the fake artifact set."""
+
+    private: Path
+    public: Path
+
+
+def make_release_key(directory: Path) -> ReleaseKey:
+    directory.mkdir(parents=True, exist_ok=True)
+    private = directory / "private.pem"
+    public = directory / "public.pem"
+    subprocess.run(
+        ["openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(private)],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["openssl", "ec", "-in", str(private), "-pubout", "-out", str(public)],
+        check=True,
+        capture_output=True,
+    )
+    return ReleaseKey(private=private, public=public)
+
+
+@pytest.fixture(scope="session")
+def release_key(tmp_path_factory: pytest.TempPathFactory) -> ReleaseKey:
+    return make_release_key(tmp_path_factory.mktemp("release-key"))
+
+
+RETIRED_FLAGS = (
+    "--no-client",
+    "--no-server",
+    "--no-wayland",
+    "--no-elevate",
+    "--gui",
+    "--cuda",
 )
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def tree_snapshot(root: Path) -> dict[str, str]:
+    """Every path under root with its content digest, for change-nothing checks."""
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        snapshot[relative] = digest(path) if path.is_file() else "<dir>"
+    return snapshot
 
 
 def write_tar(path: Path, files: dict[str, tuple[str, int]]) -> None:
@@ -47,43 +111,63 @@ def write_tar(path: Path, files: dict[str, tuple[str, int]]) -> None:
             archive.addfile(info, io.BytesIO(data))
 
 
-def client_script(label: str) -> str:
-    return f'#!/bin/sh\necho "client:{label} $*" >> "$CALL_LOG"\nexit 0\n'
+def client_script() -> str:
+    return '#!/bin/sh\necho "client: $*" >> "$CALL_LOG"\nexit 0\n'
 
 
-def server_runtime_script(label: str = "server") -> str:
+def server_runtime_script() -> str:
     return (
         "#!/bin/sh\n"
-        f'echo "{label}: $*" >> "$CALL_LOG"\n'
-        'echo "KITSUNE_ARTIFACT=${KITSUNE_BOOTSTRAP_ARTIFACT:-}" >> "$CALL_LOG"\n'
-        "exit ${FAKE_SERVER_EXIT:-0}\n"
+        'echo "server: $*" >> "$CALL_LOG"\n'
+        'if [ "${FAKE_SERVER_EXIT:-0}" != 0 ]; then exit "$FAKE_SERVER_EXIT"; fi\n'
+        # The real bootstrap.py leaves a launcher behind; the manifest records
+        # components from the installed tree, so the double must do the same.
+        'mkdir -p "$HOME/.local/bin" "$HOME/.local/lib/kitsune-whisper/server"\n'
+        ': > "$HOME/.local/bin/kitsune-server"\n'
+        'chmod 0755 "$HOME/.local/bin/kitsune-server"\n'
+        "exit 0\n"
     )
 
 
-def make_artifacts(tmp_path: Path, *, with_server: bool = False) -> Path:
-    artifacts = tmp_path / "artifacts"
+def sign_checksums(artifacts: Path, key: ReleaseKey) -> None:
+    subprocess.run(
+        [
+            "openssl",
+            "dgst",
+            "-sha256",
+            "-sign",
+            str(key.private),
+            "-out",
+            str(artifacts / "checksums.txt.sig"),
+            str(artifacts / "checksums.txt"),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def make_artifacts(
+    tmp_path: Path,
+    key: ReleaseKey,
+    *,
+    with_server: bool = False,
+    version: str = "1.0.0",
+    name: str = "artifacts",
+) -> Path:
+    """Build and sign the artifact set the installer is allowed to consume.
+
+    There is deliberately no Wayland helper archive: a request for one would
+    fail the install, so a passing install proves none is fetched.
+    """
+    artifacts = tmp_path / name
     artifacts.mkdir()
     template = "client:\n  hotkey: Ctrl+Shift+Space\n"
+    (artifacts / "VERSION").write_text(f"{version}\n", encoding="utf-8")
     write_tar(
         artifacts / "kitsune-client_linux_amd64.tar.gz",
         {
-            "kitsune-client": (client_script("gtk4"), 0o755),
+            "kitsune-client": (client_script(), 0o755),
             "kitsune.example.yaml": (template, 0o644),
-        },
-    )
-    write_tar(
-        artifacts / "kitsune-client_linux_amd64-legacy.tar.gz",
-        {
-            "kitsune-client": (client_script("legacy"), 0o755),
-            "kitsune.example.yaml": (template, 0o644),
-        },
-    )
-    write_tar(
-        artifacts / "kitsune-wayland_linux_amd64.tar.gz",
-        {
-            "bin/ydotool": (client_script("ydotool"), 0o755),
-            "bin/ydotoold": (client_script("ydotoold"), 0o755),
-            "bin/wtype": (client_script("wtype"), 0o755),
         },
     )
     if with_server:
@@ -91,38 +175,28 @@ def make_artifacts(tmp_path: Path, *, with_server: bool = False) -> Path:
             artifacts / "kitsune-server_linux_amd64.tar.gz",
             {
                 "bootstrap.py": ("import sys\n", 0o644),
-                "bundle.json": ('{"version": "0.1.0"}\n', 0o644),
+                "bundle.json": (f'{{"version": "{version}"}}\n', 0o644),
                 "lib/kitsune_server/__init__.py": ("", 0o644),
                 "runtime/bin/python3": (server_runtime_script(), 0o755),
             },
         )
     checksums = []
-    for archive in sorted(artifacts.iterdir()):
+    for archive in sorted(artifacts.glob("*.tar.gz")):
         checksums.append(f"{digest(archive)}  {archive.name}")
     (artifacts / "checksums.txt").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+    sign_checksums(artifacts, key)
     return artifacts
 
 
 def fake_commands(tmp_path: Path) -> Path:
+    """Commands that must never run are logged instead of executed."""
     directory = tmp_path / "fake-bin"
     directory.mkdir()
     scripts = {
-        "ldconfig": '#!/bin/sh\ncat "$FAKE_LDCONFIG"\n',
-        "sudo": (
-            "#!/bin/sh\n"
-            'echo "sudo $*" >> "$SUDO_LOG"\n'
-            'for last in "$@"; do :; done\n'
-            'if [ -f "$last" ]; then cp "$last" "$SUDO_SCRIPT" 2>/dev/null || true; fi\n'
-            'exit "${FAKE_SUDO_EXIT:-0}"\n'
-        ),
+        "sudo": '#!/bin/sh\necho "sudo $*" >> "$SUDO_LOG"\nexit 0\n',
+        "pkexec": '#!/bin/sh\necho "pkexec $*" >> "$SUDO_LOG"\nexit 0\n',
         "systemctl": '#!/bin/sh\necho "systemctl $*" >> "$SYSTEMCTL_LOG"\nexit 0\n',
-        "loginctl": '#!/bin/sh\necho "loginctl $*" >> "$SYSTEMCTL_LOG"\nexit 0\n',
-        "udevadm": '#!/bin/sh\necho "udevadm $*" >> "$SUDO_LOG"\nexit 0\n',
-        "modprobe": '#!/bin/sh\necho "modprobe $*" >> "$SUDO_LOG"\nexit 0\n',
-        "apt-get": '#!/bin/sh\necho "apt-get $*" >> "$SUDO_LOG"\nexit 0\n',
-        "dnf": '#!/bin/sh\necho "dnf $*" >> "$SUDO_LOG"\nexit 0\n',
-        "pacman": '#!/bin/sh\necho "pacman $*" >> "$SUDO_LOG"\nexit 0\n',
-        "zypper": '#!/bin/sh\necho "zypper $*" >> "$SUDO_LOG"\nexit 0\n',
+        "ldconfig": '#!/bin/sh\nprintf "%s\\n" "${FAKE_LDCONFIG:-}"\nexit 0\n',
         "secret-tool": (
             "#!/bin/sh\n"
             'echo "secret-tool $*" >> "$CALL_LOG"\n'
@@ -140,12 +214,10 @@ def fake_commands(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def sandbox(tmp_path: Path) -> dict[str, Any]:
+def sandbox(tmp_path: Path, release_key: ReleaseKey) -> dict[str, Any]:
     home = tmp_path / "home"
     home.mkdir()
     fake_bin = fake_commands(tmp_path)
-    libs = tmp_path / "libs"
-    libs.write_text(GTK4_LIBS, encoding="utf-8")
     env = {
         "HOME": str(home),
         "XDG_CONFIG_HOME": str(tmp_path / "config"),
@@ -154,24 +226,45 @@ def sandbox(tmp_path: Path) -> dict[str, Any]:
         "XDG_DATA_HOME": str(tmp_path / "data"),
         "XDG_RUNTIME_DIR": str(tmp_path / "runtime"),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
-        "FAKE_LDCONFIG": str(libs),
         "CALL_LOG": str(tmp_path / "calls.log"),
         "SUDO_LOG": str(tmp_path / "sudo.log"),
-        "SUDO_SCRIPT": str(tmp_path / "sudo-script.sh"),
         "SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
-        "KITSUNE_PACKAGE_MANAGER": "apt",
+        # Production pins the committed release key; tests pin a throwaway key.
+        "KITSUNE_RELEASE_PUBLIC_KEY": str(release_key.public),
     }
     (tmp_path / "runtime").mkdir()
-    return {"home": home, "env": env, "tmp": tmp_path, "libs": libs}
+    return {
+        "home": home,
+        "env": env,
+        "tmp": tmp_path,
+        "fake_bin": fake_bin,
+        "release_key": release_key,
+    }
 
 
-def run_installer(sandbox: dict[str, Any], *args: str, env: dict[str, str] | None = None):
+def merged_env(sandbox: dict[str, Any], env: dict[str, str] | None) -> dict[str, str]:
     merged = dict(sandbox["env"])  # type: ignore[arg-type]
     if env:
         merged.update(env)
+    return merged
+
+
+def run_installer(sandbox: dict[str, Any], *args: str, env: dict[str, str] | None = None):
     return subprocess.run(
         ["bash", str(INSTALL_SH), *args],
-        env=merged,
+        env=merged_env(sandbox, env),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def run_piped(sandbox: dict[str, Any], *args: str, env: dict[str, str] | None = None):
+    """Run the script the way `curl ... | bash` does: source on stdin."""
+    return subprocess.run(
+        ["bash", "-s", "--", *args],
+        input=INSTALL_SH.read_text(encoding="utf-8"),
+        env=merged_env(sandbox, env),
         capture_output=True,
         text=True,
         timeout=60,
@@ -183,28 +276,50 @@ def read_log(sandbox: dict[str, Any], name: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
-def install_client_only(sandbox: dict[str, Any], artifacts: Path, **kwargs: Any):
-    return run_installer(
-        sandbox,
-        "--no-server",
-        "--no-wayland",
-        "--no-elevate",
-        "--from",
-        str(artifacts),
-        **kwargs,
-    )
+def client_binary(sandbox: dict[str, Any]) -> Path:
+    return Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
 
 
-def test_installer_offers_the_optional_cuda_runtime() -> None:
-    script = INSTALL_SH.read_text(encoding="utf-8")
-    assert "--cuda" in script
-    assert "install_cuda_runtime" in script
-    assert "nvidia-cublas-cu12" in script
-    assert "nvidia-smi" in script
-    assert '"$SERVER_ROOT/runtime/bin/python3" -m pip install' in script
-    assert '--target "$SERVER_ROOT/lib"' in script
-    # A GPU-less host must keep the CPU Server instead of failing the install.
-    assert "keeping CPU" in script
+def server_launcher(sandbox: dict[str, Any]) -> Path:
+    return Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-server"
+
+
+def config_file(sandbox: dict[str, Any]) -> Path:
+    return Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper" / "kitsune.yaml"
+
+
+def manifest_file(sandbox: dict[str, Any]) -> Path:
+    return Path(str(sandbox["env"]["XDG_STATE_HOME"])) / "kitsune-whisper" / "install.json"
+
+
+def read_manifest(sandbox: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(manifest_file(sandbox).read_text(encoding="utf-8"))
+
+
+def assert_nothing_installed(sandbox: dict[str, Any]) -> None:
+    home = Path(str(sandbox["home"]))
+    assert not (home / ".local").exists()
+    assert not manifest_file(sandbox).exists()
+    assert not config_file(sandbox).exists()
+
+
+def assert_nothing_privileged_ran(sandbox: dict[str, Any]) -> None:
+    assert read_log(sandbox, "sudo.log") == ""
+    assert read_log(sandbox, "systemctl.log") == ""
+    calls = read_log(sandbox, "calls.log")
+    assert "client: install-autostart" not in calls
+
+
+def assert_no_helpers_installed(sandbox: dict[str, Any]) -> None:
+    home = Path(str(sandbox["home"]))
+    for name in ("ydotool", "ydotoold", "wtype"):
+        assert not (home / ".local" / "bin" / name).exists()
+    assert not (home / ".local" / "lib" / "kitsune-whisper" / "wayland").exists()
+    config_root = Path(str(sandbox["env"]["XDG_CONFIG_HOME"]))
+    assert not (config_root / "systemd" / "user" / "kitsune-ydotoold.service").exists()
+
+
+# -- the script itself -----------------------------------------------------
 
 
 def test_installer_is_valid_bash() -> None:
@@ -212,276 +327,465 @@ def test_installer_is_valid_bash() -> None:
     assert completed.returncode == 0, completed.stderr
 
 
-def test_client_install_writes_the_binary_template_and_autostart(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-
-    completed = install_client_only(sandbox, artifacts)
+def test_help_lists_every_remaining_flag_and_no_retired_one() -> None:
+    completed = subprocess.run(["bash", str(INSTALL_SH), "--help"], capture_output=True, text=True)
 
     assert completed.returncode == 0, completed.stderr
-    home = Path(str(sandbox["home"]))
-    binary = home / ".local" / "bin" / "kitsune-client"
-    config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper" / "kitsune.yaml"
+    for flag in HELP_FLAGS:
+        assert flag in completed.stdout, flag
+    for flag in RETIRED_FLAGS:
+        assert flag not in completed.stdout, flag
+
+
+def test_help_works_when_the_script_is_piped() -> None:
+    completed = subprocess.run(
+        ["bash", "-s", "--", "--help"],
+        input=INSTALL_SH.read_text(encoding="utf-8"),
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Usage" in completed.stdout
+    for flag in HELP_FLAGS:
+        assert flag in completed.stdout, flag
+    assert "cannot read" not in completed.stderr.lower()
+    assert "sed:" not in completed.stderr.lower()
+
+
+@pytest.mark.parametrize("flag", RETIRED_FLAGS)
+def test_retired_flags_are_rejected(sandbox, flag):
+    completed = run_installer(sandbox, flag)
+
+    assert completed.returncode != 0
+    assert flag in completed.stderr
+    assert not (Path(str(sandbox["home"])) / ".local").exists()
+
+
+def test_the_script_names_no_privileged_or_helper_step() -> None:
+    source = INSTALL_SH.read_text(encoding="utf-8")
+    body = "\n".join(line for line in source.splitlines() if not line.startswith("#!"))
+    # Uninstall legitimately names the Client's own `uninstall-autostart`
+    # command; installing autostart is still forbidden.
+    body = body.replace("uninstall-autostart", "")
+    for forbidden in (
+        "sudo",
+        "pkexec",
+        "/etc/",
+        "/usr/",
+        "/opt/",
+        "modules-load",
+        "udev",
+        "ydotoold",
+        "kitsune-wayland",
+        "install-autostart",
+        "systemctl",
+    ):
+        assert forbidden not in body, forbidden
+
+
+# -- install layouts -------------------------------------------------------
+
+
+def test_client_only_installs_the_client_and_stops_there(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    binary = client_binary(sandbox)
     assert binary.is_file()
     assert binary.stat().st_mode & stat.S_IXUSR
-    assert "client:gtk4" in read_log(sandbox, "calls.log")
-    assert config.is_file()
-    assert "install-autostart" in read_log(sandbox, "calls.log")
-    assert "client:gtk4 migrate-config" in read_log(sandbox, "calls.log")
+    assert config_file(sandbox).is_file()
+    calls = read_log(sandbox, "calls.log")
+    assert "client: migrate-config" in calls
+    assert "client: install-desktop" in calls
+    assert "bootstrap.py" not in calls
+    assert not server_launcher(sandbox).exists()
+    assert_nothing_privileged_ran(sandbox)
+    assert_no_helpers_installed(sandbox)
+
+
+def test_server_only_installs_the_server_without_starting_it(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+
+    completed = run_installer(sandbox, "--server-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    calls = read_log(sandbox, "calls.log")
+    assert "bootstrap.py install --no-start" in calls
+    assert "--artifact" in calls
+    assert "kitsune-server_linux_amd64.tar.gz" in calls
+    assert "--sha256" in calls
+    assert "client:" not in calls
+    assert not client_binary(sandbox).exists()
+    assert not config_file(sandbox).exists()
+    assert_nothing_privileged_ran(sandbox)
+    assert_no_helpers_installed(sandbox)
+
+
+def test_both_components_install_by_default(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+
+    completed = run_installer(sandbox, "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert client_binary(sandbox).is_file()
+    assert config_file(sandbox).is_file()
+    calls = read_log(sandbox, "calls.log")
+    assert "client: install-desktop" in calls
+    assert "bootstrap.py install --no-start" in calls
+    assert_nothing_privileged_ran(sandbox)
+    assert_no_helpers_installed(sandbox)
+
+
+def test_client_only_and_server_only_are_mutually_exclusive(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+
+    completed = run_installer(sandbox, "--client-only", "--server-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert not client_binary(sandbox).exists()
+
+
+def test_a_failed_server_install_is_reported(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+
+    completed = run_installer(
+        sandbox,
+        "--server-only",
+        "--from",
+        str(artifacts),
+        env={"FAKE_SERVER_EXIT": "1"},
+    )
+
+    assert completed.returncode != 0
 
 
 def test_reinstall_keeps_an_existing_configuration(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper" / "kitsune.yaml"
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    config = config_file(sandbox)
     config.parent.mkdir(parents=True)
     config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
 
-    completed = install_client_only(sandbox, artifacts)
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
 
     assert completed.returncode == 0, completed.stderr
     assert "Alt+Space" in config.read_text(encoding="utf-8")
 
 
+def test_force_config_overwrites_an_existing_configuration(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    config = config_file(sandbox)
+    config.parent.mkdir(parents=True)
+    config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--client-only", "--force-config", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Alt+Space" not in config.read_text(encoding="utf-8")
+
+
 def test_checksum_mismatch_stops_before_installing(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
     archive = artifacts / "kitsune-client_linux_amd64.tar.gz"
     archive.write_bytes(archive.read_bytes() + b"tampered")
 
-    completed = install_client_only(sandbox, artifacts)
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
 
     assert completed.returncode != 0
     assert "checksum" in completed.stderr.lower()
-    assert not (Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client").exists()
+    assert_nothing_installed(sandbox)
 
 
-def test_gtk4_libs_select_the_default_build(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-
-    completed = install_client_only(sandbox, artifacts)
-
-    assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:gtk4" in binary.read_text(encoding="utf-8")
+# -- release signature -----------------------------------------------------
 
 
-def test_gtk3_only_older_lts_hosts_select_the_legacy_build(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    legacy_libs = tmp_path / "gtk3-libs"
-    legacy_libs.write_text(GTK3_LIBS, encoding="utf-8")
-    os_release = tmp_path / "os-release"
-    os_release.write_text('ID=ubuntu\nVERSION_ID="22.04"\n', encoding="utf-8")
-
-    completed = install_client_only(
-        sandbox,
-        artifacts,
-        env={"FAKE_LDCONFIG": str(legacy_libs), "KITSUNE_OS_RELEASE": str(os_release)},
+def test_the_pinned_key_is_the_committed_release_key() -> None:
+    source = INSTALL_SH.read_text(encoding="utf-8")
+    match = re.search(
+        r"-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----",
+        source,
+        re.DOTALL,
     )
+    assert match is not None
+    assert match.group(0).strip() == RELEASE_PUBLIC_KEY.read_text(encoding="utf-8").strip()
+
+
+def test_a_valid_signature_allows_the_install(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
 
     assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:legacy" in binary.read_text(encoding="utf-8")
+    assert "signature" in completed.stdout.lower()
+    assert client_binary(sandbox).is_file()
 
 
-def test_a_modern_host_with_only_gtk3_installs_the_default_gtk4_build(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    legacy_libs = tmp_path / "gtk3-libs"
-    legacy_libs.write_text(GTK3_LIBS, encoding="utf-8")
-    os_release = tmp_path / "os-release"
-    os_release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n', encoding="utf-8")
+def test_a_modified_checksums_file_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    checksums = artifacts / "checksums.txt"
+    checksums.write_text(checksums.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert "signature" in completed.stderr.lower()
+    assert_nothing_installed(sandbox)
+
+
+def test_a_missing_signature_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    (artifacts / "checksums.txt.sig").unlink()
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert ".sig" in completed.stderr
+    assert_nothing_installed(sandbox)
+
+
+def test_an_invalid_signature_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    (artifacts / "checksums.txt.sig").write_bytes(b"not a signature")
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert "signature" in completed.stderr.lower()
+    assert_nothing_installed(sandbox)
+
+
+def test_a_signature_from_another_key_aborts_before_installing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    sign_checksums(artifacts, make_release_key(tmp_path / "other-key"))
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode != 0
+    assert "signature" in completed.stderr.lower()
+    assert_nothing_installed(sandbox)
+
+
+def test_insecure_skips_only_the_signature_check(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    (artifacts / "checksums.txt.sig").unlink()
+
+    completed = run_installer(sandbox, "--client-only", "--insecure", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "insecure" in completed.stderr.lower()
+    assert client_binary(sandbox).is_file()
+
+    tampered = make_artifacts(tmp_path, sandbox["release_key"], name="tampered")
+    archive = tampered / "kitsune-client_linux_amd64.tar.gz"
+    archive.write_bytes(archive.read_bytes() + b"tampered")
+    rejected = run_installer(sandbox, "--client-only", "--insecure", "--from", str(tampered))
+
+    assert rejected.returncode != 0
+    assert "checksum" in rejected.stderr.lower()
+
+
+# -- manifest, version pinning, and the downgrade guard --------------------
+
+
+def test_manifest_records_version_components_and_timestamp(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True, version="1.2.3")
+
+    completed = run_installer(sandbox, "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = read_manifest(sandbox)
+    assert manifest["version"] == "1.2.3"
+    assert manifest["components"] == ["client", "server"]
+    timestamp = manifest["installed_at"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", timestamp)
+    datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%SZ")
+    assert str(manifest_file(sandbox)) in completed.stdout
+
+
+def test_version_flag_pins_the_manifest_version(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
 
     completed = run_installer(
-        sandbox,
-        "--no-server",
-        "--no-wayland",
-        "--from",
-        str(artifacts),
-        env={
-            "FAKE_LDCONFIG": str(legacy_libs),
-            "KITSUNE_OS_RELEASE": str(os_release),
-            "KITSUNE_PACKAGE_MANAGER": "apt",
-        },
+        sandbox, "--client-only", "--version", "2.0.0", "--from", str(artifacts)
     )
 
     assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:gtk4" in binary.read_text(encoding="utf-8")
+    assert read_manifest(sandbox)["version"] == "2.0.0"
 
 
-def test_a_derivative_on_a_modern_base_gets_the_gtk4_build(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text("", encoding="utf-8")
-    os_release = tmp_path / "os-release"
-    os_release.write_text(
-        'ID=neon\nID_LIKE=ubuntu\nVERSION_ID="6.0"\nUBUNTU_CODENAME=noble\n',
+def test_reinstall_upgrades_in_place_and_keeps_configuration(sandbox, tmp_path):
+    older = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="older")
+    assert run_installer(sandbox, "--client-only", "--from", str(older)).returncode == 0
+    config = config_file(sandbox)
+    config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
+
+    newer = make_artifacts(tmp_path, sandbox["release_key"], version="1.1.0", name="newer")
+    completed = run_installer(sandbox, "--client-only", "--from", str(newer))
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "1.1.0"
+    assert "Alt+Space" in config.read_text(encoding="utf-8")
+
+
+def test_reinstalling_the_same_version_is_allowed(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "1.0.0"
+
+
+def test_downgrade_is_refused_without_force_and_allowed_with_force(sandbox, tmp_path):
+    newer = make_artifacts(tmp_path, sandbox["release_key"], version="2.0.0", name="newer")
+    assert run_installer(sandbox, "--client-only", "--from", str(newer)).returncode == 0
+
+    older = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="older")
+    refused = run_installer(sandbox, "--client-only", "--from", str(older))
+
+    assert refused.returncode != 0
+    assert "downgrade" in refused.stderr.lower()
+    assert read_manifest(sandbox)["version"] == "2.0.0"
+
+    forced = run_installer(sandbox, "--client-only", "--force", "--from", str(older))
+
+    assert forced.returncode == 0, forced.stderr
+    assert read_manifest(sandbox)["version"] == "1.0.0"
+
+
+def test_force_does_not_overwrite_configuration(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
+    config = config_file(sandbox)
+    config.write_text("client:\n  hotkey: Alt+Space\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--client-only", "--force", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Alt+Space" in config.read_text(encoding="utf-8")
+
+
+def test_an_unknown_local_version_skips_the_guard_and_says_so(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0")
+    (artifacts / "VERSION").unlink()
+
+    completed = run_installer(sandbox, "--client-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "cannot determine" in completed.stderr.lower()
+    assert read_manifest(sandbox)["version"] == "unknown"
+
+
+def test_a_local_version_falls_back_to_the_server_bundle_manifest(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True, version="3.2.1")
+    (artifacts / "VERSION").unlink()
+
+    completed = run_installer(sandbox, "--server-only", "--from", str(artifacts))
+
+    assert completed.returncode == 0, completed.stderr
+    assert read_manifest(sandbox)["version"] == "3.2.1"
+
+
+# -- check mode ------------------------------------------------------------
+
+
+def test_check_reports_versions_and_changes_nothing(sandbox, tmp_path):
+    available = make_artifacts(tmp_path, sandbox["release_key"], version="1.1.0", name="available")
+
+    before_install = run_installer(sandbox, "--check", "--from", str(available))
+
+    assert before_install.returncode == 0, before_install.stderr
+    assert "not installed" in before_install.stdout.lower()
+    assert "1.1.0" in before_install.stdout
+    assert_nothing_installed(sandbox)
+
+    installed = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="installed")
+    assert run_installer(sandbox, "--client-only", "--from", str(installed)).returncode == 0
+
+    snapshot = tree_snapshot(tmp_path)
+    checked = run_installer(sandbox, "--check", "--from", str(available))
+
+    assert checked.returncode == 0, checked.stderr
+    assert "1.0.0" in checked.stdout
+    assert "1.1.0" in checked.stdout
+    assert "client" in checked.stdout
+    assert tree_snapshot(tmp_path) == snapshot
+
+
+def test_check_works_when_the_script_is_piped(sandbox, tmp_path):
+    installed = make_artifacts(tmp_path, sandbox["release_key"], version="1.0.0", name="installed")
+    assert run_installer(sandbox, "--client-only", "--from", str(installed)).returncode == 0
+    available = make_artifacts(tmp_path, sandbox["release_key"], version="1.1.0", name="available")
+
+    completed = run_piped(sandbox, "--check", "--from", str(available))
+
+    assert completed.returncode == 0, completed.stderr
+    assert "1.0.0" in completed.stdout
+    assert "1.1.0" in completed.stdout
+
+
+def test_check_resolves_the_latest_release_tag(sandbox):
+    fake_bin = Path(str(sandbox["env"]["PATH"]).split(os.pathsep)[0])
+    fake_curl = fake_bin / "curl"
+    fake_curl.write_text(
+        '#!/bin/sh\nprintf \'{"tag_name": "v4.5.6"}\\n\'\n',
         encoding="utf-8",
     )
+    fake_curl.chmod(0o755)
 
-    completed = install_client_only(
-        sandbox,
-        artifacts,
-        env={"KITSUNE_OS_RELEASE": str(os_release), "KITSUNE_PACKAGE_MANAGER": "apt"},
-    )
+    completed = run_installer(sandbox, "--check")
 
     assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:gtk4" in binary.read_text(encoding="utf-8")
+    assert "4.5.6" in completed.stdout
+    assert_nothing_installed(sandbox)
 
 
-def test_forced_legacy_installs_the_gtk3_stack_and_packages(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text("", encoding="utf-8")
-
-    completed = run_installer(
-        sandbox, "--no-server", "--no-wayland", "--gui", "gtk3", "--from", str(artifacts)
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:legacy" in binary.read_text(encoding="utf-8")
-    privileged = read_log(sandbox, "sudo-script.sh")
-    assert "libgtk-3-0" in privileged
-    assert "libwebkit2gtk-4.1-0" in privileged
+# -- dry run and piped invocations ----------------------------------------
 
 
-def test_an_older_lts_without_gui_libraries_selects_the_legacy_build(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text("", encoding="utf-8")
-    os_release = tmp_path / "os-release"
-    os_release.write_text(
-        'ID=ubuntu\nVERSION_ID="22.04"\n',
-        encoding="utf-8",
-    )
+def test_dry_run_prints_the_plan_and_changes_nothing(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
-    completed = run_installer(
-        sandbox,
-        "--no-server",
-        "--no-wayland",
-        "--from",
-        str(artifacts),
-        env={"KITSUNE_OS_RELEASE": str(os_release), "KITSUNE_PACKAGE_MANAGER": "apt"},
-    )
+    completed = run_installer(sandbox, "--dry-run", "--from", str(artifacts))
 
     assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:legacy" in binary.read_text(encoding="utf-8")
-    privileged = read_log(sandbox, "sudo-script.sh")
-    assert "libgtk-3-0" in privileged
-    assert "libwebkit2gtk-4.1-0" in privileged
+    assert "Client" in completed.stdout
+    assert "Server" in completed.stdout
+    assert not (Path(str(sandbox["home"])) / ".local").exists()
+    assert not config_file(sandbox).exists()
+    assert read_log(sandbox, "calls.log") == ""
 
 
-def test_a_modern_host_with_both_stacks_prefers_gtk4(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text(GTK4_LIBS + GTK3_LIBS, encoding="utf-8")
-    os_release = tmp_path / "os-release"
-    os_release.write_text('ID=ubuntu\nVERSION_ID="24.04"\n', encoding="utf-8")
+def test_dry_run_works_when_the_script_is_piped(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
-    completed = install_client_only(sandbox, artifacts, env={"KITSUNE_OS_RELEASE": str(os_release)})
+    completed = run_piped(sandbox, "--dry-run", "--from", str(artifacts))
 
     assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:gtk4" in binary.read_text(encoding="utf-8")
+    assert "Client" in completed.stdout
+    assert "Server" in completed.stdout
+    assert not (Path(str(sandbox["home"])) / ".local").exists()
 
 
-def test_an_id_like_lts_derivative_selects_the_legacy_build(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text("", encoding="utf-8")
-    os_release = tmp_path / "os-release"
-    os_release.write_text(
-        'ID=linuxmint\nID_LIKE=ubuntu\nVERSION_ID="21.3"\n',
-        encoding="utf-8",
-    )
+def test_a_component_can_be_installed_through_a_pipe(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
 
-    completed = install_client_only(
-        sandbox,
-        artifacts,
-        env={"KITSUNE_OS_RELEASE": str(os_release), "KITSUNE_PACKAGE_MANAGER": "apt"},
-    )
+    completed = run_piped(sandbox, "--client-only", "--from", str(artifacts))
 
     assert completed.returncode == 0, completed.stderr
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert "client:legacy" in binary.read_text(encoding="utf-8")
+    assert client_binary(sandbox).is_file()
 
 
-def test_one_elevated_step_installs_dependencies_and_the_uinput_rule(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text("", encoding="utf-8")
-
-    completed = run_installer(sandbox, "--no-server", "--no-wayland", "--from", str(artifacts))
-
-    assert completed.returncode == 0, completed.stderr
-    sudo_log = read_log(sandbox, "sudo.log")
-    assert sudo_log.count("sudo ") == 1, sudo_log
-    privileged = read_log(sandbox, "sudo-script.sh")
-    assert "libgtk-4-1" in privileged
-    assert "libwebkitgtk-6.0-4" in privileged
-    assert "70-kitsune-whisper-uinput.rules" in privileged
-    assert 'TAG+="uaccess"' in privileged
-    assert "modules-load.d" in privileged
-    assert "udevadm" in privileged
-
-
-def test_declining_elevation_still_installs_and_explains_the_degradation(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    (tmp_path / "libs").write_text("", encoding="utf-8")
-
-    completed = run_installer(
-        sandbox,
-        "--no-server",
-        "--no-wayland",
-        "--from",
-        str(artifacts),
-        env={"FAKE_SUDO_EXIT": "1"},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    output = (completed.stdout + completed.stderr).lower()
-    assert "clipboard" in output
-    assert "settings page" in output or "browser" in output
-    binary = Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client"
-    assert binary.is_file()
-
-
-def test_wayland_helpers_are_bundled_and_supervised(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-
-    completed = run_installer(
-        sandbox, "--no-server", "--from", str(artifacts), env={"FAKE_SUDO_EXIT": "0"}
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    home = Path(str(sandbox["home"]))
-    bin_dir = home / ".local" / "bin"
-    wayland = home / ".local" / "lib" / "kitsune-whisper" / "wayland" / "bin"
-    assert (wayland / "ydotool").is_file()
-    assert (wayland / "ydotoold").is_file()
-    assert (wayland / "wtype").is_file()
-    assert (bin_dir / "ydotool").is_symlink()
-    assert (bin_dir / "wtype").is_symlink()
-    unit = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "systemd" / "user"
-    assert (unit / "kitsune-ydotoold.service").is_file()
-    assert "ydotoold" in (unit / "kitsune-ydotoold.service").read_text(encoding="utf-8")
-    systemctl = read_log(sandbox, "systemctl.log")
-    assert "enable --now kitsune-ydotoold.service" in systemctl
-    dropin = unit / "kitsune-client.service.d"
-    assert any("wayland" in path.read_text(encoding="utf-8") for path in dropin.iterdir())
-
-
-def test_server_bundle_bootstraps_from_its_own_runtime(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
-
-    completed = run_installer(sandbox, "--no-wayland", "--no-elevate", "--from", str(artifacts))
-
-    assert completed.returncode == 0, completed.stderr
-    calls = read_log(sandbox, "calls.log")
-    assert "server: -s" in calls
-    assert "bootstrap.py install" in calls.replace(str(tmp_path), "")
-    assert "--artifact" in calls
-    assert "kitsune-server_linux_amd64.tar.gz" in calls
-    assert "--sha256" in calls
+# -- uninstall and purge ---------------------------------------------------
 
 
 def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    assert install_client_only(sandbox, artifacts).returncode == 0
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
     home = Path(str(sandbox["home"]))
     config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper"
     cache = Path(str(sandbox["env"]["XDG_CACHE_HOME"])) / "kitsune-whisper"
@@ -495,24 +799,25 @@ def test_uninstall_keeps_user_data_and_purge_removes_it(sandbox, tmp_path):
     assert uninstalled.returncode == 0, uninstalled.stderr
     assert not (home / ".local" / "bin" / "kitsune-client").exists()
     assert (config / "kept").is_file()
-    assert "uninstall-autostart" in read_log(sandbox, "calls.log")
+    assert "client: uninstall-desktop" in read_log(sandbox, "calls.log")
+    assert_nothing_privileged_ran(sandbox)
 
-    assert install_client_only(sandbox, artifacts).returncode == 0
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
     purged = run_installer(sandbox, "--uninstall", "--purge")
     assert purged.returncode == 0, purged.stderr
     assert not config.exists()
     assert not cache.exists()
     assert not state.exists()
     assert not webview.exists()
-    assert "uninstall-autostart" in read_log(sandbox, "calls.log")
+    assert_nothing_privileged_ran(sandbox)
     calls = read_log(sandbox, "calls.log")
     assert "secret-tool clear service kitsune-whisper username local" in calls
     assert "secret-tool clear service kitsune-whisper username work" in calls
 
 
 def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
-    assert install_client_only(sandbox, artifacts).returncode == 0
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
     config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper"
     cache = Path(str(sandbox["env"]["XDG_CACHE_HOME"])) / "kitsune-whisper"
     state = Path(str(sandbox["env"]["XDG_STATE_HOME"])) / "kitsune-whisper"
@@ -533,7 +838,7 @@ def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):
     assert (state / "devices.json").is_file()
     assert (config / "kitsune.yaml").is_file()
 
-    assert install_client_only(sandbox, artifacts).returncode == 0
+    assert run_installer(sandbox, "--client-only", "--from", str(artifacts)).returncode == 0
     (cache / "models").mkdir(parents=True, exist_ok=True)
     (cache / "models" / "small.bin").write_text("model", encoding="utf-8")
     (state / "devices.json").write_text("{}", encoding="utf-8")
@@ -542,521 +847,692 @@ def test_remove_models_and_server_data_are_separate_choices(sandbox, tmp_path):
     assert not state.exists()
     assert (cache / "models" / "small.bin").is_file()
     assert (config / "kitsune.yaml").is_file()
+    assert_nothing_privileged_ran(sandbox)
 
 
-def test_dry_run_prints_the_plan_and_changes_nothing(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path)
+def xdg_dir(sandbox: dict[str, Any], name: str) -> Path:
+    return Path(str(sandbox["env"][name]))
 
-    completed = run_installer(
-        sandbox,
-        "--no-server",
-        "--no-wayland",
-        "--no-elevate",
-        "--dry-run",
-        "--from",
-        str(artifacts),
+
+def removal_paths(sandbox: dict[str, Any]) -> dict[str, Path]:
+    """Every path either removal mode may touch, or must deliberately keep."""
+    home = Path(str(sandbox["home"]))
+    data = xdg_dir(sandbox, "XDG_DATA_HOME")
+    config = xdg_dir(sandbox, "XDG_CONFIG_HOME")
+    cache = xdg_dir(sandbox, "XDG_CACHE_HOME")
+    state = xdg_dir(sandbox, "XDG_STATE_HOME")
+    runtime = xdg_dir(sandbox, "XDG_RUNTIME_DIR")
+    app_id = "io.github.FoxRed-cmd.kitsune-whisper"
+    return {
+        "client": home / ".local" / "bin" / "kitsune-client",
+        "launcher": home / ".local" / "bin" / "kitsune-server",
+        "bin_dir": home / ".local" / "bin",
+        "local_lib": home / ".local" / "lib" / "kitsune-whisper",
+        "server_root": home / ".local" / "lib" / "kitsune-whisper" / "server",
+        "config_dir": config / "kitsune-whisper",
+        "config_root": config,
+        "cache_dir": cache / "kitsune-whisper",
+        "state_dir": state / "kitsune-whisper",
+        "app_data": data / app_id,
+        "client_unit": config / "systemd" / "user" / "kitsune-client.service",
+        "server_unit": config / "systemd" / "user" / "kitsune-server.service",
+        "server_task": config / "kitsune-whisper" / "kitsune-server-task.xml",
+        "menu": data / "applications" / "kitsune-whisper.desktop",
+        "portal": data / "applications" / f"{app_id}.desktop",
+        "icon_svg": data / "icons" / "hicolor" / "scalable" / "apps" / f"{app_id}.svg",
+        "icon_png": data / "icons" / "hicolor" / "256x256" / "apps" / f"{app_id}.png",
+        "runtime_socket": runtime / "kitsune-whisper.sock",
+        "runtime_lock": runtime / "kitsune-whisper.lock",
+    }
+
+
+def seed_component_files(sandbox: dict[str, Any]) -> dict[str, Path]:
+    """Write what a real Client and Server install leave behind.
+
+    The fake artifacts only exercise the installer's commands, so the files the
+    real Client binary and bundle launcher would create are written here.
+    """
+    paths = removal_paths(sandbox)
+    paths["launcher"].write_text(
+        '#!/bin/sh\necho "server: $*" >> "$CALL_LOG"\nexit 0\n', encoding="utf-8"
     )
+    paths["launcher"].chmod(0o755)
+    paths["server_root"].mkdir(parents=True, exist_ok=True)
+    (paths["server_root"] / "bundle.json").write_text("{}\n", encoding="utf-8")
+    for key in ("client_unit", "server_unit", "menu", "portal"):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text("[Unit]\n", encoding="utf-8")
+    for key in ("icon_svg", "icon_png"):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text("icon", encoding="utf-8")
+    return paths
+
+
+def seed_user_data(paths: dict[str, Path]) -> dict[str, Path]:
+    files = {
+        "config": paths["config_dir"] / "kitsune.yaml",
+        "tokens": paths["config_dir"] / "tokens" / "local.json",
+        "wizard": paths["config_dir"] / "wizard.json",
+        "model": paths["cache_dir"] / "models" / "small.bin",
+        "spool": paths["cache_dir"] / "spool" / "failed.wav",
+        "client_log": paths["cache_dir"] / "client.log",
+        "certificate": paths["state_dir"] / "tls" / "server.crt",
+        "devices": paths["state_dir"] / "devices.json",
+        "server_log": paths["state_dir"] / "server.log",
+        "webview": paths["app_data"] / "Cache" / "data",
+    }
+    for path in files.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("x", encoding="utf-8")
+    return files
+
+
+def install_both_components(sandbox: dict[str, Any], tmp_path: Path) -> None:
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+    completed = run_installer(sandbox, "--from", str(artifacts))
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_uninstall_removes_our_files_and_keeps_user_data(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    paths = seed_component_files(sandbox)
+    kept = seed_user_data(paths)
+
+    completed = run_installer(sandbox, "--uninstall")
 
     assert completed.returncode == 0, completed.stderr
-    assert "kitsune-client" in completed.stdout
-    assert not (Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client").exists()
+    for name in (
+        "client",
+        "launcher",
+        "server_root",
+        "client_unit",
+        "server_unit",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+    ):
+        assert not paths[name].exists(), name
+    for name, path in kept.items():
+        assert path.is_file(), name
+    calls = read_log(sandbox, "calls.log")
+    assert "client: uninstall-autostart" in calls
+    assert "client: uninstall-desktop" in calls
+    assert "server: uninstall" in calls
+    assert "secret-tool" not in calls
+    assert_nothing_privileged_ran(sandbox)
 
 
-def test_release_workflow_publishes_every_artifact() -> None:
+def test_purge_removes_every_trace_and_leaves_other_files(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    paths = seed_component_files(sandbox)
+    seed_user_data(paths)
+    for key in ("runtime_socket", "runtime_lock"):
+        paths[key].write_text("x", encoding="utf-8")
+
+    other_tool = paths["bin_dir"] / "other-tool"
+    other_tool.write_text("x", encoding="utf-8")
+    other_config = paths["config_root"] / "other-app" / "settings"
+    other_config.parent.mkdir(parents=True, exist_ok=True)
+    other_config.write_text("x", encoding="utf-8")
+    other_unit = paths["config_root"] / "systemd" / "user" / "other.service"
+    other_unit.write_text("x", encoding="utf-8")
+    other_data = paths["app_data"].parent / "other-app" / "file"
+    other_data.parent.mkdir(parents=True, exist_ok=True)
+    other_data.write_text("x", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--uninstall", "--purge")
+
+    assert completed.returncode == 0, completed.stderr
+    for name in (
+        "client",
+        "launcher",
+        "local_lib",
+        "config_dir",
+        "cache_dir",
+        "state_dir",
+        "app_data",
+        "client_unit",
+        "server_unit",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+        "runtime_socket",
+        "runtime_lock",
+    ):
+        assert not paths[name].exists(), name
+    for path in (other_tool, other_config, other_unit, other_data):
+        assert path.is_file(), path
+    assert paths["bin_dir"].is_dir()
+    calls = read_log(sandbox, "calls.log")
+    assert "secret-tool clear service kitsune-whisper username local" in calls
+    assert "secret-tool clear service kitsune-whisper username work" in calls
+    assert_nothing_privileged_ran(sandbox)
+
+
+def test_uninstall_falls_back_to_registration_files_without_the_commands(sandbox, tmp_path):
+    paths = removal_paths(sandbox)
+    for key in (
+        "client_unit",
+        "server_unit",
+        "server_task",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+    ):
+        paths[key].parent.mkdir(parents=True, exist_ok=True)
+        paths[key].write_text("x", encoding="utf-8")
+    paths["server_root"].mkdir(parents=True, exist_ok=True)
+    (paths["server_root"] / "bundle.json").write_text("{}\n", encoding="utf-8")
+
+    completed = run_installer(sandbox, "--uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    for key in (
+        "server_root",
+        "client_unit",
+        "server_unit",
+        "server_task",
+        "menu",
+        "portal",
+        "icon_svg",
+        "icon_png",
+    ):
+        assert not paths[key].exists(), key
+    assert read_log(sandbox, "calls.log") == ""
+    assert_nothing_privileged_ran(sandbox)
+
+
+def test_removal_is_idempotent(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    seed_component_files(sandbox)
+
+    assert run_installer(sandbox, "--uninstall").returncode == 0
+    assert run_installer(sandbox, "--uninstall").returncode == 0
+    assert run_installer(sandbox, "--uninstall", "--purge").returncode == 0
+    assert run_installer(sandbox, "--uninstall", "--purge").returncode == 0
+
+
+def test_removal_calls_no_package_manager_and_no_system_tool(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    seed_component_files(sandbox)
+    log = tmp_path / "system-commands.log"
+    fake_bin = Path(str(sandbox["env"]["PATH"]).split(":")[0])
+    for name in ("apt-get", "dnf", "pacman", "zypper", "apk", "udevadm", "modprobe"):
+        script = fake_bin / name
+        script.write_text(f'#!/bin/sh\necho "{name} $*" >> "{log}"\nexit 0\n', encoding="utf-8")
+        script.chmod(0o755)
+
+    assert run_installer(sandbox, "--uninstall").returncode == 0
+    assert run_installer(sandbox, "--uninstall", "--purge").returncode == 0
+
+    assert not log.exists() or log.read_text(encoding="utf-8") == ""
+    assert read_log(sandbox, "sudo.log") == ""
+    assert read_log(sandbox, "systemctl.log") == ""
+
+
+def test_piped_uninstall_keeps_data_unless_purge_is_explicit(sandbox, tmp_path):
+    install_both_components(sandbox, tmp_path)
+    paths = seed_component_files(sandbox)
+    kept = seed_user_data(paths)
+
+    completed = run_piped(sandbox, "--uninstall")
+
+    assert completed.returncode == 0, completed.stderr
+    for name, path in kept.items():
+        assert path.is_file(), name
+
+    completed = run_piped(sandbox, "--uninstall", "--purge")
+
+    assert completed.returncode == 0, completed.stderr
+    for name in ("config_dir", "cache_dir", "state_dir", "app_data"):
+        assert not paths[name].exists(), name
+
+
+# -- release pipeline ------------------------------------------------------
+
+
+def test_release_workflow_has_no_wayland_helper_job() -> None:
     import yaml
 
     workflow_path = REPO_ROOT / ".github" / "workflows" / "release.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    assert "wayland-tools" not in workflow["jobs"]
+    assert "windows-installer" not in workflow["jobs"]
     assert set(workflow["jobs"]) == {
         "verify-version",
+        "verify-docs",
         "client-linux",
         "client-windows",
         "server-bundle",
         "server-bundle-windows",
-        "windows-installer",
-        "wayland-tools",
-        "deb",
-        "rpm",
-        "appimage",
         "release",
     }
+
+    # A tag cannot publish when installer checks and the dependencies document
+    # disagree: the drift gate is a required job of the publish job.
+    assert "verify-docs" in workflow["jobs"]["release"]["needs"]
+    verify_docs = workflow["jobs"]["verify-docs"]
+    assert any(
+        "scripts/check-dependency-drift.py" in str(step.get("run", ""))
+        for step in verify_docs["steps"]
+    )
+
     text = workflow_path.read_text(encoding="utf-8")
+    for retired in (
+        "build-wayland-tools.sh",
+        "kitsune-wayland",
+        "--no-wayland",
+        "ydotool",
+        "ydotoold",
+        "wtype",
+    ):
+        assert retired not in text, retired
+
+    # The setup executable, its Inno definition, and the job that built it are
+    # gone: the Windows installer is the checked-out install.ps1.
+    for retired in (
+        "kitsune-whisper_windows_amd64_setup.exe",
+        "build-" + "installer.ps1",
+        "kitsune-whisper" + ".iss",
+        "windows-installer",
+        "inno" + "setup",
+    ):
+        assert retired not in text, retired
+
+    # One Linux desktop build: the GTK4/WebKitGTK 6.0 Client only.
+    assert "kitsune-client_linux_amd64-legacy.tar.gz" not in text
+    assert "GTK3" not in text
+    assert "WebKit2GTK" not in text
+
     for asset in (
         "kitsune-client_linux_amd64.tar.gz",
-        "kitsune-client_linux_amd64-legacy.tar.gz",
         "kitsune-client_windows_amd64.zip",
         "kitsune-server_linux_amd64.tar.gz",
         "kitsune-server_windows_amd64.tar.gz",
-        "kitsune-whisper_windows_amd64_setup.exe",
-        "kitsune-wayland_linux_amd64.tar.gz",
-        "kitsune-whisper*_amd64.deb",
-        "kitsune-whisper*.rpm",
-        "kitsune-whisper*.AppImage",
         "install.sh",
         "install.ps1",
         "checksums.txt",
     ):
         assert asset in text, asset
-    assert "build-wayland-tools.sh" in text
-    assert "packaging/deb/build-deb.sh" in text
-    assert "packaging/rpm/build-rpm.sh" in text
-    assert "packaging/appimage/build-appimage.sh" in text
     assert "sha256sum" in text
 
-    # The publish job copies install.sh and install.ps1 from the checkout, so
-    # it must check the repository out before generating checksums.
-    release_steps = workflow["jobs"]["release"]["steps"]
-    assert any(step.get("uses") == "actions/checkout@v4" for step in release_steps)
-    assert "cp install.sh dist/install.sh" in text
-    assert "cp install.ps1 dist/install.ps1" in text
-
-    # The tag must match the single version file before anything is published.
-    assert "verify-version" in text
-    assert '[[ "$tag" != "v$version" ]]' in text
-    assert "server/pyproject.toml" in text
-    assert "server/kitsune_server/__init__.py" in text
-    assert "server/uv.lock" in text
+    # The publish job still ships both installers and their signature.
+    assert "dist/install.sh" in text
+    assert "dist/install.ps1" in text
+    assert "checksums.txt.sig" in text
 
 
-def test_the_wayland_builder_exposes_all_three_helpers() -> None:
-    script = REPO_ROOT / "scripts" / "build-wayland-tools.sh"
+def test_the_wayland_builder_is_deleted() -> None:
+    assert not WAYLAND_BUILDER.exists()
+
+
+def test_the_linux_artifact_builder_has_no_wayland_surface() -> None:
+    script = REPO_ROOT / "scripts" / "build-linux-artifacts.sh"
     completed = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
     assert completed.returncode == 0, completed.stderr
+
+    help_output = subprocess.run(["bash", str(script), "--help"], capture_output=True, text=True)
+    assert help_output.returncode == 0, help_output.stderr
     source = script.read_text(encoding="utf-8")
-    for tool in ("ydotool", "ydotoold", "wtype", "scdoc"):
-        assert tool in source, tool
-    assert "kitsune-wayland_linux_" in source
-
-
-def test_no_client_finisher_writes_config_and_installs_the_server(sandbox, tmp_path):
-    artifacts = make_artifacts(tmp_path, with_server=True)
-    template = tmp_path / "kitsune.example.yaml"
-    template.write_text("client:\n  hotkey: Ctrl+Shift+Space\n", encoding="utf-8")
-
-    completed = run_installer(
-        sandbox,
-        "--no-client",
+    for retired in (
         "--no-wayland",
-        "--no-elevate",
-        "--from",
-        str(artifacts),
-        env={"KITSUNE_CONFIG_TEMPLATE": str(template)},
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    config = Path(str(sandbox["env"]["XDG_CONFIG_HOME"])) / "kitsune-whisper" / "kitsune.yaml"
-    assert config.is_file()
-    assert not (Path(str(sandbox["home"])) / ".local" / "bin" / "kitsune-client").exists()
-    assert "bootstrap.py install" in read_log(sandbox, "calls.log")
-
-
-def test_the_deb_builder_produces_a_working_package(tmp_path):
-    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
-        pytest.skip("neither dpkg-deb nor ar is available")
-
-    # Newer dpkg defaults to zstd; the package contract and the ar fallback use
-    # gzip, so the builder must pin it explicitly.
-    source = (REPO_ROOT / "packaging" / "deb" / "build-deb.sh").read_text(encoding="utf-8")
-    assert "-Zgzip" in source
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
-            "--client",
-            str(client),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    deb = output / "kitsune-whisper_1.2.3_amd64.deb"
-    assert deb.is_file()
-    members = subprocess.run(
-        ["ar", "t", str(deb)], capture_output=True, text=True, check=True
-    ).stdout
-    assert "debian-binary" in members
-    assert "control.tar.gz" in members
-    assert "data.tar.gz" in members
-
-    control_tar = subprocess.run(
-        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
-    ).stdout
-    control = subprocess.run(
-        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "Package: kitsune-whisper" in control
-    assert "Version: 1.2.3" in control
-    assert "libgtk-4-1" in control
-    assert "libwebkitgtk-6.0-4" in control
-
-    data_tar = subprocess.run(
-        ["ar", "p", str(deb), "data.tar.gz"], capture_output=True, check=True
-    ).stdout
-    data_names = subprocess.run(
-        ["tar", "-tzf", "-"], input=data_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "usr/bin/kitsune-client" in data_names
-    assert "usr/bin/kitsune-whisper-setup" in data_names
-    assert "usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules" in data_names
-    assert "usr/lib/systemd/user/kitsune-client.service" in data_names
+        "--wayland-dir",
+        "build_wayland",
+        "kitsune-wayland",
+        "ydotool",
+        "ydotoold",
+        "wtype",
+    ):
+        assert retired not in source, retired
+        assert retired not in help_output.stdout, retired
+    assert "--no-client" in source
+    assert "--no-server" in source
 
 
-def test_the_deb_package_can_include_the_server_and_wayland_helpers(tmp_path):
-    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
-        pytest.skip("neither dpkg-deb nor ar is available")
+# -- dependency reporting --------------------------------------------------
+#
+# The installer checks the runtime surface after the binaries are in place and
+# only warns: a missing library never fails an install that placed its files.
+# These tests replace ldconfig with a fake listing and pin the glibc version,
+# so they do not depend on the machine running the suite.
 
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    server = tmp_path / "server.tar.gz"
-    write_tar(
-        server,
-        {
-            "bootstrap.py": ("import sys\n", 0o644),
-            "bundle.json": ('{"version": "1.2.3"}\n', 0o644),
-            "lib/kitsune_server/__init__.py": ("", 0o644),
-            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
-        },
-    )
-    wayland = tmp_path / "wayland.tar.gz"
-    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
-    output = tmp_path / "dist"
+LIBRARY_LINES = {
+    "libgtk-4.so.1": "libgtk-4.so.1 (libc6,x86-64) => /lib/x86_64-linux-gnu/libgtk-4.so.1",
+    "libwebkitgtk-6.0.so.4": (
+        "libwebkitgtk-6.0.so.4 (libc6,x86-64) => /lib/x86_64-linux-gnu/libwebkitgtk-6.0.so.4"
+    ),
+    "libasound.so.2": "libasound.so.2 (libc6,x86-64) => /lib/x86_64-linux-gnu/libasound.so.2",
+    "libX11.so.6": "libX11.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libX11.so.6",
+}
 
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
-            "--client",
-            str(client),
-            "--server-artifact",
-            str(server),
-            "--wayland-artifact",
-            str(wayland),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
+CLIENT_DEPENDENCY_IDS = (
+    "gtk4",
+    "webkitgtk-6.0",
+    "alsa",
+    "libx11",
+    "glibc-client",
+    "wayland-injection",
+)
 
-    assert completed.returncode == 0, completed.stderr
-    deb = output / "kitsune-whisper_1.2.3_amd64.deb"
-    control_tar = subprocess.run(
-        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
-    ).stdout
-    control = subprocess.run(
-        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "Conflicts: kitsune-whisper-legacy" in control
-
-    data_tar = subprocess.run(
-        ["ar", "p", str(deb), "data.tar.gz"], capture_output=True, check=True
-    ).stdout
-    names = subprocess.run(
-        ["tar", "-tzf", "-"], input=data_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "usr/lib/kitsune-whisper/server/runtime/bin/python3" in names
-    assert "usr/bin/kitsune-server" in names
-    assert "usr/lib/kitsune-whisper/wayland/bin/ydotoold" in names
-    assert "usr/lib/systemd/user/kitsune-server.service" in names
-    assert "usr/lib/systemd/user/kitsune-ydotoold.service" in names
-    assert "usr/lib/modules-load.d/kitsune-whisper.conf" in names
+# Enough of the userland for install.sh to run without the real PATH, whose
+# contents (a wtype or ydotool installed on the developer machine) would make
+# the injection checks ambiguous.
+BASE_TOOLS = (
+    "awk",
+    "bash",
+    "cat",
+    "chmod",
+    "cp",
+    "date",
+    "dirname",
+    "getconf",
+    "grep",
+    "gzip",
+    "head",
+    "install",
+    "ldd",
+    "mkdir",
+    "mktemp",
+    "mv",
+    "openssl",
+    "rm",
+    "rmdir",
+    "sed",
+    "sha256sum",
+    "sort",
+    "tar",
+    "tr",
+    "uname",
+)
 
 
-def test_the_legacy_deb_depends_on_the_gtk3_stack(tmp_path):
-    if not (shutil_which("dpkg-deb") or shutil_which("ar")):
-        pytest.skip("neither dpkg-deb nor ar is available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "deb" / "build-deb.sh"),
-            "--client",
-            str(client),
-            "--legacy",
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-
-    assert completed.returncode == 0, completed.stderr
-    deb = output / "kitsune-whisper-legacy_1.2.3_amd64.deb"
-    assert deb.is_file()
-    control_tar = subprocess.run(
-        ["ar", "p", str(deb), "control.tar.gz"], capture_output=True, check=True
-    ).stdout
-    control = subprocess.run(
-        ["tar", "-xzOf", "-", "./control"], input=control_tar, capture_output=True, check=True
-    ).stdout.decode("utf-8")
-    assert "libgtk-3-0" in control
-    assert "libwebkit2gtk-4.1-0" in control
+def ldconfig_listing(*missing: str) -> str:
+    lines = ["libc.so.6 (libc6,x86-64) => /lib/x86_64-linux-gnu/libc.so.6"]
+    for soname, line in LIBRARY_LINES.items():
+        if soname not in missing:
+            lines.append(line)
+    return "\n".join(lines)
 
 
-def native_arch() -> str:
-    import platform
+def minimal_path(sandbox: dict[str, Any]) -> str:
+    directory = Path(str(sandbox["tmp"])) / "min-bin"
+    if not directory.exists():
+        directory.mkdir()
+        for name in BASE_TOOLS:
+            found = shutil.which(name)
+            if found is not None:
+                (directory / name).symlink_to(found)
+    return f"{sandbox['fake_bin']}:{directory}"
 
-    return {
-        "x86_64": "x86_64",
-        "amd64": "x86_64",
-        "aarch64": "aarch64",
-        "arm64": "aarch64",
-    }.get(platform.machine().lower(), platform.machine().lower())
+
+def dependency_env(
+    sandbox: dict[str, Any],
+    *,
+    glibc: str = "2.39",
+    session: str | None = "x11",
+    missing: tuple[str, ...] = (),
+    extra_path: str | None = None,
+) -> dict[str, str]:
+    path = minimal_path(sandbox)
+    if extra_path is not None:
+        path = f"{extra_path}:{path}"
+    env = {
+        "PATH": path,
+        "FAKE_LDCONFIG": ldconfig_listing(*missing),
+        "KITSUNE_GLIBC_VERSION": glibc,
+    }
+    if session is not None:
+        env["XDG_SESSION_TYPE"] = session
+    return env
+
+
+def add_injection_tool(sandbox: dict[str, Any], name: str) -> str:
+    directory = Path(str(sandbox["tmp"])) / "tool-bin"
+    directory.mkdir(exist_ok=True)
+    tool = directory / name
+    tool.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    tool.chmod(0o755)
+    return str(directory)
+
+
+def assert_warning_names(completed: subprocess.CompletedProcess[str], identifier: str) -> None:
+    assert identifier in completed.stderr, completed.stderr
+    assert "README" in completed.stderr, completed.stderr
 
 
 @pytest.mark.parametrize(
-    "script",
+    ("args", "expect_client", "expect_server"),
     [
-        "packaging/deb/build-deb.sh",
-        "packaging/rpm/build-rpm.sh",
-        "packaging/appimage/build-appimage.sh",
-        "scripts/build-linux-artifacts.sh",
+        (("--client-only",), True, False),
+        (("--server-only",), False, True),
+        ((), True, True),
     ],
 )
-def test_the_linux_packagers_parse(script):
-    completed = subprocess.run(
-        ["bash", "-n", str(REPO_ROOT / script)], capture_output=True, text=True
-    )
-    assert completed.returncode == 0, completed.stderr
+def test_component_selection_installs_exactly_that_tree(
+    sandbox, tmp_path, args, expect_client, expect_server
+):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
-
-def test_the_rpm_builder_produces_a_working_package(tmp_path):
-    if not shutil_which("rpmbuild"):
-        pytest.skip("rpmbuild is not available")
-    if not shutil_which("rpm"):
-        pytest.skip("rpm is not available")
-
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "rpm" / "build-rpm.sh"),
-            "--client",
-            str(client),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
+    completed = run_installer(sandbox, *args, "--from", str(artifacts))
 
     assert completed.returncode == 0, completed.stderr
-    rpm = output / f"kitsune-whisper-1.2.3-1.{native_arch()}.rpm"
-    assert rpm.is_file()
+    calls = read_log(sandbox, "calls.log")
+    home = Path(str(sandbox["home"]))
 
-    query = subprocess.run(
-        ["rpm", "-qp", "--qf", "%{NAME} %{VERSION} %{RELEASE} %{ARCH}\n", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
-    assert query == ["kitsune-whisper", "1.2.3", "1", native_arch()]
+    if expect_client:
+        assert client_binary(sandbox).is_file()
+        assert config_file(sandbox).is_file()
+        assert "client: install-desktop" in calls
+    else:
+        assert not client_binary(sandbox).exists()
+        assert not config_file(sandbox).exists()
+        assert "client:" not in calls
 
-    requires = subprocess.run(
-        ["rpm", "-qp", "--requires", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "gtk4" in requires
-    assert "webkitgtk6.0" in requires
+    if expect_server:
+        assert "bootstrap.py install --no-start" in calls
+        assert "kitsune-server_linux_amd64.tar.gz" in calls
+    else:
+        assert "bootstrap.py" not in calls
+        assert not (home / ".local" / "lib" / "kitsune-whisper" / "server").exists()
+        assert not server_launcher(sandbox).exists()
 
-    names = subprocess.run(
-        ["rpm", "-qp", "--list", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "/usr/bin/kitsune-client" in names
-    assert "/usr/bin/kitsune-whisper-setup" in names
-    assert "/usr/lib/udev/rules.d/70-kitsune-whisper-uinput.rules" in names
-    assert "/usr/lib/systemd/user/kitsune-client.service" in names
+    assert_nothing_privileged_ran(sandbox)
+    assert_no_helpers_installed(sandbox)
 
 
-def test_the_rpm_can_include_the_server_and_wayland_helpers(tmp_path):
-    if not shutil_which("rpmbuild") or not shutil_which("rpm"):
-        pytest.skip("rpmbuild or rpm is not available")
+@pytest.mark.parametrize(
+    ("identifier", "soname"),
+    [
+        ("gtk4", "libgtk-4.so.1"),
+        ("webkitgtk-6.0", "libwebkitgtk-6.0.so.4"),
+        ("alsa", "libasound.so.2"),
+        ("libx11", "libX11.so.6"),
+    ],
+)
+def test_a_missing_client_library_is_named_in_a_warning(sandbox, tmp_path, identifier, soname):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
 
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    server = tmp_path / "server.tar.gz"
-    write_tar(
-        server,
-        {
-            "bootstrap.py": ("import sys\n", 0o644),
-            "bundle.json": ('{"version": "1.2.3"}\n', 0o644),
-            "lib/kitsune_server/__init__.py": ("", 0o644),
-            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
-        },
-    )
-    wayland = tmp_path / "wayland.tar.gz"
-    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "rpm" / "build-rpm.sh"),
-            "--client",
-            str(client),
-            "--server-artifact",
-            str(server),
-            "--wayland-artifact",
-            str(wayland),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, missing=(soname,)),
     )
 
     assert completed.returncode == 0, completed.stderr
-    rpm = output / f"kitsune-whisper-1.2.3-1.{native_arch()}.rpm"
-    conflicts = subprocess.run(
-        ["rpm", "-qp", "--conflicts", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "kitsune-whisper-legacy" in conflicts
-
-    names = subprocess.run(
-        ["rpm", "-qp", "--list", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "/usr/lib/kitsune-whisper/server/runtime/bin/python3" in names
-    assert "/usr/bin/kitsune-server" in names
-    assert "/usr/lib/kitsune-whisper/wayland/bin/ydotoold" in names
-    assert "/usr/lib/systemd/user/kitsune-server.service" in names
-    assert "/usr/lib/systemd/user/kitsune-ydotoold.service" in names
-    assert "/usr/lib/modules-load.d/kitsune-whisper.conf" in names
+    assert_warning_names(completed, identifier)
 
 
-def test_the_legacy_rpm_depends_on_the_gtk3_stack(tmp_path):
-    if not shutil_which("rpmbuild") or not shutil_which("rpm"):
-        pytest.skip("rpmbuild or rpm is not available")
+def test_an_old_glibc_tells_the_user_only_the_server_can_run(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
 
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "rpm" / "build-rpm.sh"),
-            "--client",
-            str(client),
-            "--legacy",
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, glibc="2.36"),
     )
 
     assert completed.returncode == 0, completed.stderr
-    rpm = output / f"kitsune-whisper-legacy-1.2.3-1.{native_arch()}.rpm"
-    requires = subprocess.run(
-        ["rpm", "-qp", "--requires", str(rpm)],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    assert "gtk3" in requires
-    assert "webkit2gtk4.1" in requires
+    assert_warning_names(completed, "glibc-client")
+    assert "only the server" in completed.stderr.lower(), completed.stderr
 
 
-def test_the_appimage_builder_produces_a_portable_bundle(tmp_path):
-    tool = os.environ.get("APPIMAGETOOL") or shutil_which("appimagetool")
-    if not tool:
-        pytest.skip("appimagetool is not available")
+def test_a_host_below_both_glibc_floors_does_not_promise_the_server(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
 
-    client = tmp_path / "kitsune-client"
-    client.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
-    client.chmod(0o755)
-    server = tmp_path / "server.tar.gz"
-    write_tar(
-        server,
-        {
-            "bootstrap.py": ("import sys\n", 0o644),
-            "runtime/bin/python3": ("#!/bin/sh\nexit 0\n", 0o755),
-        },
-    )
-    wayland = tmp_path / "wayland.tar.gz"
-    write_tar(wayland, {"bin/ydotoold": ("#!/bin/sh\nexit 0\n", 0o755)})
-    output = tmp_path / "dist"
-
-    completed = subprocess.run(
-        [
-            "bash",
-            str(REPO_ROOT / "packaging" / "appimage" / "build-appimage.sh"),
-            "--client",
-            str(client),
-            "--server-artifact",
-            str(server),
-            "--wayland-artifact",
-            str(wayland),
-            "--version",
-            "1.2.3",
-            "--output",
-            str(output),
-            "--appimagetool",
-            tool,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, glibc="2.30"),
     )
 
     assert completed.returncode == 0, completed.stderr
-    image = output / f"kitsune-whisper-1.2.3-{native_arch()}.AppImage"
-    assert image.is_file()
-    assert os.access(image, os.X_OK)
-    assert image.read_bytes()[:4] == b"\x7fELF"
+    assert_warning_names(completed, "glibc-client")
+    assert "only the server" not in completed.stderr.lower(), completed.stderr
 
 
-def shutil_which(name: str) -> str | None:
-    import shutil
+def test_server_only_reports_server_dependencies_but_not_client_ones(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
 
-    return shutil.which(name)
+    completed = run_installer(
+        sandbox,
+        "--server-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(
+            sandbox,
+            glibc="2.30",
+            session="wayland",
+            missing=tuple(LIBRARY_LINES),
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, "glibc-server")
+    for identifier in CLIENT_DEPENDENCY_IDS:
+        assert identifier not in completed.stderr, identifier
+
+
+def test_client_only_does_not_report_the_server_glibc_floor(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, glibc="2.34"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "glibc-server" not in completed.stderr, completed.stderr
+
+
+def test_wayland_without_an_injection_tool_warns_about_the_clipboard(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, session="wayland"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert_warning_names(completed, "wayland-injection")
+    assert "clipboard" in completed.stderr.lower(), completed.stderr
+
+
+@pytest.mark.parametrize("tool", ["wtype", "ydotool"])
+def test_wayland_with_an_injection_tool_is_not_warned(sandbox, tmp_path, tool):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+    tool_bin = add_injection_tool(sandbox, tool)
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, session="wayland", extra_path=tool_bin),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "wayland-injection" not in completed.stderr, completed.stderr
+
+
+def test_x11_needs_no_external_injection_tool(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"])
+
+    completed = run_installer(
+        sandbox,
+        "--client-only",
+        "--from",
+        str(artifacts),
+        env=dependency_env(sandbox, session="x11"),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "wayland-injection" not in completed.stderr, completed.stderr
+
+
+def test_warnings_never_print_a_package_manager_command(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+
+    completed = run_installer(
+        sandbox,
+        "--from",
+        str(artifacts),
+        env=dependency_env(
+            sandbox,
+            glibc="2.30",
+            session="wayland",
+            missing=tuple(LIBRARY_LINES),
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    output = (completed.stdout + completed.stderr).lower()
+    for forbidden in (
+        "sudo",
+        "apt-get",
+        "apt install",
+        "dnf install",
+        "pacman",
+        "zypper",
+        "pip install",
+        "libgtk-4-1",
+        "libasound2",
+        "libwebkit2gtk",
+    ):
+        assert forbidden not in output, forbidden
+
+
+def test_dependency_warnings_do_not_change_the_exit_status(sandbox, tmp_path):
+    artifacts = make_artifacts(tmp_path, sandbox["release_key"], with_server=True)
+
+    completed = run_installer(
+        sandbox,
+        "--from",
+        str(artifacts),
+        env=dependency_env(
+            sandbox,
+            glibc="2.30",
+            session="wayland",
+            missing=tuple(LIBRARY_LINES),
+        ),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert client_binary(sandbox).is_file()
+    assert "bootstrap.py install --no-start" in read_log(sandbox, "calls.log")
+    for identifier in (*CLIENT_DEPENDENCY_IDS, "glibc-server"):
+        assert identifier in completed.stderr, identifier

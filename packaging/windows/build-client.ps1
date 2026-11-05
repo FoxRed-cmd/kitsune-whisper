@@ -25,7 +25,10 @@ param(
     [string]$Version = 'dev',
     [string]$Output = (Join-Path (Get-Location) 'dist\kitsune-client.exe'),
     [string]$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path,
-    [switch]$SkipIcon
+    [switch]$SkipIcon,
+    # Build a console-subsystem executable so CI can capture --version output.
+    # Release builds keep the default GUI subsystem.
+    [switch]$Console
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,8 +77,12 @@ try {
     $env:CGO_ENABLED = '1'
     # -H=windowsgui covers an internal-link build; the extldflags cover the
     # external-link build cgo forces, where Go ignores -H.
-    $ldflags = "-X github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli.Version=$Version " +
-        '-H=windowsgui -extldflags=-Wl,--subsystem,windows'
+    $ldflags = "-X github.com/FoxRed-cmd/kitsune-whisper/client/internal/cli.Version=$Version"
+    if (-not $Console) {
+        # -H=windowsgui covers an internal-link build; the extldflags cover the
+        # external-link build cgo forces, where Go ignores -H.
+        $ldflags += ' -H=windowsgui -extldflags=-Wl,--subsystem,windows'
+    }
     go build -trimpath -tags 'desktop' -ldflags $ldflags -o $Output ./cmd/kitsune-client
 }
 finally {

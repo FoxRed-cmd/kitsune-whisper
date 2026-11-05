@@ -22,10 +22,10 @@ the soft-stop flag (`/state/kitsune-whisper/lifecycle.json`), and the log
 
 | Piece | Linux | Windows |
 | --- | --- | --- |
-| Bundle root | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\kitsune-whisper\Server` |
+| Bundle root | `~/.local/lib/kitsune-whisper/server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\Server` |
 | Runtime | `<root>/runtime/bin/python3` | `<root>\runtime\python.exe` (`pythonw.exe` for the supervisor) |
 | Resolved environment | `<root>/lib` | `<root>\lib` |
-| Launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\kitsune-whisper\bin\kitsune-server.cmd` |
+| Launcher | `~/.local/bin/kitsune-server` | `%LOCALAPPDATA%\Programs\kitsune-whisper\bin\kitsune-server.cmd` |
 | Manifest | `<root>/bundle.json` | `<root>\bundle.json` |
 | Bootstrap (archive only) | `bootstrap.py` | `bootstrap.py` |
 | Configuration | `$XDG_CONFIG_HOME/kitsune-whisper/kitsune.yaml` (default `~/.config/…`) | `%APPDATA%\kitsune-whisper\kitsune.yaml` |
@@ -37,8 +37,8 @@ The launcher puts `<root>/lib` first on `sys.path`, runs the interpreter with
 bundle never imports a system Python or system site-packages. `bundle.json`
 records the version, runtime Python version, platform, source, the
 configuration and model directories, and the config file pinned for the
-supervisor. A system package may set `KITSUNE_SERVER_ROOT` to a read-only bundle
-under `/usr/lib`; configuration, state, and models stay per user.
+supervisor. `KITSUNE_SERVER_ROOT` may point at a read-only bundle; configuration,
+state, and models stay per user.
 
 ## Install
 
@@ -53,8 +53,7 @@ archive anywhere, then run
 ```
 
 The bootstrap prepends the sibling `lib/` and calls the CLI, so the Linux
-one-line installer and the `.deb`/`.rpm` finishers install a host with no
-system Python.
+one-line installer can install on a host with no system Python.
 `kitsune-server install --artifact` is the reference implementation of the
 layout and supervisor steps for a host that already has Python.
 
@@ -84,9 +83,14 @@ directory (the python-build-standalone layout), and filled with
 (`--no-index --find-links`). Downloads, extraction, and pip are injectable, so
 the packaging tests run offline in temporary directories.
 
-`install` writes the supervisor entry, starts the Server now, and enables it at
-login. Re-run it to upgrade: a running Server is stopped, the bundle root is
-replaced, and configuration and models are left alone.
+`install` writes the supervisor entry disabled, then enables and starts it when
+run directly. Pass `--no-start` to install the bundle and register the
+supervisor without enabling or launching anything; **the release installers
+always pass `--no-start`**, so installing never enables or starts the Server.
+`kitsune-server enable` and `kitsune-server disable` toggle the login
+registration later without reinstalling. Re-run `install` to upgrade: a running
+Server is stopped, the bundle root is replaced, and configuration and models
+are left alone.
 
 `install` resolves the effective config file the same way startup does
 (`--config`, `$KITSUNE_CONFIG`, `./kitsune.yaml`, then the user config) and
@@ -96,9 +100,10 @@ in `bundle.json`, so `kitsune-server status` reports what the supervisor really
 reads. With no config file anywhere, no path is pinned and the Server uses its
 own discovery with defaults.
 
-Before replacing the bundle or registering the supervisor, install also runs
-the same port preflight as startup: a taken `server.port` fails here with the
-same actionable line instead of at the next login.
+Before replacing the bundle or registering the supervisor, a starting install
+also runs the same port preflight as startup: a taken `server.port` fails here
+with the same actionable line instead of at the next login. `--no-start` skips
+the preflight because it never binds the port.
 
 ## Supervisor
 
@@ -107,8 +112,13 @@ same actionable line instead of at the next login.
   `WantedBy=default.target`. It deliberately has no `graphical-session.target`
   dependency: the Server serves the network, not the desktop. Logs go to the
   user journal (`journalctl --user -u kitsune-server`).
-- **Windows** — a per-user Task Scheduler task (`kitsune-server`) registered at
-  logon from a UTF-16 XML definition. It runs the bundle's `pythonw.exe`, sets
+  Registration alone never starts the unit: install reloads the user manager
+  without enabling it, and `kitsune-server enable` adds the login link.
+- **Windows** — a per-user Task Scheduler task (`kitsune-server`) created from a
+  UTF-16 XML definition. Install registers it with its logon trigger disabled,
+  so it never fires by itself; `schtasks /Run` (and `kitsune-server start`)
+  still starts it on demand. `kitsune-server enable` re-registers the task with
+  the trigger enabled. It runs the bundle's `pythonw.exe`, sets
   `<Hidden>true</Hidden>`, and declares restart-on-failure, so no console window
   opens. The Client does not rely on that policy: Task Scheduler ignores
   `RestartOnFailure` for a task started with `schtasks /Run`, so a Client
@@ -124,12 +134,15 @@ Never a system service: both run as the installing user without elevation.
 ## Commands
 
 ```sh
-kitsune-server install ...   # install/upgrade the bundle and supervisor
+kitsune-server install ...   # install/upgrade the bundle, register, enable, start
+kitsune-server install ... --no-start  # install and register without starting
 kitsune-server uninstall     # remove bundle, launcher, unit/task; keep config and models
-kitsune-server status        # bundle version and supervisor state
+kitsune-server status        # bundle version, supervisor state, and autostart state
 kitsune-server start         # serve in the foreground (what the supervisor runs)
 kitsune-server stop          # stop the supervised process
 kitsune-server restart       # restart the supervised process
+kitsune-server enable        # enable the login registration without starting
+kitsune-server disable       # disable the login registration without stopping
 kitsune-server devices list  # list trusted Devices
 kitsune-server devices revoke <ID_OR_NAME>
 kitsune-server pair          # generate a one-time Pairing code and fingerprint
@@ -177,17 +190,20 @@ It never picks a random port.
 
 ## Health and GPU
 
-`GET /health` stays minimal (`status` and `version`) and unauthenticated. The
-authenticated `GET /status` reports the model, device, readiness, and a `gpu`
+`GET /health` stays minimal (`status`, `version`, `model`, `model_state`,
+`loaded`, `stopped`) and unauthenticated. The authenticated `GET /status`
+reports the model, device, readiness, and a `gpu`
 block: `{"available": bool, "device_count": int, "device": "cuda" | "cpu"}`. The count
 comes from CTranslate2, imported lazily; the resolved device honours
 `server.device`, so a GPU machine can still report `device: cpu`. CPU-only hosts
-are fully supported. CUDA wheels are an optional download: the Windows setup
-offers `nvidia-cublas-cu12` as a task, and `install.sh --cuda` installs it into
-the Linux bundle. `detect_cuda_devices` only reports CUDA after cuBLAS actually
-loads, so a GPU host without the runtime resolves to CPU instead of failing on
-the first transcription. Both installers skip the download when `nvidia-smi`
-finds no GPU.
+are fully supported. CUDA wheels are an optional, documented download:
+`nvidia-cublas-cu12` is installed into the bundle's `lib/` with the bundle's own
+runtime, on both Linux and Windows. The command and the Windows upgrade
+behaviour are in
+[dependencies.md](dependencies.md#optional-cuda-runtime).
+`detect_cuda_devices` only reports CUDA after cuBLAS actually loads, so a GPU
+host without the runtime resolves to CPU instead of failing on the first
+transcription. Neither installer downloads or installs the runtime.
 
 ## Building the artifact (release CI)
 
@@ -203,16 +219,15 @@ The command copies the runtime tree to `runtime/`, every child of each
 site-packages directory to `lib/`, writes `bundle.json` and `bootstrap.py`, and
 archives the four at the archive root. Publish the archive with a `sha256sum`
 entry; `install --artifact` verifies it before extracting. Publish natively per
-platform; CUDA wheels and models are never bundled. The installers download
-`nvidia-cublas-cu12` into the installed `lib/` on request, and the Server falls
-back to CPU when it is absent.
+platform; CUDA wheels and models are never bundled. CUDA is an optional manual
+step documented in [dependencies.md](dependencies.md#optional-cuda-runtime);
+the Server falls back to CPU when it is absent.
 
 Release CI builds the matching Windows bundle with
 `--platform windows` from a standalone Python tree that contains both
-`python.exe` and `pythonw.exe`, then passes that archive to
-`packaging/windows/build-installer.ps1`. The setup verifies the archive's
-SHA-256 before calling the bundle's bootstrap, so a corrupted download never
-replaces a working Server.
+`python.exe` and `pythonw.exe`. `install.ps1` verifies the archive's SHA-256
+against the release's `checksums.txt` before calling the bundle's bootstrap, so
+a corrupted download never replaces a working Server.
 
 ## Uninstall
 
@@ -220,5 +235,7 @@ replaces a working Server.
 task XML on Windows, removes the launcher, and deletes the bundle root. On
 Windows the task is ended before anything is deleted: a running `pythonw.exe`
 holds files inside the bundle. It is idempotent and preserves `kitsune.yaml`
-and `server.download_root` (models). A future installer offers a separate purge
-step for those (see the spec's uninstall stories).
+and `server.download_root` (models). The release installers run this as part of
+`--uninstall` / `-Uninstall`; `--purge` / `-Purge` additionally removes
+configuration, models, certificates, pairing state, logs, and tokens. See
+[install.md](install.md#uninstall-and-purge).

@@ -12,6 +12,8 @@ The client needs global hotkeys and the interactive clipboard, so it must run in
 
 ## Consequences
 
-- The installer registers autostart in the user session, not system-wide.
+- Autostart registration is per user session, never system-wide. The installer
+  starts nothing and enables nothing; the Client writes and enables the
+  registration only when the user turns autostart on (ADR 0013).
 - The client waits/retries the hotkey grab at startup, since it may launch before the display is ready.
 - macOS (next effort) will need a per-user launchd `LaunchAgent`, not a daemon.

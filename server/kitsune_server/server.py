@@ -18,7 +18,7 @@ from . import __version__
 from .app import create_app
 from .bundle import BundleError, Manifest
 from .config import CONFIG_FILENAME, ServerConfig, user_config_dir, user_state_dir
-from .engine import EngineLoadError, WhisperTranscriber
+from .engine import EngineLoadError
 from .gpu import detect_cuda_devices
 from .lifecycle import RESTART_EXIT_CODE, Lifecycle, lifecycle_state_path
 from .llm import OpenAITextProcessor
@@ -32,7 +32,6 @@ from .models import (
 from .pairing import PairingCodeStore, pairing_store_path
 from .processor import DisabledTextProcessor, TextProcessor
 from .store import ConfigStore
-from .transcriber import Transcriber
 from .trust import (
     CERT_FILENAME,
     KEY_FILENAME,
@@ -196,14 +195,6 @@ def build_pairing_codes(
     return PairingCodeStore(pairing_store_path(config, data_dir=data_dir))
 
 
-def build_transcriber(
-    config: ServerConfig,
-    *,
-    cuda_device_count: int | None = None,
-) -> Transcriber:
-    return WhisperTranscriber.load(config, cuda_device_count=cuda_device_count)
-
-
 def exit_for_restart() -> None:
     """Exit with the supervisor-visible restart code (ADR 0007)."""
     logger.warning(
@@ -224,14 +215,17 @@ def exit_for_stop() -> None:
 def build_model_manager(
     config: ServerConfig,
     *,
-    transcriber: Transcriber | None,
     cuda_device_count: int = 0,
     soft_stop: Lifecycle | None = None,
 ) -> ModelManager:
-    """Wire the model lifecycle to the real loader, downloader, and model directory."""
+    """Wire the model lifecycle to the real loader, downloader, and model directory.
+
+    No model is loaded here: startup never downloads or loads one. The manager
+    stays cold until a catalog download activates a model or the first
+    transcription loads an already-installed one.
+    """
     return ModelManager(
         config,
-        transcriber=transcriber,
         loader=WhisperLoader(cuda_device_count=cuda_device_count),
         downloader=HttpModelDownloader(),
         storage=FileModelStorage(config.download_root),
@@ -283,19 +277,17 @@ def run_server(
     # bad catalog fails with a config error instead of after a costly load.
     ModelCatalog.load(config)
     soft_stop = Lifecycle(state_path=lifecycle_state_path())
-    transcriber: Transcriber | None = None
     if soft_stop.stopped:
         logger.warning(
             "Server is soft-stopped: the model is not loaded and /transcribe returns 503 "
             "until POST /admin/start"
         )
-    else:
-        transcriber = build_transcriber(config, cuda_device_count=cuda_devices)
-    # The manager is the one model owner; the positional Transcriber stays None
-    # when the persisted flag means no model may load at startup.
+    # Startup never downloads or loads a model: the first-run wizard (or an
+    # explicit Admin API activation) is the only path that fetches one. An
+    # already-installed model loads lazily on the first transcription, and the
+    # manager reports the cold state until then.
     models = build_model_manager(
         config,
-        transcriber=transcriber,
         cuda_device_count=cuda_devices,
         soft_stop=soft_stop,
     )
@@ -315,8 +307,9 @@ def run_server(
     processor = build_processor(config)
     app = create_app(
         config,
-        transcriber,
-        processor,
+        # The ModelManager owns the loaded Transcriber; there is no fixed one.
+        transcriber=None,
+        processor=processor,
         cuda_device_count=cuda_devices,
         devices=devices,
         certificate=certificate,
@@ -329,9 +322,6 @@ def run_server(
         shutdown=exit_for_stop,
         version=release_version(),
     )
-    # The manager is the only owner: dropping this local reference lets an
-    # unload actually release the model while uvicorn keeps serving.
-    transcriber = None
     if config.expose_to_network:
         logger.warning(
             "server.expose_to_network is on: listening on %s:%s and reachable from the LAN",

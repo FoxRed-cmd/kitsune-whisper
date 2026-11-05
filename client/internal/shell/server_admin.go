@@ -2,10 +2,10 @@ package shell
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/logging"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
@@ -303,38 +303,42 @@ func (s *Shell) applyLifecycle(lifecycle servers.ServerLifecycle) {
 	s.updateServer(status)
 }
 
-// setStartup enables or disables a login autostart registration through the
-// platform controller. The switch is re-rendered from the real state afterwards,
-// so a unit or task a desktop refuses to change does not leave a lying toggle.
-func (s *Shell) setStartup(component string, enabled bool) {
+// setStartup applies one Autostart mode through the platform controller. A
+// switch-off removes the Client registration; the mode selector is only
+// meaningful while the switch is on. The section is re-rendered from the real
+// state afterwards, so a unit or task the desktop refuses to change does not
+// leave a lying switch.
+func (s *Shell) setStartup(enabled bool, mode string) {
 	if s.opts.Startup == nil {
 		s.pushMessages(nil, []string{s.catalog().T("error.startup.unavailable")})
 		return
 	}
-	var err error
-	switch component {
-	case "client":
-		err = s.opts.Startup.SetClient(enabled)
-	case "server":
-		err = s.opts.Startup.SetServer(enabled)
-	default:
-		err = errors.New("unknown startup component")
+	selected := components.Mode(mode)
+	if enabled && !selected.Valid() {
+		s.pushMessages(nil, []string{s.catalog().T("error.startup", "unknown autostart mode")})
+		return
 	}
-	if err != nil {
+	if err := s.opts.Startup.SetMode(enabled, selected); err != nil {
 		s.pushSettings()
 		s.pushMessages(nil, []string{s.catalog().T("error.startup", err.Error())})
 		return
 	}
 	s.pushSettings()
-	label := s.catalog().T("startup.client")
-	if component == "server" {
-		label = s.catalog().T("startup.server")
+	if !enabled {
+		s.pushMessages([]string{s.catalog().T("notice.startup.off")}, nil)
+		return
 	}
-	key := "notice.startup.off"
-	if enabled {
-		key = "notice.startup.on"
+	s.pushMessages([]string{s.catalog().T("notice.startup.on", s.startupModeLabel(selected))}, nil)
+}
+
+// startupModeLabel translates one Autostart mode for a notice. It shares the
+// mode-to-key mapping with the rendered selector.
+func (s *Shell) startupModeLabel(mode components.Mode) string {
+	labelKey, _ := startupModeKeys(mode)
+	if labelKey == "" {
+		return string(mode)
 	}
-	s.pushMessages([]string{s.catalog().T(key, label)}, nil)
+	return s.catalog().T(labelKey)
 }
 
 // setLogLevel writes one level to both sides: client.log_level for this

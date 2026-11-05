@@ -2,7 +2,8 @@
 
 A release is a Git tag `v<major>.<minor>.<patch>` whose version matches the
 root `VERSION` file and the Server package. `.github/workflows/release.yml` then
-builds every artifact natively and publishes it with `checksums.txt`.
+builds every artifact natively and publishes it with `checksums.txt` and its
+detached signature `checksums.txt.sig`.
 
 The current release line is **1.0.0**.
 
@@ -41,27 +42,138 @@ new patch version instead.
 ## What CI builds
 
 `release.yml` runs natively on Linux and Windows because the Client uses cgo.
-The `verify-version` job runs first and every build job depends on it.
+The `verify-version` job runs first, `verify-docs` gates publication on the
+installer/document drift check, and every build job depends on `verify-version`.
 
 | Job | Artifact |
 | --- | --- |
+| `verify-docs` | none; fails the release when installer checks and `dependencies.md` disagree |
 | `client-linux` | `kitsune-client_linux_amd64.tar.gz` (GTK4 + WebKitGTK 6.0) |
-| | `kitsune-client_linux_amd64-legacy.tar.gz` (GTK3 + WebKit2GTK 4.1) |
 | `client-windows` | `kitsune-client_windows_amd64.zip` |
 | `server-bundle` | `kitsune-server_linux_amd64.tar.gz` |
 | `server-bundle-windows` | `kitsune-server_windows_amd64.tar.gz` |
-| `windows-installer` | `kitsune-whisper_windows_amd64_setup.exe` |
-| `wayland-tools` | `kitsune-wayland_linux_amd64.tar.gz` (`ydotool`, `ydotoold`, `wtype`) |
-| `deb` | `kitsune-whisper_<version>_amd64.deb` and the legacy package |
-| `rpm` | `kitsune-whisper-<version>-1.x86_64.rpm` and the legacy package |
-| `appimage` | `kitsune-whisper-<version>-x86_64.AppImage` and the legacy AppImage |
-| `release` | `install.sh`, `install.ps1`, `checksums.txt`, all of the above |
+| `release` | `install.sh`, `install.ps1`, `checksums.txt`, `checksums.txt.sig`, all of the above |
+
+The installers consume the GTK4 + WebKitGTK 6.0 Client archive. A host without
+those libraries still installs and runs headless, with Settings in the browser.
+
+The two installers are the only installation artifacts. They download the
+Client and Server archives from the same release and verify them against the
+signed checksum file. No distribution package or desktop bundle is produced.
+
+## Installer smoke jobs
+
+PR CI proves the published artifact set still installs, not just that it builds:
+
+- `install-smoke-linux` builds the Client and Server archives, signs
+  `checksums.txt` with an ephemeral ECDSA P-256 key, and runs
+  `scripts/ci-install-smoke.sh` inside a clean `ubuntu:24.04` container as a
+  non-root user. The script asserts the installed tree, the Client and Server
+  `--version` output, `--check`, an in-place reinstall, uninstall and purge, and
+  that no `sudo`, package manager, `udev`, `systemctl enable/start`, or `loginctl`
+  call happened. It also fails if anything under `/etc`, `/usr` or `/opt`
+  changed.
+- `install-smoke-windows` builds the Client zip and Server bundle, signs the
+  checksums with .NET `ECDsa`, and runs `scripts/ci-install-smoke.ps1` with an
+  isolated `LOCALAPPDATA`/`APPDATA`/`USERPROFILE`. It asserts the install tree,
+  Apps & Features entry, user PATH entry, a disabled Server logon trigger, the
+  installed binaries' versions, and the uninstall/purge boundaries.
+
+Both jobs use throwaway keys and the `KITSUNE_RELEASE_PUBLIC_KEY` test seam.
+They never touch the production `RELEASE_SIGNING_KEY`. A drift between the
+identifiers in `install.sh` / `install.ps1` and the table in
+[`dependencies.md`](dependencies.md#what-the-installers-check) fails the normal
+`server` test job and the release's `verify-docs` job.
+
+### What each archive contains
+
+| Artifact | Contents |
+| --- | --- |
+| `kitsune-client_linux_amd64.tar.gz` | `kitsune-client`, `kitsune.example.yaml` |
+| `kitsune-client_windows_amd64.zip` | `kitsune-client.exe`, `kitsune.example.yaml` |
+| `kitsune-server_linux_amd64.tar.gz` | `runtime/`, `lib/`, `bootstrap.py`, `bundle.json` |
+| `kitsune-server_windows_amd64.tar.gz` | `runtime/` (`python.exe`, `pythonw.exe`), `lib/`, `bootstrap.py`, `bundle.json` |
+
+## Checksums and signature
 
 `checksums.txt` is generated in the release job with `sha256sum` over every
-`kitsune-*` asset plus the two installer scripts. The installers and the Client's
-update check verify a download against it before running anything. `install.sh`
-is the Linux updater's verified asset; `install.ps1` is the pinned Windows
-bootstrap.
+`kitsune-*` archive plus `install.sh` and `install.ps1`. Both installers verify
+the signature over `checksums.txt` before trusting any digest, and every archive
+against that file before extraction.
+
+The release job then signs `checksums.txt` with the offline release key and
+uploads the detached signature next to it. A release without a signature is
+never published.
+
+### Signing
+
+Every release carries `checksums.txt.sig`: a detached ECDSA P-256 / SHA-256
+signature over `checksums.txt`. OpenSSL writes it as a DER-encoded
+`ECDSA-Sig-Value` sequence, so .NET verifies it with
+`DSASignatureFormat.Rfc3279DerSequence`. Signing the checksum file rather than
+each archive still covers every asset, because the checksum file lists all of
+them.
+
+The public key is committed at
+[`packaging/keys/kitsune-release-public.pem`](../packaging/keys/kitsune-release-public.pem).
+The private key exists only as the repository secret `RELEASE_SIGNING_KEY` and
+as an offline backup; it is never committed. The release job fails before
+uploading anything when the secret is absent, when it is not the key that
+matches the committed public key, or when signing fails.
+
+The job and the local helper (`scripts/sign-release-checksums.sh`) both verify
+the new signature against the committed public key immediately after signing,
+so a wrong or rotated secret cannot ship a signature that users cannot check.
+
+### Verify with OpenSSL
+
+```sh
+curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.0.0/checksums.txt
+curl -fsSLO https://github.com/FoxRed-cmd/kitsune-whisper/releases/download/v1.0.0/checksums.txt.sig
+curl -fsSLO https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/packaging/keys/kitsune-release-public.pem
+openssl dgst -sha256 -verify kitsune-release-public.pem \
+  -signature checksums.txt.sig checksums.txt
+```
+
+A valid signature prints `Verified OK`. OpenSSL's output is a DER sequence; do
+not ask it for the IEEE P1363 form.
+
+### Verify with .NET ECDsa on Windows
+
+PowerShell 7 (the version `install.ps1` requires):
+
+```powershell
+$key = [System.Security.Cryptography.ECDsa]::Create()
+$key.ImportFromPem((Get-Content -Raw .\kitsune-release-public.pem))
+$valid = $key.VerifyData(
+    [System.IO.File]::ReadAllBytes('checksums.txt'),
+    [System.IO.File]::ReadAllBytes('checksums.txt.sig'),
+    [System.Security.Cryptography.HashAlgorithmName]::SHA256,
+    [System.Security.Cryptography.DSASignatureFormat]::Rfc3279DerSequence)
+if (-not $valid) { throw 'checksums.txt signature does not verify' }
+```
+
+`Rfc3279DerSequence` is required: the default
+`IeeeP1363FixedFieldConcatenation` expects a raw 64-byte `r || s` pair and
+rejects OpenSSL's DER signature.
+
+### Private key storage and rotation
+
+- Add or replace the secret from the private key file without printing it:
+  `gh secret set RELEASE_SIGNING_KEY < /secure/offline/release-signing-key.pem`.
+  Only maintainers with repository admin access can do this.
+- Keep two encrypted offline backups of the key, separate from the CI account.
+  Do not paste it into an issue, a chat, a commit, or a build log.
+- To rotate, generate a new P-256 keypair, commit the new public key, update the
+  secret, and cut a release. Each release installer pins the public key that was
+  current when it was built, so an old installer keeps verifying old releases
+  with the key in its own tag; moving forward requires the new release's
+  installer.
+- **Losing the key means no further releases can be signed with the pinned
+  key.** There is no recovery. Ship a new public key with a new installer
+  version (a minor release is enough), and tell users to fetch that installer
+  over a channel they already trust. Never publish an unsigned release as a
+  fallback.
 
 Docker images are published separately by `publish-server-image.yml`:
 `ghcr.io/foxred-cmd/kitsune-whisper-server:cpu` and `:gpu`, with
@@ -76,12 +188,20 @@ scripts/build-linux-artifacts.sh --output dist
 ```
 
 Without `--version` it reads the root `VERSION`; release CI passes the tag
-explicitly. It builds the GTK4 and GTK3 Clients, the Server bundle (when
+explicitly. It builds the Linux Client and the Server bundle (when
 `KITSUNE_SERVER_RUNTIME`, `KITSUNE_SERVER_SITE_PACKAGES`, and
-`KITSUNE_SERVER_PYTHON` point at a resolved runtime), the Wayland helpers, the
-`.deb`, `.rpm`, and AppImage when their tools are present, then writes
-`checksums.txt`. Use `--no-server --no-wayland --no-deb --no-rpm --no-appimage`
-for a Client-only build.
+`KITSUNE_SERVER_PYTHON` point at a resolved runtime), then writes
+`checksums.txt`. The builder can produce a Client-only or Server-only set when
+asked; release CI uses its own selective jobs.
+
+A manual publish must sign the same way CI does and upload the signature with
+the checksums:
+
+```sh
+scripts/sign-release-checksums.sh \
+  --key /secure/offline/release-signing-key.pem --checksums dist/checksums.txt
+gh release upload v1.0.0 dist/checksums.txt dist/checksums.txt.sig --clobber
+```
 
 Before tagging:
 
@@ -100,6 +220,12 @@ scripts/e2e-live.sh --profile local-cpu --report e2e-cpu.md
 scripts/e2e-trust.sh --model small --report e2e-trust.md
 ```
 
+The Python suite includes the drift guard that keeps the dependency
+identifiers and glibc floors in
+[`dependencies.md`](dependencies.md#what-the-installers-check) exactly equal to
+the `DEP_*`, `$Dep*`, and `GLIBC_*_FLOOR` values in `install.sh` and
+`install.ps1`.
+
 ## Release checklist
 
 - [ ] `VERSION`, `server/pyproject.toml`, and `__init__.py` all say the new
@@ -113,16 +239,33 @@ scripts/e2e-trust.sh --model small --report e2e-trust.md
 - [ ] The manual matrix in
       [verification/manual-matrix.md](verification/manual-matrix.md) is executed
       for GNOME Wayland, Windows, and a real CUDA host.
-- [ ] The artifacts install and dictate on clean Windows and Linux machines.
+- [ ] A clean Linux install runs `install.sh` with no `sudo`, no package-manager
+      call, no udev rule, and no enabled or started unit; `--dry-run` and
+      `--check` change nothing.
+- [ ] A clean Windows install runs `install.ps1` without administrator rights,
+      creates no startable logon task, and appears in Apps & Features.
+- [ ] The installers place exactly the selected Components; the Client starts
+      an installed Local Server on launch; autostart is off until switched on.
+- [ ] The first-run wizard downloads the model with progress; the Server starts
+      without a model and downloads nothing on its own.
 - [ ] `checksums.txt` lists every published asset and both installer scripts.
-- [ ] Documentation is current: install, configuration, pairing/revocation, LAN
-      exposure, models, updates, and troubleshooting.
+- [ ] `checksums.txt.sig` verifies against the committed public key with
+      OpenSSL, and the release is not published if it does not.
+- [ ] Uninstall keeps configuration, models, and pairing state; purge removes
+      every trace we created and no package the user installed; a user-added
+      udev rule is documented as a manual removal.
+- [ ] `docs/dependencies.md` lists every package and injection tool for the
+      supported distributions and both platforms.
+- [ ] Documentation is current: install, dependencies, configuration,
+      pairing/revocation, LAN exposure, models, updates, and troubleshooting.
 - [ ] Docker smoke (optional, opt-in) passes for a packaging change.
 
 ## Rollback
 
 - **Client or Server:** reinstall the previous release. The installer keeps
   `kitsune.yaml`, models, Devices, and TLS, and `migrate-config` is additive.
+  On Linux a lower version needs `--force`; the Windows installer does not
+  block it.
 - **Docker:** pin the previous `vX.Y.Z-cpu` / `vX.Y.Z-gpu` image tag.
 - **A bad tag:** do not move it. Ship a patch release. Delete a draft release
   only if nothing was published.

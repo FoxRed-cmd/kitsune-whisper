@@ -29,12 +29,25 @@ download.
 | Deployment | Default |
 | --- | --- |
 | Linux native bundle | `~/.cache/kitsune-whisper/models` |
-| Windows native bundle | the path in `server.download_root` |
+| Windows native bundle | `%USERPROFILE%\.cache\kitsune-whisper\models` (the default `server.download_root`) |
 | Docker | `/models` on the `kitsune-models` volume |
 
 Set `server.catalog_file` to a YAML catalog to override the pinned metadata;
 `""` uses the bundled catalog. The file must list at least one model and each
 name must be a plain file name, not a path.
+
+## Startup and the first model
+
+The Server starts without touching the network: it never downloads a model at
+startup. With no model installed, `GET /health` reports `loaded: false` with
+`model_state: "cold"`, and `POST /transcribe` returns `503` with the error code
+`model_unavailable` until a model is available.
+
+The first-run wizard's catalog download is the only path that fetches a model.
+When a download completes on a Server that has no usable model, the manager
+loads it immediately, so transcription works without restarting the process.
+An already-installed model is loaded lazily on the first transcription (or
+explicitly through **Activate**); until then `/status` reports it as `cold`.
 
 ## Download, activate, delete
 

@@ -16,21 +16,29 @@ func WizardHTML(view wizard.View) string {
 	return wizardHTML(view)
 }
 
-// wizardHTML renders the wizard screen: step navigation, the current step, and
-// the navigation footer. Every interpolated value is escaped; the page holds
-// no validation or routing.
+// wizardHTML renders the wizard screen: a step rail, the current step, and the
+// navigation footer. Every interpolated value is escaped; the page holds no
+// validation or routing.
 func wizardHTML(view wizard.View) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group wizard" data-section="wizard">`)
-	out.WriteString(`<div class="wizard-head">`)
+	out.WriteString(`<aside class="wizard-rail">`)
+	out.WriteString(`<div class="wizard-rail-head">`)
 	out.WriteString(`<p class="wizard-progress" data-wizard-progress>` + escape(view.Progress) + `</p>`)
 	out.WriteString(`<h2>` + pageIcon("wand") + escape(view.Labels.Title) + `</h2>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.Subtitle) + `</p>`)
-	out.WriteString(wizardStepsHTML(view))
+	out.WriteString(`<p class="wizard-subtitle">` + escape(view.Labels.Subtitle) + `</p>`)
 	out.WriteString(`</div>`)
-	// The step body is the only scrollable part, so the navigation buttons
-	// below it stay in the same place no matter how tall the step is.
-	out.WriteString(`<div class="wizard-body">`)
+	out.WriteString(wizardStepsHTML(view))
+	out.WriteString(`<div class="wizard-rail-actions">`)
+	out.WriteString(`<button type="button" class="ghost" data-action="wizard-restart">` +
+		escape(view.Labels.Restart) + `</button>`)
+	out.WriteString(`<button type="button" class="ghost" data-action="wizard-close">` +
+		escape(view.Labels.Close) + `</button>`)
+	out.WriteString(`</div></aside>`)
+	out.WriteString(`<div class="wizard-main">`)
+	// The body is the only scrollable part, so the navigation buttons below it
+	// stay in place no matter how tall the step is.
+	out.WriteString(`<div class="wizard-body"><div class="wizard-content">`)
 	switch view.Step {
 	case wizard.StepWelcome:
 		out.WriteString(wizardWelcomeHTML(view))
@@ -47,9 +55,9 @@ func wizardHTML(view wizard.View) string {
 	case wizard.StepTry:
 		out.WriteString(wizardTryHTML(view))
 	}
-	out.WriteString(`</div>`)
+	out.WriteString(`</div></div>`)
 	out.WriteString(wizardFooterHTML(view))
-	out.WriteString(`</section>`)
+	out.WriteString(`</div></section>`)
 	return out.String()
 }
 
@@ -66,10 +74,18 @@ func wizardStepsHTML(view wizard.View) string {
 		case wizard.StatusSkipped:
 			status = view.Labels.StepSkipped
 		}
-		out.WriteString(`<li data-step="` + escape(string(step.ID)) + `" data-status="` + escape(string(step.Status)) + `">`)
+		// The colour of the number already tells a done step from a pending
+		// one; a second status line doubled every row and pushed the list out
+		// of the rail. Keep the wording for screen readers only.
+		current := ""
+		if step.Status == wizard.StatusCurrent {
+			current = ` aria-current="step"`
+		}
+		out.WriteString(`<li data-step="` + escape(string(step.ID)) + `" data-status="` + escape(string(step.Status)) +
+			`" title="` + escape(status) + `"` + current + `>`)
 		out.WriteString(`<span class="wizard-step-number">` + fmt.Sprint(step.Number) + `</span>`)
 		out.WriteString(`<span class="wizard-step-title">` + escape(step.Title) + `</span>`)
-		out.WriteString(`<span class="wizard-step-status">` + escape(status) + `</span></li>`)
+		out.WriteString(`</li>`)
 	}
 	out.WriteString(`</ol>`)
 	return out.String()
@@ -78,18 +94,17 @@ func wizardStepsHTML(view wizard.View) string {
 func wizardWelcomeHTML(view wizard.View) string {
 	var out strings.Builder
 	out.WriteString(`<h3>` + escape(view.Labels.WelcomeTitle) + `</h3>`)
-	out.WriteString(`<p>` + escape(view.Labels.WelcomeIntro) + `</p>`)
-	out.WriteString(`<dl class="wizard-summary">`)
+	out.WriteString(`<p class="wizard-lede">` + escape(view.Labels.WelcomeIntro) + `</p>`)
+	out.WriteString(`<ul class="wizard-facts">`)
 	for _, row := range [][2]string{
-		{view.Labels.WelcomeClient, view.Version},
-		{view.Labels.WelcomeProfile, view.ProfileName},
-		{view.Labels.WelcomeServer, view.ServerState},
-		{view.Labels.WelcomeModel, valueOr(view.ModelName, view.Labels.ModelNone)},
+		{view.Labels.WelcomeClient, valueOr(view.Version, "—")},
+		{view.Labels.WelcomeProfile, valueOr(view.ProfileName, "—")},
+		{view.Labels.WelcomeServer, valueOr(view.ServerState, "—")},
+		{view.Labels.WelcomeModel, valueOr(view.ModelName, view.Labels.WelcomeModelNone)},
 	} {
-		value := valueOr(row[1], "—")
-		out.WriteString(`<dt>` + escape(fmt.Sprintf(row[0], value)) + `</dt><dd>` + escape(value) + `</dd>`)
+		out.WriteString(`<li>` + escape(fmt.Sprintf(row[0], row[1])) + `</li>`)
 	}
-	out.WriteString(`</dl>`)
+	out.WriteString(`</ul>`)
 	out.WriteString(`<div class="actions-inline"><button type="button" data-action="wizard-refresh">` +
 		escape(view.Labels.WelcomeCheck) + `</button></div>`)
 	return out.String()
@@ -98,7 +113,8 @@ func wizardWelcomeHTML(view wizard.View) string {
 func wizardMicHTML(view wizard.View) string {
 	var out strings.Builder
 	out.WriteString(`<h3>` + escape(view.Labels.MicTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.MicHelp) + `</p>`)
+	out.WriteString(`<p class="wizard-lede">` + escape(view.Labels.MicHelp) + `</p>`)
+	out.WriteString(`<div class="wizard-panel">`)
 	if len(view.Devices) == 0 {
 		out.WriteString(`<p class="help">` + escape(view.Labels.MicNoDevices) + `</p>`)
 	} else {
@@ -122,25 +138,29 @@ func wizardMicHTML(view wizard.View) string {
 	if view.DeviceError != "" {
 		out.WriteString(`<p class="failure">` + escape(fmt.Sprintf(view.Labels.MicListError, view.DeviceError)) + `</p>`)
 	}
+	out.WriteString(`</div>`)
 	return out.String()
 }
 
 func wizardHotkeyHTML(view wizard.View) string {
 	var out strings.Builder
 	out.WriteString(`<h3>` + escape(view.Labels.HotkeyTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.HotkeyHelp) + `</p>`)
+	out.WriteString(`<p class="wizard-lede">` + escape(view.Labels.HotkeyHelp) + `</p>`)
+	out.WriteString(`<div class="wizard-columns">`)
+	out.WriteString(`<div class="wizard-panel">`)
 	out.WriteString(`<div class="field"><label for="wizard-hotkey">` + escape(view.Labels.HotkeyLabel) + `</label>`)
 	out.WriteString(`<input type="text" id="wizard-hotkey" data-wizard-hotkey="true" autocomplete="off" spellcheck="false" value="` +
 		escape(view.Hotkey) + `" placeholder="` + escape(view.Labels.HotkeyPlaceholder) + `"></div>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.HotkeyConflictNote) + `</p>`)
+	out.WriteString(`</div>`)
 	if offer := view.ShortcutOffer; offer.Enabled {
-		out.WriteString(`<div class="shortcut-offer" data-wizard-shortcuts>`)
+		out.WriteString(`<div class="wizard-panel shortcut-offer" data-wizard-shortcuts>`)
 		out.WriteString(`<h4>` + escape(offer.Title) + `</h4>`)
 		out.WriteString(`<p class="help">` + escape(offer.Help) + `</p>`)
 		if offer.Error != "" {
 			out.WriteString(`<p class="failure">` + escape(offer.Error) + `</p>`)
 		}
-		out.WriteString(`<div class="mic-actions">`)
+		out.WriteString(`<div class="actions-inline">`)
 		if offer.Add != "" {
 			out.WriteString(`<button type="button" class="primary" data-action="gnome-shortcuts-add">` + escape(offer.Add) + `</button>`)
 		}
@@ -149,6 +169,7 @@ func wizardHotkeyHTML(view wizard.View) string {
 		}
 		out.WriteString(`</div></div>`)
 	}
+	out.WriteString(`</div>`)
 	return out.String()
 }
 
@@ -156,7 +177,9 @@ func wizardHardwareHTML(view wizard.View) string {
 	var out strings.Builder
 	hardware := view.Hardware
 	out.WriteString(`<h3>` + escape(view.Labels.HardwareTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.HardwareHelp) + `</p>`)
+	out.WriteString(`<p class="wizard-lede">` + escape(view.Labels.HardwareHelp) + `</p>`)
+	out.WriteString(`<div class="wizard-columns">`)
+	out.WriteString(`<div class="wizard-panel">`)
 	if hardware.Detected != "" {
 		out.WriteString(`<p class="notice">` + escape(hardware.Detected) + `</p>`)
 	}
@@ -167,6 +190,8 @@ func wizardHardwareHTML(view wizard.View) string {
 		out.WriteString(`<p class="help">` + escape(hardware.PinnedText) + `</p>`)
 	}
 	out.WriteString(`<p class="help">` + escape(hardware.RecommendText) + `</p>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`<div class="wizard-panel">`)
 	out.WriteString(`<div class="field"><label for="wizard-hardware">` + escape(view.Labels.HardwareTitle) + `</label>`)
 	out.WriteString(`<select id="wizard-hardware">`)
 	for _, option := range hardware.Options {
@@ -178,6 +203,8 @@ func wizardHardwareHTML(view wizard.View) string {
 	}
 	out.WriteString(`</select></div>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.HardwareRestart) + `</p>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`</div>`)
 	return out.String()
 }
 
@@ -185,7 +212,7 @@ func wizardModelHTML(view wizard.View) string {
 	var out strings.Builder
 	model := view.Model
 	out.WriteString(`<h3>` + escape(view.Labels.ModelTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.ModelHelp) + `</p>`)
+	out.WriteString(`<p class="wizard-lede">` + escape(view.Labels.ModelHelp) + `</p>`)
 	if !model.Available {
 		if model.Error != "" {
 			out.WriteString(`<p class="failure">` + escape(model.Error) + `</p>`)
@@ -220,7 +247,7 @@ func wizardModelHTML(view wizard.View) string {
 	if len(model.Rows) == 0 {
 		out.WriteString(`<p class="help">` + escape(view.Labels.ModelNoCatalog) + `</p>`)
 	} else {
-		out.WriteString(`<table class="models"><thead><tr><th>` + escape(view.Labels.ModelTitle) +
+		out.WriteString(`<div class="wizard-table"><table class="models"><thead><tr><th>` + escape(view.Labels.ModelTitle) +
 			`</th><th>` + escape(view.Labels.ModelSize) + `</th><th>` + escape(view.Labels.ModelMemory) +
 			`</th><th></th></tr></thead><tbody>`)
 		for _, row := range model.Rows {
@@ -238,10 +265,8 @@ func wizardModelHTML(view wizard.View) string {
 				out.WriteString(`<tr class="model-progress"><td colspan="4">` + escape(row.Download.Label) + `</td></tr>`)
 			}
 		}
-		out.WriteString(`</tbody></table>`)
+		out.WriteString(`</tbody></table></div>`)
 	}
-	out.WriteString(`<div class="actions-inline"><button type="button" data-action="wizard-model-defer">` +
-		escape(view.Labels.ModelDefer) + `</button></div>`)
 	if view.DeferredModel != "" {
 		out.WriteString(`<p class="help">` + escape(fmt.Sprintf(view.Labels.ModelDeferred, view.DeferredModel)) + `</p>`)
 	}
@@ -268,23 +293,21 @@ func wizardServerHTML(view wizard.View) string {
 	var out strings.Builder
 	server := view.Server
 	out.WriteString(`<h3>` + escape(view.Labels.ServerTitle) + `</h3>`)
-	if len(server.Profiles) > 0 {
-		out.WriteString(`<h4>` + escape(view.Labels.ServerProfiles) + `</h4>`)
-		for _, profile := range server.Profiles {
-			out.WriteString(`<div class="row" data-profile="` + escape(profile.Name) + `"><strong>` + escape(profile.Name) + `</strong>`)
-			if profile.Active {
-				out.WriteString(` <span class="badge">` + escape(view.Labels.ServerActive) + `</span>`)
-			}
-			out.WriteString(` <span class="health">` + escape(profile.Health) + `</span>`)
-			out.WriteString(` <code>` + escape(profile.URL) + `</code></div>`)
-		}
+	// The status bar already names the active profile, so repeating the whole
+	// profile list here only stole height from the two forms. Pairing with a
+	// remote server switches to it automatically.
+	out.WriteString(`<div class="wizard-columns">`)
+	if server.LocalAvailable {
+		out.WriteString(`<div class="wizard-panel wizard-panel-stack">`)
+		out.WriteString(`<h4>` + escape(view.Labels.ServerLocalTitle) + `</h4>`)
+		out.WriteString(`<p class="help">` + escape(view.Labels.ServerLocalHelp) + `</p>`)
+		out.WriteString(`<div class="field"><label for="wizard-local-address">` + escape(view.Labels.ServerLocalAddress) + `</label>`)
+		out.WriteString(`<input type="text" id="wizard-local-address" autocomplete="off" spellcheck="false" value="` +
+			escape(server.LocalAddress) + `"></div>`)
+		out.WriteString(`<button type="button" data-action="wizard-local">` + escape(view.Labels.ServerUseLocal) + `</button>`)
+		out.WriteString(`</div>`)
 	}
-	out.WriteString(`<h4>` + escape(view.Labels.ServerLocalTitle) + `</h4>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.ServerLocalHelp) + `</p>`)
-	out.WriteString(`<div class="field"><label for="wizard-local-address">` + escape(view.Labels.ServerLocalAddress) + `</label>`)
-	out.WriteString(`<input type="text" id="wizard-local-address" autocomplete="off" spellcheck="false" value="` +
-		escape(server.LocalAddress) + `"></div>`)
-	out.WriteString(`<button type="button" data-action="wizard-local">` + escape(view.Labels.ServerUseLocal) + `</button>`)
+	out.WriteString(`<div class="wizard-panel wizard-panel-stack">`)
 	out.WriteString(`<h4>` + escape(view.Labels.ServerRemoteTitle) + `</h4>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.ServerRemoteHelp) + `</p>`)
 	out.WriteString(`<div class="field"><label for="wizard-server-address">` + escape(view.Labels.ServerAddress) + `</label>`)
@@ -294,6 +317,8 @@ func wizardServerHTML(view wizard.View) string {
 	out.WriteString(`<div class="field"><label for="wizard-server-name">` + escape(view.Labels.ServerDeviceName) + `</label>`)
 	out.WriteString(`<input type="text" id="wizard-server-name" autocomplete="off" spellcheck="false"></div>`)
 	out.WriteString(`<button type="button" class="primary" data-action="wizard-pair-remote">` + escape(view.Labels.ServerPair) + `</button>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`</div>`)
 	if server.ActiveID == "" {
 		out.WriteString(`<p class="failure">` + escape(view.Labels.ServerNoProfile) + `</p>`)
 	}
@@ -304,10 +329,16 @@ func wizardTryHTML(view wizard.View) string {
 	var out strings.Builder
 	try := view.Try
 	out.WriteString(`<h3>` + escape(view.Labels.TryTitle) + `</h3>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.TryHelp) + `</p>`)
-	out.WriteString(`<p class="help">` + escape(view.Labels.TryTitle) + `: ` +
-		`<span data-wizard-phase>` + escape(try.PhaseLabel) + `</span> · ` +
-		`<span data-wizard-try-state>` + escape(try.StateLabel) + `</span></p>`)
+	out.WriteString(`<p class="wizard-lede">` + escape(view.Labels.TryHelp) + `</p>`)
+	out.WriteString(`<div class="wizard-columns">`)
+	out.WriteString(`<div class="wizard-panel">`)
+	out.WriteString(`<p class="wizard-try-status">`)
+	out.WriteString(`<span><span class="wizard-try-label">` + escape(view.Labels.TryPhase) + `</span> ` +
+		`<span data-wizard-phase>` + escape(try.PhaseLabel) + `</span></span>`)
+	out.WriteString(`<span class="wizard-sep">·</span>`)
+	out.WriteString(`<span><span class="wizard-try-label">` + escape(view.Labels.TryState) + `</span> ` +
+		`<span data-wizard-try-state>` + escape(try.StateLabel) + `</span></span>`)
+	out.WriteString(`</p>`)
 	switch {
 	case try.Passed:
 		out.WriteString(`<p class="notice">` + escape(view.Labels.TryPassed) + `</p>`)
@@ -329,10 +360,7 @@ func wizardTryHTML(view wizard.View) string {
 	default:
 		out.WriteString(`<p class="notice">` + escape(view.Labels.TryReady) + `</p>`)
 	}
-	out.WriteString(`<div class="field"><label for="wizard-try-output">` + escape(view.Labels.TryTitle) + `</label>`)
-	out.WriteString(`<textarea id="wizard-try-output" rows="4" spellcheck="false"></textarea></div>`)
-	out.WriteString(`<p class="failure" data-wizard-error>` + escape(try.RuntimeError) + `</p>`)
-	out.WriteString(`<div class="actions-inline">`)
+	out.WriteString(`<div class="wizard-actions">`)
 	out.WriteString(`<button type="button" class="primary" data-action="wizard-try-start">` + escape(view.Labels.TryStart) + `</button>`)
 	out.WriteString(`<button type="button" data-action="wizard-try-stop">` + escape(view.Labels.TryStop) + `</button>`)
 	out.WriteString(`<button type="button" data-action="wizard-try-confirm">` + escape(view.Labels.TryConfirm) + `</button>`)
@@ -341,22 +369,31 @@ func wizardTryHTML(view wizard.View) string {
 	if try.Passed {
 		out.WriteString(`<p class="help">` + escape(view.Labels.TryFinish) + `</p>`)
 	}
+	out.WriteString(`</div>`)
+	out.WriteString(`<div class="wizard-panel wizard-panel-fill">`)
+	out.WriteString(`<div class="field"><label for="wizard-try-output">` + escape(view.Labels.TryTranscript) + `</label>`)
+	out.WriteString(`<textarea id="wizard-try-output" rows="7" spellcheck="false"></textarea></div>`)
+	out.WriteString(`<p class="failure" data-wizard-error>` + escape(try.RuntimeError) + `</p>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`</div>`)
 	return out.String()
 }
 
 func wizardFooterHTML(view wizard.View) string {
 	var out strings.Builder
 	out.WriteString(`<div class="wizard-footer">`)
-	out.WriteString(`<button type="button" data-action="wizard-back">` + escape(view.Labels.Back) + `</button>`)
-	out.WriteString(`<button type="button" data-action="wizard-skip">` + escape(view.Labels.Skip) + `</button>`)
-	out.WriteString(`<button type="button" data-action="wizard-skip-all">` + escape(view.Labels.SkipAll) + `</button>`)
+	if view.StepNumber > 1 {
+		out.WriteString(`<button type="button" data-action="wizard-back">` + escape(view.Labels.Back) + `</button>`)
+	}
+	out.WriteString(`<div class="wizard-footer-actions">`)
+	out.WriteString(`<button type="button" class="ghost" data-action="wizard-skip-all">` + escape(view.Labels.SkipAll) + `</button>`)
+	out.WriteString(`<button type="button" class="ghost" data-action="wizard-skip">` + escape(view.Labels.Skip) + `</button>`)
 	next := view.Labels.Next
 	if view.Step == wizard.StepTry {
 		next = view.Labels.Finish
 	}
 	out.WriteString(`<button type="button" class="primary" data-action="wizard-next">` + escape(next) + `</button>`)
-	out.WriteString(`<button type="button" data-action="wizard-close">` + escape(view.Labels.Close) + `</button>`)
-	out.WriteString(`<button type="button" data-action="wizard-restart">` + escape(view.Labels.Restart) + `</button>`)
+	out.WriteString(`</div>`)
 	out.WriteString(`</div>`)
 	return out.String()
 }

@@ -9,8 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/humanize"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
@@ -59,49 +61,58 @@ type navEntry struct {
 	Targets []string
 }
 
-// navEntries lists the Settings screens in navigation order. An entry is
+// navEntries lists the Settings screens in navigation order. Related screens
+// share one entry so the menu stays short: everyday preferences, dictation,
+// the Server, its Models, saved recordings, and Diagnostics. An entry is
 // omitted when the build does not render its content, so the menu never offers
 // an empty screen.
 func navEntries(view SettingsView) []navEntry {
+	catalog := i18n.For(view.Language)
 	var entries []navEntry
-	for _, section := range view.Sections {
-		switch section.ID {
-		case "general", "appearance", "dictation":
-			if section.Title != "" {
-				entries = append(entries, navEntry{Key: section.ID, Label: section.Title, Targets: []string{section.ID}})
-			}
-		}
-	}
+
+	general := sectionTargets(view, "general")
 	if view.Startup.Available {
-		entries = append(entries, navEntry{
-			Key:     "startup",
-			Label:   view.Labels.StartupTitle,
-			Targets: []string{"startup"},
-		})
+		general = append(general, "startup")
 	}
 	if view.Update.Title != "" {
+		general = append(general, "updates")
+	}
+	if view.Wizard.Enabled && !view.Wizard.Active && view.Wizard.Labels.ReopenTitle != "" {
+		general = append(general, "wizard-launcher")
+	}
+	if len(general) > 0 {
+		entries = append(entries, navEntry{Key: "general", Label: catalog.T("section.general"), Targets: general})
+	}
+
+	dictationTargets := sectionTargets(view, "dictation")
+	if len(dictationTargets) > 0 {
 		entries = append(entries, navEntry{
-			Key:     "updates",
-			Label:   view.Update.Title,
-			Targets: []string{"updates"},
+			Key:     "dictation",
+			Label:   catalog.T("section.dictation"),
+			Targets: dictationTargets,
 		})
 	}
+	if appearance := sectionTargets(view, "appearance"); len(appearance) > 0 {
+		entries = append(entries, navEntry{
+			Key:     "appearance",
+			Label:   catalog.T("section.appearance"),
+			Targets: appearance,
+		})
+	}
+
+	var server []string
 	if view.Labels.Title != "" {
-		entries = append(entries, navEntry{
-			Key:     "servers",
-			Label:   view.Labels.Title,
-			Targets: []string{"servers", "devices", "exposure"},
-		})
-	}
-	if view.ModelLabels.Title != "" {
-		entries = append(entries, navEntry{Key: "models", Label: view.ModelLabels.Title, Targets: []string{"models"}})
+		server = append(server, "servers", "devices", "exposure")
 	}
 	if view.Labels.SettingsTitle != "" {
-		entries = append(entries, navEntry{
-			Key:     "server",
-			Label:   view.Labels.SettingsTitle,
-			Targets: []string{"server-settings"},
-		})
+		server = append(server, "server-settings")
+	}
+	if len(server) > 0 {
+		entries = append(entries, navEntry{Key: "server", Label: catalog.T("nav.server"), Targets: server})
+	}
+
+	if view.ModelLabels.Title != "" {
+		entries = append(entries, navEntry{Key: "models", Label: view.ModelLabels.Title, Targets: []string{"models"}})
 	}
 	if view.Spool.Labels.Title != "" {
 		entries = append(entries, navEntry{Key: "spool", Label: view.Spool.Labels.Title, Targets: []string{"spool"}})
@@ -113,14 +124,28 @@ func navEntries(view SettingsView) []navEntry {
 			Targets: []string{"diagnostics"},
 		})
 	}
-	if view.Wizard.Enabled && !view.Wizard.Active && view.Wizard.Labels.ReopenTitle != "" {
-		entries = append(entries, navEntry{
-			Key:     "wizard",
-			Label:   view.Wizard.Labels.ReopenTitle,
-			Targets: []string{"wizard-launcher"},
-		})
-	}
 	return entries
+}
+
+// sectionIsWide marks the long Settings screens from the rendered section
+// list that need every column. The hand-built screens set group-wide where
+// they are rendered. Short cards share a row.
+func sectionIsWide(id string) bool {
+	switch id {
+	case "dictation", "appearance":
+		return true
+	}
+	return false
+}
+
+// sectionTargets returns id when the view rendered that section.
+func sectionTargets(view SettingsView, id string) []string {
+	for _, section := range view.Sections {
+		if section.ID == id && section.Title != "" {
+			return []string{id}
+		}
+	}
+	return nil
 }
 
 // SettingsHTML renders the Settings screens into a navigation menu plus the
@@ -134,8 +159,13 @@ func SettingsHTML(view SettingsView) string {
 	}
 	var out strings.Builder
 	for _, section := range view.Sections {
-		out.WriteString(`<section class="group" data-section="` + escape(section.ID) + `">`)
+		classes := "group"
+		if sectionIsWide(section.ID) {
+			classes += " group-wide"
+		}
+		out.WriteString(`<section class="` + classes + `" data-section="` + escape(section.ID) + `">`)
 		out.WriteString(`<h2>` + sectionIcon(section.ID) + escape(section.Title) + `</h2>`)
+		out.WriteString(`<div class="field-grid">`)
 		// GNOME's system keybindings belong to the hotkeys they bind: the offer
 		// sits directly under the last hotkey field of the Dictation screen, not
 		// on a screen of its own or at the bottom of the pane.
@@ -156,7 +186,7 @@ func SettingsHTML(view SettingsView) string {
 				out.WriteString(gnomeShortcutsHTML(view.Gnome))
 			}
 		}
-		out.WriteString(`</section>`)
+		out.WriteString(`</div></section>`)
 	}
 	out.WriteString(serversHTML(view.Servers, view.Labels, view.ModelLabels, view.ModelState))
 	out.WriteString(spoolHTML(view.Spool))
@@ -217,7 +247,7 @@ func gnomeShortcutsHTML(view GnomeShortcutsView) string {
 // rebuilding any other screen.
 func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels, modelState string) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="servers">`)
+	out.WriteString(`<section class="group group-wide" data-section="servers">`)
 	out.WriteString(`<h2>` + pageIcon("server") + escape(labels.Title) + `</h2>`)
 	if len(view.Profiles) == 0 {
 		out.WriteString(`<p class="help">` + escape(labels.NoServers) + `</p>`)
@@ -296,7 +326,7 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
-	out.WriteString(`<section class="group" data-section="exposure">`)
+	out.WriteString(`<section class="group group-wide" data-section="exposure">`)
 	out.WriteString(`<h2>` + escape(labels.ExposureTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.ExposureHelp) + `</p>`)
 	live := activeNetwork(view)
@@ -346,7 +376,7 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`</div>`)
 	out.WriteString(`</section>`)
 
-	out.WriteString(`<section class="group" data-section="devices">`)
+	out.WriteString(`<section class="group group-wide" data-section="devices">`)
 	out.WriteString(`<h2>` + escape(labels.Devices) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.DevicesFor) + `</p>`)
 	out.WriteString(`<div class="actions-inline">`)
@@ -437,7 +467,7 @@ func spoolHTML(view SpoolView) string {
 		return ""
 	}
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="spool">`)
+	out.WriteString(`<section class="group group-wide" data-section="spool">`)
 	out.WriteString(`<h2>` + pageIcon("spool") + escape(view.Labels.Title) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.Help) + `</p>`)
 	if view.Error != "" {
@@ -485,7 +515,7 @@ func spoolHTML(view SpoolView) string {
 // deletion actions, the idle timeout, and the local CTranslate2 directory.
 func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="models">`)
+	out.WriteString(`<section class="group group-wide" data-section="models">`)
 	out.WriteString(`<h2>` + pageIcon("models") + escape(labels.Title) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.Help) + `</p>`)
 	out.WriteString(`<div class="actions-inline">`)
@@ -658,25 +688,88 @@ func downloadLabel(labels ModelLabels, download *servers.ModelDownload) string {
 	return state
 }
 
-// startupHTML renders the login autostart switches for the Client and the
-// local Server. The switches are plain toggles: Go enables or disables the
-// platform registration and re-renders the section.
+// startupHTML renders the single autostart switch with the mode selector
+// beneath it. The switch is the only state the platform holds; while it is off
+// the selector is read-only and shows the default mode, so turning the switch
+// on starts exactly what the user sees. Go changes the registrations and
+// re-renders the section.
 func startupHTML(view StartupView, labels ServerLabels) string {
 	if !view.Available {
 		return ""
 	}
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="startup">`)
+	out.WriteString(`<section class="group group-wide" data-section="startup">`)
 	out.WriteString(`<h2>` + pageIcon("power") + escape(labels.StartupTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.StartupHelp) + `</p>`)
-	writeStartupToggle(&out, "client", labels.StartupClient, labels.StartupClientHelp, view.Client, true)
-	help := labels.StartupServerHelp
-	if !view.ServerAvailable {
-		help = labels.StartupServerUnavailable
+	out.WriteString(`<div class="field field-toggle" data-startup="switch">`)
+	out.WriteString(`<label class="toggle-row" for="startup-enabled">`)
+	out.WriteString(`<span class="toggle-label">` + escape(labels.StartupSwitch) + `</span>`)
+	input := `<input type="checkbox" class="switch" id="startup-enabled" data-startup-switch`
+	if view.Enabled {
+		input += ` checked`
 	}
-	writeStartupToggle(&out, "server", labels.StartupServer, help, view.Server, view.ServerAvailable)
+	out.WriteString(input + `>`)
+	out.WriteString(`</label>`)
+	out.WriteString(`</div>`)
+	out.WriteString(`<fieldset class="field startup-modes" data-startup-modes`)
+	if !view.Enabled {
+		out.WriteString(` disabled`)
+	}
+	out.WriteString(`>`)
+	out.WriteString(`<legend>` + escape(labels.StartupMode) + `</legend>`)
+	for _, mode := range view.Modes {
+		label, help := startupModeText(labels, mode)
+		out.WriteString(`<label class="startup-mode">`)
+		input := `<input type="radio" name="startup-mode" value="` + escape(string(mode)) +
+			`" data-startup-mode="` + escape(string(mode)) + `"`
+		if mode == view.Mode {
+			input += ` checked`
+		}
+		out.WriteString(input + `>`)
+		out.WriteString(`<span class="startup-mode-text">`)
+		out.WriteString(`<span class="startup-mode-label">` + escape(label) + `</span>`)
+		if help != "" {
+			out.WriteString(`<span class="help">` + escape(help) + `</span>`)
+		}
+		out.WriteString(`</span>`)
+		out.WriteString(`</label>`)
+	}
+	out.WriteString(`</fieldset>`)
 	out.WriteString(`</section>`)
 	return out.String()
+}
+
+// startupModeKeys maps an Autostart mode to its catalog keys. The rendered
+// selector and the change notice share this one mapping; each resolves the
+// keys through the translated table it already holds.
+func startupModeKeys(mode components.Mode) (labelKey, helpKey string) {
+	switch mode {
+	case components.ModeClientAndServer:
+		return "startup.mode.clientServer", "startup.mode.clientServerHelp"
+	case components.ModeClientOnly:
+		return "startup.mode.client", "startup.mode.clientHelp"
+	case components.ModeServerOnly:
+		return "startup.mode.server", "startup.mode.serverHelp"
+	default:
+		return "", ""
+	}
+}
+
+// startupModeText returns the translated label and explanation of one mode.
+func startupModeText(labels ServerLabels, mode components.Mode) (label, help string) {
+	labelKey, helpKey := startupModeKeys(mode)
+	if labelKey == "" {
+		return string(mode), ""
+	}
+	translated := map[string]string{
+		"startup.mode.clientServer":     labels.StartupModeClientServer,
+		"startup.mode.clientServerHelp": labels.StartupModeClientServerHelp,
+		"startup.mode.client":           labels.StartupModeClient,
+		"startup.mode.clientHelp":       labels.StartupModeClientHelp,
+		"startup.mode.server":           labels.StartupModeServer,
+		"startup.mode.serverHelp":       labels.StartupModeServerHelp,
+	}
+	return translated[labelKey], translated[helpKey]
 }
 
 // updatesHTML renders the release check and the verified installer action.
@@ -729,24 +822,6 @@ func updatesHTML(view UpdateView) string {
 	return out.String()
 }
 
-func writeStartupToggle(out *strings.Builder, component, label, help string, enabled, available bool) {
-	out.WriteString(`<div class="field field-toggle" data-startup="` + escape(component) + `">`)
-	out.WriteString(`<label class="toggle-row" for="startup-` + escape(component) + `">`)
-	out.WriteString(`<span class="toggle-label">` + escape(label) + `</span>`)
-	input := `<input type="checkbox" class="switch" id="startup-` + escape(component) +
-		`" data-startup-component="` + escape(component) + `"`
-	if enabled {
-		input += ` checked`
-	}
-	if !available {
-		input += ` disabled`
-	}
-	out.WriteString(input + `>`)
-	out.WriteString(`</label>`)
-	out.WriteString(`<p class="help">` + escape(help) + `</p>`)
-	out.WriteString(`</div>`)
-}
-
 // serverSettingsHTML renders the active Server's effective configuration as an
 // editable form. Every field carries its absolute “server.*“ path; Go sends
 // the collected patch to the Admin API, which validates it and leaves the file
@@ -754,7 +829,7 @@ func writeStartupToggle(out *strings.Builder, component, label, help string, ena
 // are read-only.
 func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group server-settings" data-section="server-settings">`)
+	out.WriteString(`<section class="group group-wide server-settings" data-section="server-settings">`)
 	out.WriteString(`<h2>` + pageIcon("gear") + escape(labels.SettingsTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.SettingsHelp) + `</p>`)
 	if view.ConfigError != "" {
@@ -939,7 +1014,7 @@ func writeServerLanguages(out *strings.Builder, id, path, value, disabled string
 // user pastes into a bug report.
 func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
 	var out strings.Builder
-	out.WriteString(`<section class="group" data-section="diagnostics">`)
+	out.WriteString(`<section class="group group-wide" data-section="diagnostics">`)
 	out.WriteString(`<h2>` + pageIcon("activity") + escape(labels.DiagnosticsTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.DiagnosticsHelp) + `</p>`)
 	out.WriteString(`<dl class="diagnostics-versions">`)
@@ -1238,7 +1313,7 @@ const pageHTML = `<!doctype html>
   .status-meta > div { display:flex; align-items:baseline; gap:5px; }
   .status-meta dt { color:var(--muted); font-size:11px; }
   .status-meta dd { margin:0; font-size:12px; overflow-wrap:anywhere; }
-  .settings-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:186px minmax(0,1fr); gap:12px; }
+  .settings-layout { flex:1 1 auto; min-height:0; display:grid; grid-template-columns:206px minmax(0,1fr); gap:12px; }
   #settings { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
   .settings-single { grid-template-columns:minmax(0,1fr); }
   .settings-nav { display:flex; flex-direction:column; gap:2px; overflow-y:auto; overflow-x:hidden; min-height:0; padding:2px 4px 2px 0; scrollbar-width:thin; }
@@ -1248,20 +1323,50 @@ const pageHTML = `<!doctype html>
   .nav-item.is-active { background:var(--accent-soft); color:var(--accent); font-weight:600; }
   .nav-item.is-active .icon { opacity:1; }
   .settings-pane { display:flex; flex-direction:column; gap:10px; min-height:0; overflow-y:auto; padding:2px 6px 8px 2px; scrollbar-width:thin; }
+  /* Short cards share a line and grow to fill it, so two cards split the row
+     and three split it three ways. Wide content marks itself .group-wide and
+     always starts a line of its own. Cards on one line stretch to one height. */
+  .settings-layout:not(.settings-single) .settings-pane { flex-direction:row; flex-wrap:wrap; align-content:flex-start; align-items:stretch; }
+  .settings-layout:not(.settings-single) .settings-pane > .group { flex:1 1 300px; min-width:0; }
+  .settings-layout:not(.settings-single) .settings-pane > .group-wide { flex:1 1 100%; }
+  .settings-layout:not(.settings-single) .settings-pane > .config-path,
+  .settings-layout:not(.settings-single) .settings-pane > .device-error { flex:1 1 100%; }
+  /* Three short General-screen cards share one row; the taller autostart
+     card follows at full width instead of stretching a nearly empty card
+     beside it. */
+  .settings-pane > [data-section='updates'] { order:1; }
+  .settings-pane > [data-section='wizard-launcher'] { order:2; }
+  .settings-pane > [data-section='startup'] { order:3; }
+  .settings-pane > .config-path, .settings-pane > .device-error { order:4; }
+  /* A card with many short fields uses two columns of fields, so it stays
+     compact without turning every input into a half-width control. */
+  .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:2px 20px; align-items:start; }
+  .field-grid > .field { border-top:none; padding:6px 0; }
+  .field-grid > .gnome-offer { grid-column:1 / -1; margin:6px 0 2px; }
+  .group[data-section='dictation'] > .field-grid { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+  @media (max-width: 900px) {
+    .group[data-section='dictation'] > .field-grid, .server-fields { grid-template-columns:minmax(0, 1fr); }
+  }
   /* Author display rules (notably the flex Server form) otherwise beat the
      user-agent [hidden] rule, so the Server screen stayed visible on every
      other screen. */
   .settings-pane [data-section][hidden] { display:none !important; }
   .settings-pane > .group { flex:0 0 auto; }
-  /* The Server form is long: its fields scroll on their own so the Save
-     button stays at the bottom of the pane whatever the form height is. */
-  .settings-pane > .group.server-settings { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
-  .server-fields { flex:1 1 auto; min-height:0; overflow-y:auto; padding-right:4px; scrollbar-width:thin; }
-  .server-save { flex:0 0 auto; display:flex; justify-content:flex-end; margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); }
+  .server-fields { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:2px 20px; align-items:start; }
+  .server-fields > h3 { grid-column:1 / -1; }
+  .server-fields > .field { border-top:none; padding:6px 0; }
+  .server-save { display:flex; justify-content:flex-end; margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); }
   .settings-single .settings-pane { overflow:hidden; }
-  .settings-single .wizard { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
-  .wizard-head { flex:0 0 auto; }
-  .wizard-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding-right:4px; scrollbar-width:thin; }
+  .settings-single .wizard { flex:1 1 auto; display:grid; grid-template-columns:224px minmax(0,1fr); min-height:0; padding:0; overflow:hidden; }
+  /* The rail carries the sequence; the main column carries one task. The
+     heading and the rail actions stay put: only a long step list scrolls. */
+  .wizard-rail { display:flex; flex-direction:column; gap:12px; min-height:0; padding:14px 12px; background:var(--card-2); border-right:1px solid var(--line-soft); overflow:hidden; }
+  .wizard-rail-head { flex:0 0 auto; }
+  .wizard-rail-head h2 { margin:0 0 3px; }
+  .wizard-subtitle { margin:1px 0 0; color:var(--muted); font-size:11px; line-height:1.35; }
+  .wizard-main { display:flex; flex-direction:column; min-width:0; min-height:0; padding:14px 18px 12px; }
+  .wizard-body { flex:1 1 auto; min-height:0; overflow-y:auto; padding:0 4px 6px 0; scrollbar-width:thin; }
+  .wizard-content { max-width:720px; margin:0 auto; }
   .group h2 { display:flex; align-items:center; gap:7px; font-size:14px; margin:0 0 10px; letter-spacing:-.005em; }
   .group h2 .icon { color:var(--accent); }
   .group h3 { display:flex; align-items:center; gap:6px; font-size:10.5px; margin:14px 0 5px; color:var(--muted); text-transform:uppercase; letter-spacing:.07em; }
@@ -1287,6 +1392,15 @@ const pageHTML = `<!doctype html>
   .field .switch:checked { background-color:var(--accent); border-color:transparent; background-position:18px center; }
   .field .switch:disabled { opacity:.55; cursor:not-allowed; }
   .field-toggle { padding:10px 0; }
+  .startup-modes { border:0; margin:6px 0 0; padding:0; min-width:0; }
+  .startup-modes legend { padding:0; margin-bottom:5px; color:var(--muted); font-size:11.5px; }
+  .startup-modes:disabled { opacity:.55; }
+  .startup-mode { display:flex; align-items:flex-start; gap:8px; padding:7px 0; border-top:1px solid var(--line-soft); cursor:pointer; }
+  .startup-mode:first-of-type { border-top:none; }
+  .startup-mode input { margin:3px 0 0; flex:0 0 auto; accent-color:var(--accent); }
+  .startup-mode-text { display:flex; flex-direction:column; gap:2px; }
+  .startup-mode-label { font-weight:600; font-size:12.5px; }
+  .startup-mode .help { margin:0; }
   /* A miniature screen: the filled bar sits where the pill will appear. */
   .position-grid { display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; max-width:260px; margin-top:2px; }
   .position-preset { position:relative; height:44px; padding:0; border:1px solid var(--line); border-radius:7px; background:var(--card-2); color:var(--muted); }
@@ -1328,7 +1442,9 @@ const pageHTML = `<!doctype html>
   .gnome-head h3 { margin:0; font-size:12.5px; font-weight:600; color:var(--fg); text-transform:none; letter-spacing:0; }
   .gnome-offer .help { margin-top:2px; }
   .gnome-offer .actions-inline { margin:8px 0 0; }
-  .shortcut-offer { margin-top:12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); }
+  /* The shortcut offer is a wizard panel already; an extra margin and a
+     smaller padding made it start lower and end higher than the card beside
+     it. */
   .shortcut-offer h4 { margin:0 0 3px; font-size:12.5px; }
   .config-path { color:var(--muted); font-size:11.5px; margin:0 4px; }
   .config-path code { overflow-wrap:anywhere; }
@@ -1343,9 +1459,11 @@ const pageHTML = `<!doctype html>
   .devices td:last-child, .models .model-actions { text-align:right; white-space:nowrap; }
   .models .model-progress td { color:var(--muted); font-size:11.5px; border-top:none; }
   /* Every row's action occupies the same column width, so the download
-     buttons line up instead of growing with the model name. */
-  .models .model-actions button, .models .model-actions .badge { width:152px; justify-content:center; }
-  .models .model-actions .badge { display:inline-flex; align-items:center; }
+     buttons line up instead of growing with the model name. A status badge
+     stays compact: stretching a word across a button-sized slot reads as an
+     empty button. */
+  .models .model-actions button { width:152px; justify-content:center; }
+  .models .model-actions .badge { display:inline-flex; align-items:center; justify-content:center; }
   .model-state { margin:8px 0 0; }
   .messages { display:flex; flex-direction:column; gap:5px; flex:0 0 auto; max-height:20vh; overflow-y:auto; }
   .messages:empty { display:none; }
@@ -1358,20 +1476,77 @@ const pageHTML = `<!doctype html>
   .health[data-health="online"] { color:var(--ok); }
   .health[data-health="stopped"] { color:var(--warn); }
   .health[data-health="offline"], .health[data-health="unauthenticated"], .health[data-health="mismatch"] { color:var(--danger); }
-  .wizard-steps { list-style:none; display:flex; flex-wrap:wrap; gap:4px 8px; padding:0; margin:0 0 12px; }
-  .wizard-steps li { display:flex; align-items:center; gap:5px; font-size:11px; color:var(--muted); }
-  .wizard-steps li[data-status="current"] { color:var(--accent); font-weight:600; }
-  .wizard-steps li[data-status="skipped"] { text-decoration:line-through; }
-  .wizard-step-number { display:inline-flex; align-items:center; justify-content:center; width:17px; height:17px; border-radius:999px; border:1px solid var(--line); font-size:10px; }
-  .wizard-steps li[data-status="done"] .wizard-step-number { background:#2f9e441f; color:var(--ok); border-color:transparent; }
+  .wizard-progress { color:var(--muted); font-size:11.5px; margin:0 0 3px; }
+  .wizard-steps { flex:1 1 auto; min-height:0; list-style:none; display:flex; flex-direction:column; gap:1px; padding:0 2px 0 0; margin:0; overflow-y:auto; overflow-x:hidden; scrollbar-width:thin; }
+  .wizard-steps li { position:relative; display:flex; align-items:center; gap:9px; min-height:28px; padding:3px 7px; border-radius:7px; color:var(--muted); }
+  .wizard-steps li:not(:last-child)::before { content:""; position:absolute; left:15px; top:22px; bottom:-1px; width:1px; background:var(--line); }
+  .wizard-step-number { position:relative; z-index:1; display:inline-flex; align-items:center; justify-content:center; flex:0 0 18px; width:18px; height:18px; border-radius:999px; border:1px solid var(--line); background:var(--card); font-size:10px; }
+  .wizard-step-title { min-width:0; font-size:12px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .wizard-steps li[data-status="current"] { background:var(--accent-soft); color:var(--accent); }
   .wizard-steps li[data-status="current"] .wizard-step-number { background:var(--accent); color:var(--on-accent); border-color:transparent; }
-  .wizard-progress { color:var(--muted); font-size:11.5px; margin:0 0 4px; }
-  .wizard-summary { margin:8px 0; }
-  .wizard-missing { margin:6px 0; padding-left:18px; }
-  .wizard-footer { display:flex; gap:6px; flex-wrap:wrap; flex:0 0 auto; margin-top:10px; padding-top:12px; border-top:1px solid var(--line-soft); }
+  .wizard-steps li[data-status="done"] .wizard-step-number { background:#2f9e441f; color:var(--ok); border-color:transparent; }
+  .wizard-steps li[data-status="skipped"] .wizard-step-title { text-decoration:line-through; }
+  .wizard-rail-actions { flex:0 0 auto; display:flex; flex-direction:column; align-items:stretch; gap:1px; padding-top:8px; border-top:1px solid var(--line); }
+  .wizard-rail-actions button { justify-content:flex-start; }
+  button.ghost { background:transparent; border-color:transparent; color:var(--muted); padding:4px 6px; }
+  button.ghost:hover { background:var(--bg-soft); color:var(--fg); }
+  .wizard h3 { display:flex; align-items:center; gap:7px; font-size:15px; margin:0 0 4px; color:var(--fg); letter-spacing:-.005em; text-transform:none; }
+  .wizard-lede { color:var(--muted); font-size:12px; margin:0 0 10px; max-width:66ch; }
+  .wizard h4 { font-size:12.5px; margin:0 0 5px; color:var(--fg); }
+  .wizard-panel { padding:12px 14px; border:1px solid var(--line); border-radius:9px; background:var(--card-2); }
+  .wizard-panel > :last-child { margin-bottom:0; }
+  .wizard-columns { display:grid; grid-template-columns:repeat(auto-fit, minmax(250px, 1fr)); gap:12px; align-items:stretch; }
+  .wizard-panel .field { border-top:none; padding:5px 0; }
+  .wizard-panel .field + .field { border-top:1px solid var(--line-soft); padding-top:9px; }
+  /* Actions that sit directly in a panel, and any action stack, fill the
+     card width so two stacked buttons never look like different sizes. */
+  .wizard-panel > button, .wizard-actions > button, .shortcut-offer .actions-inline > button { width:100%; justify-content:center; }
+  .wizard-panel .actions-inline { display:flex; align-items:stretch; gap:6px; }
+  .wizard-panel .actions-inline > button { flex:1 1 0; justify-content:center; }
+  .shortcut-offer .actions-inline { flex-direction:column; }
+  .shortcut-offer .actions-inline > button { flex:0 0 auto; }
+  .wizard-actions { display:flex; flex-direction:column; align-items:stretch; gap:6px; margin:10px 0 0; }
+  /* Paired forms share a height; pin their primary buttons to one line so the
+     two cards read as one row instead of two unrelated stacks. */
+  .wizard-panel-stack { display:flex; flex-direction:column; }
+  .wizard-panel-stack > button:last-child { margin-top:auto; }
+  /* The transcript shares the card height with the controls beside it. */
+  .wizard-panel-fill { display:flex; flex-direction:column; }
+  .wizard-panel-fill > .field { flex:1 1 auto; display:flex; flex-direction:column; min-height:0; }
+  .wizard-panel-fill textarea { flex:1 1 auto; min-height:112px; }
+  .wizard-facts { list-style:none; display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:8px; padding:0; margin:0; }
+  .wizard-facts li { padding:9px 11px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); font-size:12.5px; font-weight:600; overflow-wrap:anywhere; }
+  .wizard-table { margin-top:8px; border:1px solid var(--line); border-radius:9px; overflow-x:auto; }
+  .wizard-table .models { margin:0; }
+  .wizard-table .models th, .wizard-table .models td { padding:5px 10px; }
+  .wizard-try-status { display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin:0 0 10px; font-size:12px; color:var(--muted); }
+  .wizard-try-label { opacity:.75; }
+  .wizard-sep { opacity:.5; }
+  .wizard-panel .help { max-width:62ch; }
+  .wizard-missing { margin:6px 0; padding-left:18px; font-size:12px; }
+  .wizard-footer { flex:0 0 auto; display:flex; align-items:center; gap:8px; flex-wrap:wrap; width:100%; max-width:720px; margin:10px auto 0; padding-top:10px; border-top:1px solid var(--line-soft); }
+  .wizard-footer-actions { display:flex; align-items:center; gap:4px; flex-wrap:wrap; margin-left:auto; }
+  .wizard-footer-actions .primary { margin-left:8px; }
   .wizard textarea { resize:vertical; }
-  .wizard h3 { display:flex; align-items:center; gap:7px; font-size:14px; margin:0 0 8px; color:var(--fg); letter-spacing:-.005em; text-transform:none; }
-  .wizard h4 { font-size:12.5px; margin:14px 0 5px; color:var(--fg); }
+  @media (max-height: 600px) {
+    /* Seven single-line steps fit even the shortest window: drop the
+       explanatory subtitle and tighten the rail instead of scrolling it. */
+    .wizard-rail { gap:8px; padding:10px 12px; }
+    .wizard-subtitle { display:none; }
+    .wizard-rail-actions { padding-top:6px; }
+  }
+  @media (max-width: 820px) {
+    .settings-single .wizard { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); }
+    .wizard-rail { flex-direction:row; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 12px; border-right:none; border-bottom:1px solid var(--line-soft); overflow:visible; }
+    .wizard-rail-head { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+    .wizard-rail-head h2 { margin:0; }
+    .wizard-subtitle { display:none; }
+    .wizard-steps { flex:0 0 auto; flex-direction:row; flex-wrap:wrap; gap:2px 4px; padding:0; overflow:visible; }
+    .wizard-steps li:not(:last-child)::before { display:none; }
+    .wizard-rail-actions { flex:0 0 auto; margin-top:0; margin-left:auto; flex-direction:row; align-items:center; padding-top:0; border-top:none; }
+    .wizard-rail-actions button { width:auto; }
+    .wizard-facts { grid-template-columns:minmax(0,1fr); }
+  }
   footer { display:flex; gap:8px; align-items:center; flex:0 0 auto; padding-top:10px; border-top:1px solid var(--line); }
   button { display:inline-flex; align-items:center; gap:6px; font:inherit; font-size:12.5px; padding:5px 10px; border-radius:6px; border:1px solid var(--line); background:var(--card-2); color:var(--fg); cursor:pointer; transition:background .12s, border-color .12s, opacity .12s; }
   button:hover { background:var(--bg-soft); }
@@ -1499,9 +1674,15 @@ const pageHTML = `<!doctype html>
       offset_y: Number(y ? y.value : 0) || 0
     };
   }
+  // The indicator settings can share a navigation entry with other screens,
+  // so preview visibility follows the rendered section, not the entry key.
+  function indicatorSectionVisible() {
+    var section = document.querySelector("#settings-pane [data-section='appearance']");
+    return Boolean(section && !section.hidden);
+  }
   function sendIndicatorPreview() {
     var position = indicatorPreviewPosition();
-    if (!position || activeSection !== "appearance" || !previewWanted || document.hidden) return;
+    if (!position || !indicatorSectionVisible() || !previewWanted || document.hidden) return;
     fetch("/kitsune/intent", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1528,7 +1709,7 @@ const pageHTML = `<!doctype html>
       clearTimeout(previewTimer);
       previewTimer = null;
     }
-    if (activeSection !== "appearance" || document.hidden) {
+    if (!indicatorSectionVisible() || document.hidden) {
       hideIndicatorPreview();
       return;
     }
@@ -1557,7 +1738,7 @@ const pageHTML = `<!doctype html>
   // Controls that save themselves on change follow Go: restoring a rejected
   // choice would contradict the failure message.
   function liveControl(el) {
-    if (el.closest("[data-startup-component], [data-log-level]")) return true;
+    if (el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")) return true;
     return el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
   }
   function markRendered(root) {
@@ -1632,9 +1813,11 @@ const pageHTML = `<!doctype html>
     var host = document.getElementById("settings");
     var pane = document.getElementById("settings-pane");
     var fields = document.querySelector("#settings .server-fields");
+    var wizardBody = document.querySelector("#settings .wizard-body");
     var previousSection = activeSection;
     var previousScroll = pane ? pane.scrollTop : 0;
     var previousFields = fields ? fields.scrollTop : 0;
+    var previousWizardBody = wizardBody ? wizardBody.scrollTop : 0;
     var edits = captureEdits(host);
     var focus = captureFocus(host);
     if (host) host.innerHTML = (v && v.html) || "";
@@ -1676,20 +1859,36 @@ const pageHTML = `<!doctype html>
     if (previousSection && previousSection === activeSection) {
       var nextPane = document.getElementById("settings-pane");
       var nextFields = document.querySelector("#settings .server-fields");
+      var nextWizardBody = document.querySelector("#settings .wizard-body");
       if (nextPane) nextPane.scrollTop = previousScroll;
       if (nextFields) nextFields.scrollTop = previousFields;
+      if (nextWizardBody) nextWizardBody.scrollTop = previousWizardBody;
       // WebKit can apply the new layout after the assignment; repeat on the
       // next frame so the position survives a taller or shorter render.
       if (window.requestAnimationFrame) {
         window.requestAnimationFrame(function () {
           if (nextPane && nextPane.isConnected) nextPane.scrollTop = previousScroll;
           if (nextFields && nextFields.isConnected) nextFields.scrollTop = previousFields;
+          if (nextWizardBody && nextWizardBody.isConnected) nextWizardBody.scrollTop = previousWizardBody;
         });
       }
     }
     var wizardOutput = document.getElementById("wizard-try-output");
     if (wizardOutput && wizardOutput.focus) wizardOutput.focus();
     else restoreFocus(host, focus);
+    revealWizardStep();
+  }
+  // The step list gets its own scrollbar in a short window. Keep the current
+  // step in view instead of leaving the user at the top of an older list.
+  function revealWizardStep() {
+    var current = document.querySelector(".wizard-steps li[data-status='current']");
+    if (!current) return;
+    var list = current.closest(".wizard-steps");
+    if (!list || list.scrollHeight <= list.clientHeight) return;
+    var step = current.getBoundingClientRect();
+    var frame = list.getBoundingClientRect();
+    if (step.top < frame.top) list.scrollTop -= frame.top - step.top;
+    else if (step.bottom > frame.bottom) list.scrollTop += step.bottom - frame.bottom;
   }
   function renderSpool(v) {
     var host = document.getElementById("settings-pane") || document.getElementById("settings");
@@ -1708,6 +1907,12 @@ const pageHTML = `<!doctype html>
     var current = host.querySelector("[data-section='wizard']");
     var edits = captureEdits(current);
     var focus = captureFocus(current);
+    // A download progress tick re-renders the whole wizard. Remember where the
+    // step content was scrolled so the table does not jump back to the top.
+    var body = current ? current.querySelector(".wizard-body") : null;
+    var bodyScroll = body ? body.scrollTop : 0;
+    var steps = current ? current.querySelector(".wizard-steps") : null;
+    var stepsScroll = steps ? steps.scrollTop : 0;
     var holder = document.createElement("div");
     holder.innerHTML = (v && v.html) || "";
     var next = holder.firstElementChild;
@@ -1720,6 +1925,17 @@ const pageHTML = `<!doctype html>
     var output = document.getElementById("wizard-try-output");
     if (output && output.focus) output.focus();
     else restoreFocus(rendered, focus);
+    var nextBody = rendered ? rendered.querySelector(".wizard-body") : null;
+    var nextSteps = rendered ? rendered.querySelector(".wizard-steps") : null;
+    if (nextBody) nextBody.scrollTop = bodyScroll;
+    if (nextSteps) nextSteps.scrollTop = stepsScroll;
+    if (window.requestAnimationFrame) {
+      window.requestAnimationFrame(function () {
+        if (nextBody && nextBody.isConnected) nextBody.scrollTop = bodyScroll;
+        if (nextSteps && nextSteps.isConnected) nextSteps.scrollTop = stepsScroll;
+      });
+    }
+    revealWizardStep();
   }
   function renderMessages(m) {
     var host = document.getElementById("messages");
@@ -2083,15 +2299,28 @@ const pageHTML = `<!doctype html>
     if (!target || !target.closest) return;
     if (target.closest("[data-indicator-preview]")) syncIndicatorPreview(false);
   });
+  function startupSelectedMode() {
+    var checked = document.querySelector("[data-startup-mode]:checked");
+    return checked ? checked.dataset.startupMode : "";
+  }
   document.addEventListener("change", function (event) {
     var target = event.target;
     if (!target || !target.closest) return;
-    var startup = target.closest("[data-startup-component]");
-    if (startup) {
+    var startupSwitch = target.closest("[data-startup-switch]");
+    if (startupSwitch) {
       sendIntent({
         action: "set-startup",
-        component: startup.dataset.startupComponent,
-        enabled: startup.checked
+        enabled: startupSwitch.checked,
+        mode: startupSelectedMode()
+      });
+      return;
+    }
+    var startupMode = target.closest("[data-startup-mode]");
+    if (startupMode) {
+      sendIntent({
+        action: "set-startup",
+        enabled: true,
+        mode: startupMode.dataset.startupMode
       });
       return;
     }
@@ -2132,6 +2361,7 @@ const pageHTML = `<!doctype html>
   renderStatus(__INITIAL__);
   selectSection("");
   markRendered(document.getElementById("settings"));
+  revealWizardStep();
   // Fill the Diagnostics cache when the window opens; the first visit to the
   // screen then shows real values instead of empty placeholders.
   primeDiagnostics();

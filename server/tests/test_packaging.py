@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+import re
 import shlex
 import tomllib
 from pathlib import Path
@@ -410,6 +412,73 @@ def test_documentation_covers_install_release_and_troubleshooting() -> None:
             assert needle in text, f"{name}: {needle}"
         if name != "verification/manual-matrix.md":
             assert f"docs/{name}" in readme, name
+
+
+def test_readme_has_quick_start_and_a_dependencies_section() -> None:
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert re.search(r"^## Quick Start$", readme, re.MULTILINE)
+    assert re.search(r"^## Dependencies$", readme, re.MULTILINE)
+    # The installer warnings point at the README anchor this heading creates.
+    for installer in ("install.sh", "install.ps1"):
+        assert "README" in (REPO_ROOT / installer).read_text(encoding="utf-8")
+
+
+def test_dependencies_document_mirrors_the_installer_identifiers() -> None:
+    """Pin the public identifier set, then check the document still names it.
+
+    The parsed-table comparison below is the drift guard; this test keeps the
+    expected public set explicit so an accidental rename is visible here too.
+    """
+    install_sh = (REPO_ROOT / "install.sh").read_text(encoding="utf-8")
+    install_ps1 = (REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
+    dependencies = (REPO_ROOT / "docs" / "dependencies.md").read_text(encoding="utf-8")
+
+    linux_ids = set(re.findall(r'^DEP_[A-Z0-9_]+="([^"]+)"', install_sh, re.MULTILINE))
+    assert linux_ids == {
+        "gtk4",
+        "webkitgtk-6.0",
+        "alsa",
+        "libx11",
+        "glibc-client",
+        "glibc-server",
+        "wayland-injection",
+    }
+
+    windows_ids = set(re.findall(r"^\$Dep\w+ = '([^']+)'", install_ps1, re.MULTILINE))
+    assert windows_ids == {"webview2", "windows-version", "windows-64-bit"}
+
+    for identifier in sorted(linux_ids | windows_ids):
+        assert f"`{identifier}`" in dependencies, identifier
+
+    client_floor = re.search(r'GLIBC_CLIENT_FLOOR="([^"]+)"', install_sh)
+    server_floor = re.search(r'GLIBC_SERVER_FLOOR="([^"]+)"', install_sh)
+    assert client_floor is not None and server_floor is not None
+    for floor in (client_floor.group(1), server_floor.group(1)):
+        assert f"`{floor}`" in dependencies, floor
+
+
+DRIFT_SCRIPT = REPO_ROOT / "scripts" / "check-dependency-drift.py"
+
+
+def _load_drift_script() -> Any:
+    """Load the one drift implementation the release also runs.
+
+    Importing rather than re-parsing in the test is the point: a second copy
+    could drift from the script and let a bad release through.
+    """
+
+    spec = importlib.util.spec_from_file_location("check_dependency_drift", DRIFT_SCRIPT)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_dependency_document_matches_every_installer_identifier_and_floor() -> None:
+    """An identifier or glibc floor cannot exist on only one side of the seam."""
+
+    problems = _load_drift_script().drift_problems(REPO_ROOT)
+    assert problems == [], problems
 
 
 def test_publish_workflow_installs_no_processing_extra() -> None:
