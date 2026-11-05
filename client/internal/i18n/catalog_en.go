@@ -89,7 +89,6 @@ var english = map[string]string{
 	"server.exposurePending":  "The change is saved and takes effect after the Server restarts.",
 
 	"field.theme":              "Theme",
-	"help.theme":               "The colour scheme of this window, the Tray icon, and the Recording indicator. System follows the desktop; the window updates live, while the icon and pill pick up a change on restart.",
 	"field.ui_language":        "Language",
 	"help.ui_language":         "The language of this window and the Tray. The system language is used unless you pick one.",
 	"hotkey.capture":           "Press the combination",

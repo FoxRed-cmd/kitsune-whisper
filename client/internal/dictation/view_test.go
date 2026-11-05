@@ -98,6 +98,9 @@ client:
 	if len(theme.Options) != 3 || !hasOption(theme.Options, "light", "Light") || !hasOption(theme.Options, "dark", "Dark") {
 		t.Fatalf("theme options = %+v", theme.Options)
 	}
+	if theme.Help != "" {
+		t.Fatalf("theme help = %q, want none", theme.Help)
+	}
 	for id, want := range map[string]string{
 		"dictation-hotkeys":    "Hotkeys",
 		"dictation-microphone": "Microphone",

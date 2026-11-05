@@ -124,7 +124,6 @@ var specs = []sectionSpec{
 				path:     "client.theme",
 				kind:     KindTheme,
 				labelKey: "field.theme",
-				helpKey:  "help.theme",
 				options: []optionSpec{
 					{value: "system", key: "theme.system"},
 					{value: "light", key: "theme.light"},

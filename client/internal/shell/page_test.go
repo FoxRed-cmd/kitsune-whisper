@@ -42,7 +42,6 @@ func sampleView() shell.SettingsView {
 						{
 							Path:   "client.theme",
 							Label:  "Тема",
-							Help:   "Цветовая схема этого окна и индикатора записи.",
 							Kind:   dictation.KindTheme,
 							Value:  "system",
 							Source: "default",
