@@ -27,7 +27,6 @@ func Page(initial Snapshot, settings SettingsView) string {
 	if title == "" {
 		title = "kitsune-whisper"
 	}
-	subtitle := settings.Subtitle
 	language := ""
 	if settings.Language != "" {
 		language = string(settings.Language)
@@ -41,12 +40,11 @@ func Page(initial Snapshot, settings SettingsView) string {
 	return strings.NewReplacer(
 		"__LANG__", html.EscapeString(language),
 		"__TITLE__", html.EscapeString(title),
-		"__SUBTITLE__", html.EscapeString(subtitle),
 		"__SETTINGS__", SettingsHTML(settings),
+		"__ERRORS__", jsonForScript(collectViewErrors(settings)),
 		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
-		"__OPEN_SETTINGS__", html.EscapeString(initial.Labels.OpenSettings),
 		"__ACTIONS_STYLE__", actionsStyle,
 		"__INITIAL__", jsonForScript(initial),
 	).Replace(pageHTML)
@@ -194,9 +192,6 @@ func SettingsHTML(view SettingsView) string {
 	out.WriteString(updatesHTML(view.Update))
 	out.WriteString(serverSettingsHTML(view.Servers, view.Labels))
 	out.WriteString(diagnosticsHTML(view.Diagnostics, view.Labels))
-	if view.DeviceError != "" {
-		out.WriteString(`<p class="device-error">` + escape(view.DeviceError) + `</p>`)
-	}
 	if view.ConfigPath != "" {
 		out.WriteString(`<p class="config-path">` + escape(view.ConfigTitle) + `: <code>` + escape(view.ConfigPath) + `</code></p>`)
 	}
@@ -228,9 +223,6 @@ func gnomeShortcutsHTML(view GnomeShortcutsView) string {
 	out.WriteString(`<div class="gnome-offer">`)
 	out.WriteString(`<div class="gnome-head">` + pageIcon("keyboard") + `<h3>` + escape(view.Title) + `</h3></div>`)
 	out.WriteString(`<p class="help">` + escape(view.Help) + `</p>`)
-	if view.Error != "" {
-		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
-	}
 	out.WriteString(`<div class="actions-inline">`)
 	if view.Add != "" {
 		out.WriteString(`<button type="button" data-action="gnome-shortcuts-add">` + pageIcon("plus") + escape(view.Add) + `</button>`)
@@ -273,9 +265,6 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 			out.WriteString(`<span class="health-label">` + escape(labels.Health) + `:</span>`)
 			out.WriteString(`<span class="health" data-health="` + escape(healthKey) + `">` + escape(health) + `</span>`)
 			out.WriteString(`<code>` + escape(profile.URL) + `</code>`)
-			if profile.Health.Error != "" && profile.Health.State != trust.StateOnline {
-				out.WriteString(`<p class="failure">` + escape(profile.Health.Error) + `</p>`)
-			}
 			if !profile.Active {
 				out.WriteString(`<button type="button" data-action="use-profile" data-profile-id="` +
 					escape(profile.ID) + `">` + escape(labels.Use) + `</button>`)
@@ -315,9 +304,6 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	out.WriteString(`<p class="help">` + escape(labels.ManagementHelp) + `</p>`)
 	if view.Lifecycle != nil {
 		out.WriteString(`<p class="row"><strong>` + escape(labels.ModelState) + `:</strong> <span data-model-state="` + escape(view.Lifecycle.ModelState) + `">` + escape(valueOr(modelState, view.Lifecycle.ModelState)) + `</span></p>`)
-	}
-	if view.LifecycleError != "" {
-		out.WriteString(`<p class="failure">` + escape(view.LifecycleError) + `</p>`)
 	}
 	out.WriteString(`<div class="actions-inline">`)
 	out.WriteString(`<button type="button" data-action="server-restart">` + escape(labels.RestartServer) + `</button>`)
@@ -390,12 +376,6 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 			out.WriteString(`<p class="help">` + escape(labels.Fingerprint) + `: <code>` + escape(view.PairingCode.Fingerprint) + `</code></p>`)
 		}
 	}
-	if view.PairingError != "" {
-		out.WriteString(`<p class="failure">` + escape(view.PairingError) + `</p>`)
-	}
-	if view.DevicesError != "" {
-		out.WriteString(`<p class="failure">` + escape(view.DevicesError) + `</p>`)
-	}
 	if len(view.Devices) == 0 {
 		out.WriteString(`<p class="help">` + escape(labels.NoDevices) + `</p>`)
 	} else {
@@ -415,7 +395,7 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 		out.WriteString(`</tbody></table>`)
 	}
 	out.WriteString(`</section>`)
-	out.WriteString(modelsHTML(view.Models, view.ModelsError, modelLabels))
+	out.WriteString(modelsHTML(view.Models, modelLabels))
 	return out.String()
 }
 
@@ -470,9 +450,6 @@ func spoolHTML(view SpoolView) string {
 	out.WriteString(`<section class="group group-wide" data-section="spool">`)
 	out.WriteString(`<h2>` + pageIcon("spool") + escape(view.Labels.Title) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(view.Labels.Help) + `</p>`)
-	if view.Error != "" {
-		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
-	}
 	if len(view.Entries) == 0 {
 		out.WriteString(`<p class="help">` + escape(view.Labels.Empty) + `</p>`)
 		out.WriteString(`</section>`)
@@ -513,7 +490,7 @@ func spoolHTML(view SpoolView) string {
 
 // modelsHTML renders the Model catalog, download progress, activation and
 // deletion actions, the idle timeout, and the local CTranslate2 directory.
-func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels) string {
+func modelsHTML(view *servers.ModelsView, labels ModelLabels) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group group-wide" data-section="models">`)
 	out.WriteString(`<h2>` + pageIcon("models") + escape(labels.Title) + `</h2>`)
@@ -522,15 +499,9 @@ func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels
 	out.WriteString(`<button type="button" data-action="load-models">` + escape(labels.Refresh) + `</button>`)
 	out.WriteString(`</div>`)
 	if view == nil {
-		if modelsError != "" {
-			out.WriteString(`<p class="failure">` + escape(modelsError) + `</p>`)
-		}
 		out.WriteString(`<p class="help">` + escape(labels.NoCatalog) + `</p>`)
 		out.WriteString(`</section>`)
 		return out.String()
-	}
-	if modelsError != "" {
-		out.WriteString(`<p class="failure">` + escape(modelsError) + `</p>`)
 	}
 	out.WriteString(`<p class="model-state">` + escape(labels.State) + `: <strong>` + escape(modelStateLabel(labels, view.State)) + `</strong>`)
 	if view.ActiveModel != "" {
@@ -538,9 +509,6 @@ func modelsHTML(view *servers.ModelsView, modelsError string, labels ModelLabels
 	}
 	if view.ActivePath != "" {
 		out.WriteString(` (<code>` + escape(view.ActivePath) + `</code>)`)
-	}
-	if view.Error != "" {
-		out.WriteString(` · <span class="failure">` + escape(view.Error) + `</span>`)
 	}
 	out.WriteString(`</p>`)
 	if view.Recommended != "" && labels.RecommendedDevice != "" {
@@ -780,12 +748,9 @@ func updatesHTML(view UpdateView) string {
 	var out strings.Builder
 	out.WriteString(`<section class="group" data-section="updates">`)
 	out.WriteString(`<h2>` + pageIcon("download") + escape(view.Title) + `</h2>`)
-	out.WriteString(`<p class="help">` + escape(view.Help) + `</p>`)
 	out.WriteString(`<dl class="diagnostics-versions">`)
 	out.WriteString(`<div><dt>` + escape(view.Current) + `</dt><dd>` + escape(view.CurrentVersion) + `</dd></div>`)
-	if view.LatestVersion != "" {
-		out.WriteString(`<div><dt>` + escape(view.Latest) + `</dt><dd>` + escape(view.LatestVersion) + `</dd></div>`)
-	}
+	out.WriteString(`<div><dt>` + escape(view.Latest) + `</dt><dd>` + escape(valueOr(view.LatestVersion, "—")) + `</dd></div>`)
 	out.WriteString(`</dl>`)
 	switch {
 	case view.Busy && view.Installing:
@@ -801,9 +766,6 @@ func updatesHTML(view UpdateView) string {
 		out.WriteString(`<p class="help">` + escape(view.DevBuildMessage) + `</p>`)
 	case view.Checked:
 		out.WriteString(`<p class="help">` + escape(view.UpToDateMessage) + `</p>`)
-	}
-	if view.Error != "" {
-		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
 	}
 	if view.Launched {
 		out.WriteString(`<p class="notice">` + escape(view.LaunchedMessage) + `</p>`)
@@ -832,9 +794,6 @@ func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 	out.WriteString(`<section class="group group-wide server-settings" data-section="server-settings">`)
 	out.WriteString(`<h2>` + pageIcon("gear") + escape(labels.SettingsTitle) + `</h2>`)
 	out.WriteString(`<p class="help">` + escape(labels.SettingsHelp) + `</p>`)
-	if view.ConfigError != "" {
-		out.WriteString(`<p class="failure">` + escape(view.ConfigError) + `</p>`)
-	}
 	if view.Config == nil {
 		out.WriteString(`<p class="help">` + escape(labels.Unavailable) + `</p>`)
 		out.WriteString(`</section>`)
@@ -1038,9 +997,6 @@ func diagnosticsHTML(view DiagnosticsView, labels ServerLabels) string {
 	out.WriteString(`</dl>`)
 	if len(view.Redacted) > 0 {
 		out.WriteString(`<p class="help">` + escape(fmt.Sprintf(labels.Redacted, strings.Join(view.Redacted, ", "))) + `</p>`)
-	}
-	if view.Error != "" {
-		out.WriteString(`<p class="failure">` + escape(view.Error) + `</p>`)
 	}
 	out.WriteString(`<div class="actions-inline">`)
 	out.WriteString(`<button type="button" data-action="refresh-diagnostics">` + escape(labels.RefreshDiag) + `</button>`)
@@ -1303,12 +1259,10 @@ const pageHTML = `<!doctype html>
   body { margin:0; font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--fg); overflow:hidden; -webkit-font-smoothing:antialiased; }
   main { height:100vh; padding:14px 18px 10px; display:flex; flex-direction:column; gap:10px; }
   .icon { width:15px; height:15px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-  .page-head { display:flex; align-items:center; justify-content:space-between; gap:10px 16px; flex-wrap:wrap; flex:0 0 auto; }
-  h1 { font-size:17px; margin:0 0 1px; letter-spacing:-.01em; }
-  .sub { color:var(--muted); margin:0; font-size:11.5px; }
   .card, .group { background:var(--card); border:1px solid var(--line); border-radius:var(--radius); }
   .group { margin:0; padding:14px 16px; }
   .status { display:flex; align-items:center; gap:8px 16px; flex-wrap:wrap; padding:8px 12px; flex:0 0 auto; }
+  .status > .state { margin-left:auto; }
   .status-meta { display:flex; gap:8px 16px; flex-wrap:wrap; margin:0; }
   .status-meta > div { display:flex; align-items:baseline; gap:5px; }
   .status-meta dt { color:var(--muted); font-size:11px; }
@@ -1329,15 +1283,28 @@ const pageHTML = `<!doctype html>
   .settings-layout:not(.settings-single) .settings-pane { flex-direction:row; flex-wrap:wrap; align-content:flex-start; align-items:stretch; }
   .settings-layout:not(.settings-single) .settings-pane > .group { flex:1 1 300px; min-width:0; }
   .settings-layout:not(.settings-single) .settings-pane > .group-wide { flex:1 1 100%; }
-  .settings-layout:not(.settings-single) .settings-pane > .config-path,
-  .settings-layout:not(.settings-single) .settings-pane > .device-error { flex:1 1 100%; }
+  .settings-layout:not(.settings-single) .settings-pane > .config-path { flex:1 1 100%; }
   /* Three short General-screen cards share one row; the taller autostart
      card follows at full width instead of stretching a nearly empty card
      beside it. */
   .settings-pane > [data-section='updates'] { order:1; }
   .settings-pane > [data-section='wizard-launcher'] { order:2; }
   .settings-pane > [data-section='startup'] { order:3; }
-  .settings-pane > .config-path, .settings-pane > .device-error { order:4; }
+  .settings-pane > .config-path { order:4; }
+  /* The General screen's action buttons fill their card and share one height,
+     so the update check and the wizard entry point do not look mismatched. */
+  .settings-pane > [data-section='updates'] .actions-inline > button {
+    flex:1 1 0;
+    min-width:0;
+    justify-content:center;
+    min-height:32px;
+  }
+  .settings-pane > [data-section='wizard-launcher'] > button {
+    width:100%;
+    margin-top:10px;
+    justify-content:center;
+    min-height:32px;
+  }
   /* A card with many short fields uses two columns of fields, so it stays
      compact without turning every input into a half-width control. */
   .field-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:2px 20px; align-items:start; }
@@ -1435,7 +1402,6 @@ const pageHTML = `<!doctype html>
   .meter { height:7px; border-radius:999px; background:var(--line-soft); overflow:hidden; margin-top:6px; }
   .meter-fill { height:100%; width:0; background:linear-gradient(90deg, var(--accent), var(--ok)); transition:width 60ms linear; }
   .meter.is-live { outline:2px solid var(--accent); outline-offset:2px; }
-  .device-error { color:var(--danger); }
   .gnome-offer { margin:6px 0 2px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); }
   .gnome-head { display:flex; align-items:center; gap:7px; margin-bottom:2px; }
   .gnome-head .icon { color:var(--accent); }
@@ -1470,8 +1436,6 @@ const pageHTML = `<!doctype html>
   .notice { color:var(--ok); margin:0; padding:6px 10px; border-radius:7px; background:#2f9e441a; font-size:12px; }
   .failure { color:var(--danger); margin:0; padding:6px 10px; border-radius:7px; background:#d6409f14; font-size:12px; }
   .failure:empty { display:none; }
-  .error { margin:0; padding:8px 12px; border:1px solid #d6409f55; border-radius:7px; color:var(--danger); display:none; font-size:12px; }
-  .error.visible { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
   .health { font-size:11px; color:var(--muted); }
   .health[data-health="online"] { color:var(--ok); }
   .health[data-health="stopped"] { color:var(--warn); }
@@ -1570,13 +1534,6 @@ const pageHTML = `<!doctype html>
 </head>
 <body>
 <main>
-  <header class="page-head">
-    <div>
-      <h1 id="page-title">__TITLE__</h1>
-      <p class="sub" id="page-subtitle">__SUBTITLE__</p>
-    </div>
-    <div class="state" id="state" data-state="idle"><span class="dot"></span><strong id="state-label">—</strong></div>
-  </header>
   <section class="card status" aria-live="polite">
     <dl class="status-meta">
       <div><dt id="label-phase">—</dt><dd id="phase">idle</dd></div>
@@ -1585,8 +1542,8 @@ const pageHTML = `<!doctype html>
       <div><dt id="label-server-status">—</dt><dd id="server-status">—</dd></div>
       <div><dt id="label-version">—</dt><dd id="version">—</dd></div>
     </dl>
+    <div class="state" id="state" data-state="idle"><span class="dot"></span><strong id="state-label">—</strong></div>
   </section>
-  <p class="error" id="error"><span id="error-text"></span> <button type="button" data-action="settings" id="error-settings">__OPEN_SETTINGS__</button></p>
   <div class="messages" id="messages"></div>
   <div id="settings">__SETTINGS__</div>
   <footer id="actions"__ACTIONS_STYLE__>
@@ -1599,6 +1556,45 @@ const pageHTML = `<!doctype html>
   function text(id, value) {
     var el = document.getElementById(id);
     if (el) el.textContent = value || "";
+  }
+  // The status card is followed by one message area. Runtime failures, card
+  // failures and intent results all land here; cards never repeat an error of
+  // their own. viewErrors carry the screen they belong to, so an error for a
+  // hidden card stays hidden until the user opens that screen.
+  var runtimeError = "";
+  var viewErrors = __ERRORS__;
+  var actionMessages = { notices: [], failures: [] };
+  function visibleSections() {
+    var visible = {};
+    var sections = document.querySelectorAll("#settings-pane [data-section]");
+    for (var i = 0; i < sections.length; i++) {
+      if (!sections[i].hidden) visible[sections[i].dataset.section] = true;
+    }
+    return visible;
+  }
+  function renderAlerts() {
+    var host = document.getElementById("messages");
+    if (!host) return;
+    host.textContent = "";
+    var shown = {};
+    function add(message, kind) {
+      message = message || "";
+      if (!message || shown[kind + "\n" + message]) return;
+      shown[kind + "\n" + message] = true;
+      var p = document.createElement("p");
+      p.className = kind;
+      p.textContent = message;
+      host.appendChild(p);
+    }
+    (actionMessages.notices || []).forEach(function (line) { add(line, "notice"); });
+    if (runtimeError) add(runtimeError, "failure");
+    var visible = visibleSections();
+    (viewErrors || []).forEach(function (item) {
+      if (!item || !item.message) return;
+      if (item.section && !visible[item.section]) return;
+      add(item.message, "failure");
+    });
+    (actionMessages.failures || []).forEach(function (line) { add(line, "failure"); });
   }
   function renderStatus(s) {
     var labels = s.labels || {};
@@ -1615,12 +1611,8 @@ const pageHTML = `<!doctype html>
     text("label-server", labels.profile);
     text("label-server-status", labels.server);
     text("label-version", labels.version);
-    text("error-text", s.error);
-    if (labels.openSettings) text("error-settings", labels.openSettings);
-    var error = document.getElementById("error");
-    if (error) error.classList.toggle("visible", Boolean(s.error));
-    var errorSettings = document.getElementById("error-settings");
-    if (errorSettings) errorSettings.hidden = !s.errorAction;
+    runtimeError = s.error || "";
+    renderAlerts();
     var wizardPhase = document.querySelector("[data-wizard-phase]");
     if (wizardPhase) wizardPhase.textContent = labels.phaseValue || "";
     var wizardState = document.querySelector("[data-wizard-try-state]");
@@ -1636,6 +1628,7 @@ const pageHTML = `<!doctype html>
     var buttons = navButtons();
     if (!buttons.length) {
       activeSection = "";
+      renderAlerts();
       return;
     }
     var chosen = null;
@@ -1658,6 +1651,7 @@ const pageHTML = `<!doctype html>
       var pane = document.getElementById("settings-pane");
       if (pane) pane.scrollTop = 0;
     }
+    renderAlerts();
     syncIndicatorPreview();
   }
   var previewTimer = null;
@@ -1825,12 +1819,9 @@ const pageHTML = `<!doctype html>
       markRendered(host);
       restoreEdits(host, edits);
     }
+    viewErrors = (v && v.errors) || [];
     if (v && v.language) document.documentElement.lang = v.language;
-    if (v && v.title) {
-      document.title = v.title;
-      text("page-title", v.title);
-    }
-    if (v) text("page-subtitle", v.subtitle);
+    if (v && v.title) document.title = v.title;
     if (v && v.actions) {
       var save = document.getElementById("save-button");
       if (save && v.actions.save) {
@@ -1938,21 +1929,11 @@ const pageHTML = `<!doctype html>
     revealWizardStep();
   }
   function renderMessages(m) {
-    var host = document.getElementById("messages");
-    if (!host) return;
-    host.textContent = "";
-    ((m && m.notices) || []).forEach(function (line) {
-      var p = document.createElement("p");
-      p.className = "notice";
-      p.textContent = line;
-      host.appendChild(p);
-    });
-    ((m && m.failures) || []).forEach(function (line) {
-      var p = document.createElement("p");
-      p.className = "failure";
-      p.textContent = line;
-      host.appendChild(p);
-    });
+    actionMessages = {
+      notices: (m && m.notices) || [],
+      failures: (m && m.failures) || []
+    };
+    renderAlerts();
   }
   function setLevel(level) {
     var fill = document.querySelector("#settings .meter-fill");
@@ -2001,13 +1982,11 @@ const pageHTML = `<!doctype html>
     return patch;
   }
   function showMessage(message, failure) {
-    var host = document.getElementById("messages");
-    if (!host) return;
-    host.textContent = "";
-    var p = document.createElement("p");
-    p.className = failure ? "failure" : "notice";
-    p.textContent = message;
-    host.appendChild(p);
+    actionMessages = {
+      notices: failure ? [] : [String(message || "")],
+      failures: failure ? [String(message || "")] : []
+    };
+    renderAlerts();
   }
   function sendIntent(intent, button) {
     if (button && button.dataset.pending === "1") return null;

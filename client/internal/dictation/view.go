@@ -116,7 +116,7 @@ type sectionSpec struct {
 var specs = []sectionSpec{
 	{
 		id:       "general",
-		titleKey: "section.general",
+		titleKey: "section.language",
 		fields: []fieldSpec{
 			{
 				path:     "client.ui_language",

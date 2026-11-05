@@ -162,11 +162,13 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 	}
 	s.pushSettings()
 	s.update(s.opts.Runtime.Status())
+	if err != nil {
+		// The card carries no error of its own: every failure goes to the one
+		// message area, including a check the Client ran on its own.
+		s.pushMessages(nil, []string{s.catalog().T("error.update.check", err.Error())})
+		return
+	}
 	if manual {
-		if err != nil {
-			s.pushMessages(nil, []string{s.catalog().T("error.update.check", err.Error())})
-			return
-		}
 		if info.Available {
 			s.pushMessages([]string{s.catalog().T("notice.update.available", info.Latest)}, nil)
 		} else {

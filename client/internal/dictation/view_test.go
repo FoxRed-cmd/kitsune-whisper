@@ -77,7 +77,7 @@ client:
 	if len(view.Sections) != 3 || view.Sections[0].ID != "general" || view.Sections[1].ID != "appearance" || view.Sections[2].ID != "dictation" {
 		t.Fatalf("sections = %+v, want general then dictation", view.Sections)
 	}
-	if view.Sections[0].Title != "General" || view.Sections[2].Title != "Dictation" {
+	if view.Sections[0].Title != "Interface language" || view.Sections[2].Title != "Dictation" {
 		t.Fatalf("section titles = %q, %q", view.Sections[0].Title, view.Sections[2].Title)
 	}
 

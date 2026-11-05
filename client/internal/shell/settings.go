@@ -284,6 +284,14 @@ type GnomeShortcutsView struct {
 	Error     string `json:"error,omitempty"`
 }
 
+// ViewError is one Settings failure. Section names the screen it belongs to,
+// so the page can keep every error in the one message area while still hiding
+// errors for cards that are not on screen.
+type ViewError struct {
+	Section string `json:"section,omitempty"`
+	Message string `json:"message"`
+}
+
 // SettingsView is everything the Settings window renders: the Dictation and
 // General screens plus the Servers, Devices, Spool, and Models screens.
 type SettingsView struct {
@@ -291,6 +299,9 @@ type SettingsView struct {
 	Servers     servers.View    `json:"servers"`
 	Diagnostics DiagnosticsView `json:"diagnostics"`
 	Startup     StartupView     `json:"startup"`
+	// Errors lists every screen failure. The page renders them in the single
+	// message area under the status card, not inside the cards themselves.
+	Errors []ViewError `json:"errors,omitempty"`
 	// ModelState is the translated lifecycle state of the active Server.
 	ModelState  string       `json:"modelState,omitempty"`
 	Labels      ServerLabels `json:"serverLabels"`
@@ -654,7 +665,50 @@ func (s *Shell) settingsView() SettingsView {
 		Gnome:       s.gnomeShortcutsView(),
 		Update:      s.updateView(),
 	}
+	view.Errors = collectViewErrors(view)
 	return view
+}
+
+// collectViewErrors gathers the failures the cards would otherwise repeat.
+// Every screen keeps its state in its own view; the page shows the messages in
+// one place and uses Section to hide errors for cards that are not visible.
+// Update failures travel through pushMessages instead, because the same check
+// can fail when no Settings window is open.
+func collectViewErrors(view SettingsView) []ViewError {
+	var errors []ViewError
+	seen := make(map[string]bool)
+	add := func(section, message string) {
+		message = strings.TrimSpace(message)
+		if message == "" {
+			return
+		}
+		key := section + "\x00" + message
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		errors = append(errors, ViewError{Section: section, Message: message})
+	}
+
+	add("dictation", view.DeviceError)
+	add("dictation", view.Gnome.Error)
+	for _, profile := range view.Servers.Profiles {
+		if profile.Health.State != trust.StateOnline {
+			add("servers", profile.Name+": "+profile.Health.Error)
+		}
+	}
+	add("servers", view.Servers.LifecycleError)
+	add("devices", view.Servers.PairingError)
+	add("devices", view.Servers.DevicesError)
+	add("models", view.Servers.ModelsError)
+	if view.Servers.Models != nil {
+		add("models", view.Servers.Models.Error)
+	}
+	add("spool", view.Spool.Error)
+	add("server-settings", view.Servers.ConfigError)
+	add("diagnostics", view.Servers.LogsError)
+	add("diagnostics", view.Diagnostics.Error)
+	return errors
 }
 
 // startupView reads the Autostart state. Without a controller (a headless or

@@ -35,6 +35,7 @@ var english = map[string]string{
 	"phase.delivering": "delivering",
 
 	"section.general":    "General",
+	"section.language":   "Interface language",
 	"section.appearance": "On-screen indicator",
 	"section.dictation":  "Dictation",
 	"section.servers":    "Servers and Devices",
@@ -79,7 +80,7 @@ var english = map[string]string{
 	"server.exposureConnect":  "Connect address: %s.",
 	"server.exposurePending":  "The change is saved and takes effect after the Server restarts.",
 
-	"field.ui_language":        "Interface language",
+	"field.ui_language":        "Language",
 	"help.ui_language":         "The language of this window and the Tray. The system language is used unless you pick one.",
 	"hotkey.capture":           "Press the combination",
 	"field.hotkey":             "Dictation hotkey",

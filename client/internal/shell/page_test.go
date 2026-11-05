@@ -37,10 +37,10 @@ func sampleView() shell.SettingsView {
 			Sections: []dictation.Section{
 				{
 					ID:    "general",
-					Title: "Общие",
+					Title: "Язык интерфейса",
 					Fields: []dictation.Field{{
 						Path:   "client.ui_language",
-						Label:  "Язык интерфейса",
+						Label:  "Язык",
 						Kind:   dictation.KindSelect,
 						Value:  "ru",
 						Source: "file", SourceLabel: "Сохранено",
@@ -691,23 +691,70 @@ func TestPageKeepsUnsavedEditsAcrossASettingsRefresh(t *testing.T) {
 	}
 }
 
-func TestPageUpdatesTheWindowChromeOnALanguageSwitch(t *testing.T) {
+func TestPageHasNoVisibleHeaderAndUpdatesTheWindowTitle(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, sampleView())
-	if !strings.Contains(page, `<h1 id="page-title">kitsune-whisper</h1>`) {
-		t.Fatal("the page title has no element the settings renderer can update")
+	if strings.Contains(page, `class="page-head"`) || strings.Contains(page, `id="page-title"`) || strings.Contains(page, `id="page-subtitle"`) {
+		t.Fatal("the page still renders a title block above the status card")
 	}
-	if !strings.Contains(page, `<p class="sub" id="page-subtitle">Приватное распознавание речи в локальной сети</p>`) {
-		t.Fatal("the page subtitle is not rendered with its id")
+	if !strings.Contains(page, `<title>kitsune-whisper</title>`) {
+		t.Fatal("the page lost its window title")
 	}
-	// renderSettings receives the whole view, so it must refresh the title and
-	// subtitle rather than leaving the initial language on screen.
+	// renderSettings receives the whole view, so a language switch must still
+	// refresh the native window title.
+	if !strings.Contains(page, `document.title = v.title`) {
+		t.Errorf("settings renderer does not update the window title")
+	}
+}
+
+func TestPageKeepsEveryErrorInTheOneAreaUnderTheStatusCard(t *testing.T) {
+	view := managementView()
+	view.DeviceError = "microphone list failed"
+	page := shell.Page(shell.Snapshot{Error: "runtime failure"}, view)
+	if strings.Contains(page, `class="device-error"`) {
+		t.Fatal("the page still renders a second error line outside the message area")
+	}
+	if strings.Contains(page, `id="error"`) {
+		t.Fatal("the page still has a separate runtime error banner")
+	}
+	status := strings.Index(page, `class="card status"`)
+	messages := strings.Index(page, `id="messages"`)
+	settings := strings.Index(page, `id="settings"`)
+	if status < 0 || messages < 0 || settings < 0 || status > messages || messages > settings {
+		t.Fatalf("the message area is not between the status card and the settings: status=%d messages=%d settings=%d", status, messages, settings)
+	}
 	for _, want := range []string{
-		`document.title = v.title`,
-		`text("page-title", v.title)`,
-		`text("page-subtitle", v.subtitle)`,
+		`runtimeError = s.error || ""`,
+		`function renderAlerts()`,
+		`microphone list failed`,
+		`if (item.section && !visible[item.section]) return;`,
 	} {
 		if !strings.Contains(page, want) {
-			t.Errorf("settings renderer does not update the window chrome: missing %q", want)
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestUpdatesCardShowsOnlyVersionsAndTheCheckButton(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:   "Обновления",
+			Help:    "The Client checks GitHub Releases on its own.",
+			Current: "Текущая версия",
+			Latest:  "Последняя версия",
+			Check:   "Проверить обновления",
+		},
+		CurrentVersion: "1.2.3",
+	}
+	html := shell.SettingsHTML(view)
+	for _, unwanted := range []string{"The Client checks GitHub Releases on its own."} {
+		if strings.Contains(html, unwanted) {
+			t.Errorf("the updates card still shows its explanatory text: %q", unwanted)
+		}
+	}
+	for _, want := range []string{"Текущая версия", "1.2.3", "Последняя версия", "Проверить обновления"} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the updates card is missing %q", want)
 		}
 	}
 }
@@ -923,7 +970,6 @@ func TestPageRendersTheSpoolScreen(t *testing.T) {
 		`data-action="spool-insert"`,
 		`data-action="spool-delete"`,
 		`data-confirm="Удалить запись?"`,
-		`data-action="settings"`,
 		"renderSpool(",
 	} {
 		if !strings.Contains(page, want) {

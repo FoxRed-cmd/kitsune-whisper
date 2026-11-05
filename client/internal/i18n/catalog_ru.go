@@ -33,6 +33,7 @@ var russian = map[string]string{
 	"phase.delivering": "вставка",
 
 	"section.general":    "Общие",
+	"section.language":   "Язык интерфейса",
 	"section.appearance": "Индикатор на экране",
 	"section.dictation":  "Распознавание речи",
 	"section.servers":    "Серверы и устройства",
@@ -77,7 +78,7 @@ var russian = map[string]string{
 	"server.exposureConnect":  "Адрес подключения: %s.",
 	"server.exposurePending":  "Изменение записано в конфигурацию и вступит в силу после перезапуска сервера.",
 
-	"field.ui_language":        "Язык интерфейса",
+	"field.ui_language":        "Язык",
 	"help.ui_language":         "Язык этого окна и значка в трее. Используется язык системы, если не выбран другой.",
 	"hotkey.capture":           "Нажмите сочетание",
 	"field.hotkey":             "Горячая клавиша распознавания",
