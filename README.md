@@ -13,9 +13,9 @@
     Audio never leaves your network.
   </p>
 
-  [![Release](https://img.shields.io/github/v/release/FoxRed-cmd/kitsune-whisper?style=flat-square&label=release&color=4d6bf5)](https://github.com/FoxRed-cmd/kitsune-whisper/releases/latest)
-  [![License](https://img.shields.io/badge/license-MIT-4d6bf5?style=flat-square)](LICENSE)
-  [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-4d6bf5?style=flat-square)](#quick-start)
+  [![Release](https://img.shields.io/github/v/release/FoxRed-cmd/kitsune-whisper?style=flat-square&label=release&color=c2703f)](https://github.com/FoxRed-cmd/kitsune-whisper/releases/latest)
+  [![License](https://img.shields.io/badge/license-MIT-c2703f?style=flat-square)](LICENSE)
+  [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20Windows-c2703f?style=flat-square)](#quick-start)
   [![Privacy](https://img.shields.io/badge/privacy-LAN--only-2ea043?style=flat-square)](#privacy)
 </div>
 

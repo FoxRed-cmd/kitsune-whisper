@@ -1,8 +1,10 @@
 // Package brand renders the kitsune-whisper mark: a fox head in a rounded
 // badge. The artwork lives in SVG files, and this package rasterises the same
 // paths in-process for platforms that need a bitmap (the Tray and the Wails
-// application icon). Every surface therefore shows the same shape without a
-// binary asset in the repository.
+// application icon). The rich app.svg serves README and the Linux icon theme;
+// app-flat.svg and tray.svg stay inside the parser subset used for bitmaps.
+// Every surface therefore shows the same shape without a binary asset in the
+// repository.
 package brand
 
 import (
@@ -38,6 +40,13 @@ var traySVG []byte
 
 //go:embed icons/app.svg
 var appSVG []byte
+
+// app-flat.svg is the parser-compatible sibling of app.svg: same geometry, but
+// flat fills instead of the gradient, clip path, and filter that only a real
+// SVG renderer understands.
+//
+//go:embed icons/app-flat.svg
+var appFlatSVG []byte
 
 var (
 	trayOnce sync.Once
@@ -84,19 +93,22 @@ func TrayPNG(state TrayState, t theme.Theme) []byte {
 
 // AppSVG returns the scalable application icon. It is the file the Linux
 // installer puts in the icon theme, so the desktop menu and the window manager
-// see the same mark as the Tray.
+// see the same mark as the Tray. It keeps the gradient and soft shadow because
+// a real SVG renderer draws it; AppPNG uses the flat sibling instead.
 func AppSVG() []byte {
 	return bytes.Clone(appSVG)
 }
 
 // AppPNG returns the application icon as a PNG of size×size pixels. It is used
-// for desktop adapters that accept bytes instead of an icon-theme name.
+// for desktop adapters that accept bytes instead of an icon-theme name, and for
+// the Windows .ico. The in-process renderer parses app-flat.svg, which carries
+// the same geometry without the features that only a real SVG renderer draws.
 func AppPNG(size int) []byte {
 	if size <= 0 {
 		return nil
 	}
 	appOnce.Do(func() {
-		appIcon, appErr = parseSVG(appSVG)
+		appIcon, appErr = parseSVG(appFlatSVG)
 	})
 	if appErr != nil || appIcon == nil {
 		return nil

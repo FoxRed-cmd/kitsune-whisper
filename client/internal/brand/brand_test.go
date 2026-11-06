@@ -45,12 +45,13 @@ func TestTrayIconIsAntialiasedAndUsesThePalette(t *testing.T) {
 	if got := pixel(img, 0, 0); got.A != 0 {
 		t.Fatalf("corner = %+v, want transparent", got)
 	}
-	// The badge shows through beside the fox.
-	if got := pixel(img, 8, 32); got != palette.Accent {
+	// The badge shows through beside the fox. The fox leaves a margin, so a
+	// pixel near the badge edge is never part of the silhouette.
+	if got := pixel(img, 4, 32); got != palette.Accent {
 		t.Fatalf("badge pixel = %+v, want the accent %+v", got, palette.Accent)
 	}
 	// The fox face is painted in the on-accent colour.
-	if got := pixel(img, 32, 30); got != palette.OnAccent {
+	if got := pixel(img, 32, 34); got != palette.OnAccent {
 		t.Fatalf("fox pixel = %+v, want on-accent %+v", got, palette.OnAccent)
 	}
 
@@ -65,7 +66,7 @@ func TestErrorStateUsesTheDangerColour(t *testing.T) {
 	img := decodeTray(t, TrayError, theme.Dark)
 	palette := theme.For(theme.Dark)
 	// The lower-left badge corner is away from the fox silhouette.
-	if got := pixel(img, 8, 32); got != palette.Danger {
+	if got := pixel(img, 4, 32); got != palette.Danger {
 		t.Fatalf("error badge pixel = %+v, want danger %+v", got, palette.Danger)
 	}
 }
@@ -83,7 +84,7 @@ func TestAppIconIsAvailableAsSVGAndPNG(t *testing.T) {
 	if !bytes.Contains(svg, []byte("<svg")) {
 		t.Fatalf("application SVG = %q", svg)
 	}
-	if !bytes.Contains(svg, []byte("#4d6bf5")) {
+	if !bytes.Contains(svg, []byte("#c2703f")) {
 		t.Fatalf("application SVG does not use the brand accent")
 	}
 	data := AppPNG(256)
