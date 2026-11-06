@@ -19,6 +19,10 @@
   [![Privacy](https://img.shields.io/badge/privacy-LAN--only-2ea043?style=flat-square)](#privacy)
 </div>
 
+<p align="center">
+  <img src="docs/assets/demo.gif" width="1000" alt="Dictating into a terminal: press Ctrl+Shift+Space, speak, and the text is pasted at the cursor">
+</p>
+
 ---
 
 **Quick start:** [Linux](#linux) · [Windows](#windows) · [CUDA](#cuda-optional) · [Models](#models) · [Troubleshooting](#troubleshooting)

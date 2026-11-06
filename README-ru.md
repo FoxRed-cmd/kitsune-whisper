@@ -19,6 +19,10 @@
   [![Privacy](https://img.shields.io/badge/privacy-LAN--only-2ea043?style=flat-square)](#приватность)
 </div>
 
+<p align="center">
+  <img src="docs/assets/demo.gif" width="1000" alt="Диктовка в терминал: нажмите Ctrl+Shift+Space, продиктуйте текст — и он вставится у курсора">
+</p>
+
 ---
 
 **Быстрый старт:** [Linux](#linux) · [Windows](#windows) · [CUDA](#cuda-опционально) · [Модели](#модели) · [Решение проблем](#решение-проблем)
