@@ -34,7 +34,6 @@ type Updater interface {
 type UpdateLabels struct {
 	Title               string `json:"title"`
 	AutoCheck           string `json:"autoCheck"`
-	AutoCheckHelp       string `json:"autoCheckHelp"`
 	Current             string `json:"current"`
 	Latest              string `json:"latest"`
 	Check               string `json:"check"`
@@ -147,7 +146,6 @@ func (s *Shell) updateLabels() UpdateLabels {
 	return UpdateLabels{
 		Title:               catalog.T("update.title"),
 		AutoCheck:           catalog.T("update.autoCheck"),
-		AutoCheckHelp:       catalog.T("update.autoCheckHelp"),
 		Current:             catalog.T("update.current"),
 		Latest:              catalog.T("update.latest"),
 		Check:               catalog.T("update.check"),

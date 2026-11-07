@@ -829,7 +829,6 @@ func updatesHTML(view UpdateView) string {
 	}
 	out.WriteString(`>`)
 	out.WriteString(`</label>`)
-	out.WriteString(`<p class="help">` + escape(view.AutoCheckHelp) + `</p>`)
 	out.WriteString(`</div>`)
 	switch {
 	case view.Downloading:

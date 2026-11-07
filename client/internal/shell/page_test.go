@@ -876,12 +876,11 @@ func TestUpdatesCardShowsVersionsTheAutomaticToggleAndTheCheckButton(t *testing.
 	view := managementView()
 	view.Update = shell.UpdateView{
 		UpdateLabels: shell.UpdateLabels{
-			Title:         "Обновления",
-			AutoCheck:     "Проверять обновления автоматически",
-			AutoCheckHelp: "Проверка запускается примерно через минуту после старта.",
-			Current:       "Текущая версия",
-			Latest:        "Последняя версия",
-			Check:         "Проверить обновления",
+			Title:     "Обновления",
+			AutoCheck: "Проверять обновления автоматически",
+			Current:   "Текущая версия",
+			Latest:    "Последняя версия",
+			Check:     "Проверить обновления",
 		},
 		CurrentVersion: "1.2.3",
 		CheckEnabled:   true,
@@ -891,11 +890,13 @@ func TestUpdatesCardShowsVersionsTheAutomaticToggleAndTheCheckButton(t *testing.
 		"Текущая версия", "1.2.3", "Последняя версия", "Проверить обновления",
 		`data-path="client.updates.check" checked`,
 		"Проверять обновления автоматически",
-		"Проверка запускается примерно через минуту после старта.",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the updates card is missing %q", want)
 		}
+	}
+	if strings.Contains(html, "примерно через минуту") {
+		t.Error("the updates card still explains when the automatic check runs")
 	}
 
 	view.Update.CheckEnabled = false
