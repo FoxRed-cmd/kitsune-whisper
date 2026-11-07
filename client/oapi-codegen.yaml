@@ -1,0 +1,33 @@
+# Wire-type generation for the Server-owned OpenAPI contract (ADR 0014).
+# Only the shapes are generated: transport, TLS pinning, the Device token,
+# multipart upload, warning callbacks, and error classification stay hand-written.
+package: api
+output: client/internal/api/api.gen.go
+generate:
+  models: true
+output-options:
+  # Go's idiom for initialisms matches the Client's existing wire types.
+  name-normalizer: ToCamelCaseWithInitialisms
+  additional-initialisms:
+    - GPU
+  # Keep every response schema, including ones only reachable through a
+  # documented error response, so the Client can decode the whole contract.
+  skip-prune: true
+  # Generate no operation helpers at all: transport is hand-written policy
+  # (ADR 0014). No operation matches this filter, so only the schemas remain.
+  include-operation-ids:
+    - __responses_only__
+  # Request bodies and FastAPI's validation schemas are the Server's inputs,
+  # not the Client's wire types. Excluding them also keeps the generated file
+  # free of the oapi-codegen runtime dependency (File and union helpers).
+  exclude-schemas:
+    - ActivateRequest
+    - Body_transcribe_transcribe_post
+    - ConfigPatchRequest
+    - DownloadRequest
+    - ExposureRequest
+    - HTTPValidationError
+    - IdleUnloadRequest
+    - LocalPairRequest
+    - RemotePairRequest
+    - ValidationError
