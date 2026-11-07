@@ -396,7 +396,7 @@ def test_documentation_covers_install_release_and_troubleshooting() -> None:
         "security.md": ("Pairing code", "Revoke", "expose on", "Threat model"),
         "troubleshooting.md": ("Client log", "401", "Certificate changed", "Spool"),
         "models.md": ("Model catalog", "idle_unload_seconds", "CUDA", "download"),
-        "release.md": ("v1.2.1", "checksums.txt", "verify-version", "manual"),
+        "release.md": ("v1.2.2", "checksums.txt", "verify-version", "manual"),
         "updates.md": (
             "client.updates.check",
             "60 seconds",
