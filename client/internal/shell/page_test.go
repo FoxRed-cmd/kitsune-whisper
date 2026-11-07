@@ -1011,6 +1011,59 @@ func TestUpdatesCardDistinguishesReadyAndFailedDownloads(t *testing.T) {
 	}
 }
 
+func TestUpdatesCardShowsTheInstallResultAndDismiss(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:            "Обновления",
+			Check:            "Проверить обновления",
+			InstalledMessage: "Обновлено до v%s.",
+			Dismiss:          "Скрыть",
+		},
+		CurrentVersion: "1.3.0",
+		ResultStatus:   "success",
+		ResultTag:      "v1.3.0",
+		ResultMessage:  "Обновлено до v1.3.0.",
+	}
+	html := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-update-result="success"`,
+		"Обновлено до v1.3.0.",
+		`data-action="dismiss-update"`,
+		"Скрыть",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the result card is missing %q", want)
+		}
+	}
+}
+
+func TestUpdatesCardShowsTheInstallInProgressState(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:             "Обновления",
+			Check:             "Проверить обновления",
+			InstallingMessage: "Завершаем текущую диктовку и устанавливаем обновление…",
+		},
+		CurrentVersion: "1.2.3",
+		LatestVersion:  "1.3.0",
+		Available:      true,
+		Installable:    true,
+		Installing:     true,
+	}
+	html := shell.SettingsHTML(view)
+	if !strings.Contains(html, `data-update-installing="true"`) {
+		t.Error("the card does not show that the update is installing")
+	}
+	if !strings.Contains(html, "Завершаем текущую диктовку") {
+		t.Error("the installing message is missing")
+	}
+	if strings.Contains(html, `data-action="install-update"`) {
+		t.Error("the install button is still clickable while installing")
+	}
+}
+
 func TestPageShowsTheLiveListenerAndAPendingRestart(t *testing.T) {
 	view := sampleView()
 	view.Servers.Profiles[0].Health.Network = &trust.NetworkStatus{

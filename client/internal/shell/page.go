@@ -835,6 +835,8 @@ func updatesHTML(view UpdateView) string {
 	case view.Downloading:
 		out.WriteString(`<p class="notice" data-update-downloading="true">` + escape(downloadProgressText(view)) + `</p>`)
 		out.WriteString(updateMeterHTML(view))
+	case view.Installing:
+		out.WriteString(`<p class="notice" data-update-installing="true">` + escape(view.InstallingMessage) + `</p>`)
 	case view.Busy:
 		out.WriteString(`<p class="notice" data-update-busy="true">` + escape(view.Checking) + `</p>`)
 	case view.Ready:
@@ -849,6 +851,9 @@ func updatesHTML(view UpdateView) string {
 	case view.Checked:
 		out.WriteString(`<p class="help">` + escape(view.UpToDateMessage) + `</p>`)
 	}
+	if view.ResultStatus != "" {
+		out.WriteString(`<p class="notice" data-update-result="` + escape(view.ResultStatus) + `">` + escape(view.ResultMessage) + `</p>`)
+	}
 	if view.Error != "" {
 		out.WriteString(`<p class="notice" data-update-error="true">` + escape(view.Error) + `</p>`)
 	}
@@ -857,11 +862,14 @@ func updatesHTML(view UpdateView) string {
 	if view.Downloading {
 		out.WriteString(`<button type="button" data-action="cancel-update">` + pageIcon("close") + escape(view.Cancel) + `</button>`)
 	}
-	if view.Available && view.Installable && !view.Busy && !view.Downloading {
+	if view.Available && view.Installable && !view.Busy && !view.Downloading && !view.Installing {
 		out.WriteString(`<button type="button" class="primary" data-action="install-update">` + pageIcon("download") + escape(updateActionLabel(view)) + `</button>`)
 	}
-	if view.Error != "" && view.Available && view.Installable && !view.Downloading {
+	if view.Error != "" && view.Available && view.Installable && !view.Downloading && !view.Installing {
 		out.WriteString(`<button type="button" data-action="retry-update">` + pageIcon("download") + escape(view.Retry) + `</button>`)
+	}
+	if view.ResultStatus != "" {
+		out.WriteString(`<button type="button" data-action="dismiss-update">` + pageIcon("close") + escape(view.Dismiss) + `</button>`)
 	}
 	out.WriteString(`</div>`)
 	if view.ReleaseURL != "" {
@@ -2590,6 +2598,8 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "cancel-update" }, button);
     } else if (action === "retry-update") {
       sendIntent({ action: "retry-update" }, button);
+    } else if (action === "dismiss-update") {
+      sendIntent({ action: "dismiss-update" }, button);
     } else if (action === "wizard-open") {
       sendIntent({ action: "wizard-open" }, button);
     } else if (action === "wizard-close") {

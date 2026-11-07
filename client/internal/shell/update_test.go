@@ -2,6 +2,7 @@ package shell_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -9,7 +10,10 @@ import (
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/update"
 )
 
@@ -37,7 +41,63 @@ type fakeUpdater struct {
 	cleared           []string
 	verified          []update.Stage
 	verifyErr         error
+
+	// Install state.
+	installErr      error
+	installs        []update.InstallRequest
+	result          update.Result
+	hasResult       bool
+	clearResultCall int
 }
+
+func (u *fakeUpdater) Install(_ context.Context, req update.InstallRequest) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.installs = append(u.installs, req)
+	return u.installErr
+}
+
+func (u *fakeUpdater) Result() (update.Result, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.result, u.hasResult
+}
+
+func (u *fakeUpdater) ClearResult() error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.clearResultCall++
+	u.hasResult = false
+	u.result = update.Result{}
+	return nil
+}
+
+func (u *fakeUpdater) installRequests() []update.InstallRequest {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]update.InstallRequest(nil), u.installs...)
+}
+
+func (u *fakeUpdater) installCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.installs)
+}
+
+func (u *fakeUpdater) clearResultCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.clearResultCall
+}
+
+// fakeStartup is the Component-install state seam.
+type fakeStartup struct {
+	state components.State
+}
+
+func (f *fakeStartup) Status() components.State { return f.state }
+
+func (f *fakeStartup) SetMode(bool, components.Mode) error { return nil }
 
 func (u *fakeUpdater) Check(ctx context.Context) (update.Info, error) {
 	u.mu.Lock()
@@ -238,11 +298,14 @@ func TestStartupUpdateCheckShowsTheAvailableVersion(t *testing.T) {
 	<-done
 }
 
-func TestUpdateActionDownloadsAndEndsReady(t *testing.T) {
-	updater := &fakeUpdater{info: update.Info{
-		Current: "v0.1.0", Latest: "0.2.0", Tag: "v0.2.0",
-		Available: true, Installable: true, Asset: "install.sh",
-	}}
+func TestUpdateActionDownloadsThenInstallsWithoutASecondClick(t *testing.T) {
+	updater := &fakeUpdater{
+		info: update.Info{
+			Current: "v0.1.0", Latest: "0.2.0", Tag: "v0.2.0",
+			Available: true, Installable: true, Asset: "install.sh",
+		},
+		installErr: errors.New("the helper could not start"),
+	}
 	settings := updateSettings(false)
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
@@ -261,13 +324,17 @@ func TestUpdateActionDownloadsAndEndsReady(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the staged download", func() bool { return updater.downloadCount() == 1 })
-	waitFor(t, "the ready state", func() bool {
-		window := desktop.getWindow()
-		if window == nil {
-			return false
-		}
-		view, ok := window.lastSettings()
-		return ok && view.Update.Ready && !view.Update.Downloading
+	waitFor(t, "the install request", func() bool { return updater.installCount() == 1 })
+	if got := updater.downloadCount(); got != 1 {
+		t.Fatalf("downloads = %d, want 1", got)
+	}
+	requests := updater.installRequests()
+	if requests[0].Stage.Tag != "v0.2.0" {
+		t.Fatalf("install request stage = %+v", requests[0].Stage)
+	}
+	waitFor(t, "the install failure in the card", func() bool {
+		update := settingsView(t, window)
+		return !update.Installing && update.Error != ""
 	})
 	_ = rt.Stop()
 	<-done
@@ -479,10 +546,13 @@ func TestAutomaticCheckDownloadsAndEndsReady(t *testing.T) {
 }
 
 func TestManualCheckDoesNotDownloadUntilTheUpdateAction(t *testing.T) {
-	updater := &fakeUpdater{info: update.Info{
-		Current: "v0.1.0", Latest: "0.2.0", Tag: "v0.2.0",
-		Available: true, Installable: true, Asset: "install.sh",
-	}}
+	updater := &fakeUpdater{
+		info: update.Info{
+			Current: "v0.1.0", Latest: "0.2.0", Tag: "v0.2.0",
+			Available: true, Installable: true, Asset: "install.sh",
+		},
+		installErr: errors.New("the helper could not start"),
+	}
 	settings := updateSettings(false)
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
@@ -504,9 +574,7 @@ func TestManualCheckDoesNotDownloadUntilTheUpdateAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the manual staged download", func() bool { return updater.downloadCount() == 1 })
-	waitFor(t, "the ready card", func() bool {
-		return settingsView(t, window).Ready
-	})
+	waitFor(t, "the install request after the download", func() bool { return updater.installCount() == 1 })
 	_ = rt.Stop()
 	<-done
 }
@@ -735,12 +803,14 @@ func TestBackgroundDownloadFailureStaysInTheCardAndRetryWorks(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, "the retried download", func() bool { return updater.downloadCount() == 2 })
-	waitFor(t, "the ready card after retry", func() bool {
+	waitFor(t, "the install after retry", func() bool { return updater.installCount() == 1 })
+	waitFor(t, "the card error to clear", func() bool {
 		update := settingsView(t, window)
-		return update.Ready && update.Error == ""
+		return update.Error == ""
 	})
-	_ = rt.Stop()
-	<-done
+	if res := <-done; !errors.Is(res.err, shell.ErrUpdateInstall) {
+		t.Fatalf("Run error = %v, want ErrUpdateInstall", res.err)
+	}
 }
 
 func TestManualDownloadFailureUsesTheCardNotTheMessageArea(t *testing.T) {
@@ -833,6 +903,421 @@ func TestAutomaticUpdateCheckFailureStaysOutOfTheMessageArea(t *testing.T) {
 	})
 	if last, ok := desktop.getWindow().lastMessages(); ok && len(last.failures) > 0 {
 		t.Fatalf("a background check failure popped over the window: %v", last.failures)
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+// newInstallShell builds a shell for the install orchestration tests: the
+// automatic check is off, so every Check is explicit.
+func newInstallShell(
+	rt *fakeRuntime,
+	desktop *fakeDesktop,
+	updater *fakeUpdater,
+	servers shell.Servers,
+	startup shell.Startup,
+) *shell.Shell {
+	return shell.New(shell.Options{
+		Runtime:          rt,
+		Desktop:          desktop,
+		Settings:         updateSettings(false),
+		Servers:          servers,
+		Startup:          startup,
+		Version:          "v0.1.0",
+		Profile:          "Local Server",
+		Logger:           &fakeLogger{},
+		UpdateCheckDelay: time.Hour,
+		UpdateIdlePoll:   5 * time.Millisecond,
+		Updater:          updater,
+	})
+}
+
+// primeUpdate runs a manual check and waits until the card offers the update.
+func primeUpdate(t *testing.T, sh *shell.Shell, window *fakeWindow) {
+	t.Helper()
+	if err := sh.HandleIntent([]byte(`{"action":"check-updates"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the available update", func() bool {
+		view := settingsView(t, window)
+		return view.Checked && view.Available && view.Installable
+	})
+}
+
+func readyUpdater(stage update.Stage) *fakeUpdater {
+	return &fakeUpdater{
+		info: update.Info{
+			Current: "v0.1.0", Latest: "0.2.0", Tag: "v0.2.0",
+			Available: true, Installable: true, Asset: "install.sh",
+		},
+		staged: true,
+		stage:  stage,
+	}
+}
+
+func TestInstallUsesTheStagedSetWithoutDownloadingAgain(t *testing.T) {
+	stage := update.Stage{
+		Tag:        "v0.2.0",
+		Dir:        "/tmp/staged",
+		Components: components.Set{Client: true, Server: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{
+		Installed: components.Set{Client: true, Server: true},
+	}}
+	sh := newInstallShell(rt, desktop, updater, nil, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the install request", func() bool { return updater.installCount() == 1 })
+	if got := updater.downloadCount(); got != 0 {
+		t.Fatalf("a staged update was downloaded again: %d downloads", got)
+	}
+	requests := updater.installRequests()
+	if len(requests) != 1 || requests[0].Stage.Tag != stage.Tag {
+		t.Fatalf("install requests = %+v", requests)
+	}
+	if requests[0].Components != (components.Set{Client: true, Server: true}) {
+		t.Fatalf("components = %+v", requests[0].Components)
+	}
+	waitFor(t, "the verified stage", func() bool {
+		updater.mu.Lock()
+		defer updater.mu.Unlock()
+		return len(updater.verified) == 1
+	})
+	res := <-done
+	if !errors.Is(res.err, shell.ErrUpdateInstall) {
+		t.Fatalf("Run error = %v, want ErrUpdateInstall", res.err)
+	}
+	if rt.stops != 1 {
+		t.Fatalf("runtime stops = %d, want 1", rt.stops)
+	}
+	if _, quits := desktop.calls(); quits != 1 {
+		t.Fatalf("desktop quits = %d, want 1", quits)
+	}
+}
+
+func TestInstallStopsTheLocalServerProfileEvenWhenRemoteIsActive(t *testing.T) {
+	stage := update.Stage{
+		Tag:        "v0.2.0",
+		Dir:        "/tmp/staged",
+		Components: components.Set{Client: true, Server: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	serverService := newFakeServers()
+	serverService.view.ActiveID = "remote-desktop"
+	serverService.view.Profiles = []servers.Profile{
+		{ID: "local", Name: "Local Server", URL: "https://localhost:8765", AutoPair: true},
+		{ID: "remote-desktop", Name: "Desktop", URL: "https://desktop.local:8765", Active: true},
+	}
+	serverService.health["local"] = trust.Status{State: trust.StateOnline}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{
+		Installed: components.Set{Client: true, Server: true},
+	}}
+	sh := newInstallShell(rt, desktop, updater, serverService, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the install request", func() bool { return updater.installCount() == 1 })
+	requests := updater.installRequests()
+	if request := requests[0]; !request.ServerWasRunning {
+		t.Fatalf("server_was_running = false, want true")
+	}
+	serverService.mu.Lock()
+	stops := append([]string(nil), serverService.stopCalls...)
+	serverService.mu.Unlock()
+	if len(stops) != 1 || stops[0] != "local" {
+		t.Fatalf("stopped profiles = %v, want [local]", stops)
+	}
+	<-done
+}
+
+func TestInstallRecordsServerWasRunningFalseWhenTheLocalServerIsStopped(t *testing.T) {
+	stage := update.Stage{
+		Tag: "v0.2.0", Dir: "/tmp/staged",
+		Components: components.Set{Client: true, Server: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	serverService := newFakeServers()
+	serverService.view.Profiles = []servers.Profile{
+		{ID: "local", Name: "Local Server", URL: "https://localhost:8765", AutoPair: true},
+	}
+	serverService.health["local"] = trust.Status{State: trust.StateOffline}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{
+		Installed: components.Set{Client: true, Server: true},
+	}}
+	sh := newInstallShell(rt, desktop, updater, serverService, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the install request", func() bool { return updater.installCount() == 1 })
+	requests := updater.installRequests()
+	if requests[0].ServerWasRunning {
+		t.Fatal("a stopped Local Server was recorded as running")
+	}
+	serverService.mu.Lock()
+	stops := len(serverService.stopCalls)
+	serverService.mu.Unlock()
+	if stops != 0 {
+		t.Fatalf("stopped an already stopped Server: %d calls", stops)
+	}
+	<-done
+}
+
+func TestInstallRecordsTheInstalledClientOnlyComponents(t *testing.T) {
+	stage := update.Stage{
+		Tag: "v0.2.0", Dir: "/tmp/staged",
+		Components: components.Set{Client: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{
+		Installed: components.Set{Client: true},
+	}}
+	sh := newInstallShell(rt, desktop, updater, nil, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the install request", func() bool { return updater.installCount() == 1 })
+	requests := updater.installRequests()
+	if requests[0].Components != (components.Set{Client: true}) {
+		t.Fatalf("components = %+v, want client-only", requests[0].Components)
+	}
+	if requests[0].ServerWasRunning {
+		t.Fatal("a client-only install recorded a running Server")
+	}
+	<-done
+}
+
+func TestInstallWaitsForTheCurrentDictationToFinish(t *testing.T) {
+	stage := update.Stage{
+		Tag: "v0.2.0", Dir: "/tmp/staged",
+		Components: components.Set{Client: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{Installed: components.Set{Client: true}}}
+	sh := newInstallShell(rt, desktop, updater, nil, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseRecording})
+	waitFor(t, "the recording phase", func() bool {
+		return sh.Snapshot().Phase == runtime.PhaseRecording
+	})
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := updater.installCount(); got != 0 {
+		t.Fatalf("Install ran during a recording: %d calls", got)
+	}
+	rt.emit(runtime.Status{Running: true, Phase: runtime.PhaseIdle})
+	waitFor(t, "the install after the recording", func() bool { return updater.installCount() == 1 })
+	<-done
+}
+
+func TestInstallFailureKeepsTheClientRunning(t *testing.T) {
+	stage := update.Stage{
+		Tag: "v0.2.0", Dir: "/tmp/staged",
+		Components: components.Set{Client: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	updater.installErr = errors.New("the helper could not start")
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{Installed: components.Set{Client: true}}}
+	sh := newInstallShell(rt, desktop, updater, nil, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the install failure", func() bool {
+		update := settingsView(t, window)
+		return !update.Installing && strings.Contains(update.Error, "helper could not start")
+	})
+	select {
+	case result := <-done:
+		t.Fatalf("the shell exited after a helper failure: %v", result.err)
+	default:
+	}
+	if rt.stops != 0 {
+		t.Fatalf("runtime stops = %d, want 0", rt.stops)
+	}
+	if _, quits := desktop.calls(); quits != 0 {
+		t.Fatalf("desktop quits = %d, want 0", quits)
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestVerifiedStageFailureKeepsTheClientRunning(t *testing.T) {
+	stage := update.Stage{
+		Tag: "v0.2.0", Dir: "/tmp/staged",
+		Components: components.Set{Client: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	updater.verifyErr = errors.New("checksum mismatch")
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	startup := &fakeStartup{state: components.State{Installed: components.Set{Client: true}}}
+	sh := newInstallShell(rt, desktop, updater, nil, startup)
+	done := start(t, sh, false)
+	window := waitForWindow(t, desktop)
+	primeUpdate(t, sh, window)
+
+	if err := sh.HandleIntent([]byte(`{"action":"install-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the verification failure", func() bool {
+		update := settingsView(t, window)
+		return !update.Installing && strings.Contains(update.Error, "checksum mismatch")
+	})
+	if got := updater.installCount(); got != 0 {
+		t.Fatalf("Install ran on a tampered stage: %d calls", got)
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestUpdateResultAfterRestartIsShownUntilDismissed(t *testing.T) {
+	updater := &fakeUpdater{
+		hasResult: true,
+		result: update.Result{
+			Status: update.StatusSuccess, Tag: "v0.2.0",
+			ClientUpdated: true, ServerUpdated: true, ServerWasRunning: true,
+			LogPath: "/tmp/update.log",
+		},
+	}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShell(rt, desktop, updater)
+	done := start(t, sh, true)
+
+	waitFor(t, "the update result", func() bool {
+		window := desktop.getWindow()
+		if window == nil {
+			return false
+		}
+		view, ok := window.lastSettings()
+		return ok && view.Update.ResultStatus == update.StatusSuccess
+	})
+	window := desktop.getWindow()
+	view := settingsView(t, window)
+	if !strings.Contains(view.ResultMessage, "Updated to v0.2.0") {
+		t.Fatalf("result message = %q", view.ResultMessage)
+	}
+	if !view.ResultServerUpdated || !view.ResultServerWasRunning {
+		t.Fatalf("result server fields = %+v", view)
+	}
+	if view.ResultLogPath != "/tmp/update.log" {
+		t.Fatalf("result log path = %q", view.ResultLogPath)
+	}
+	if got := updater.cleared; len(got) != 1 || got[0] != "v0.2.0" {
+		t.Fatalf("cleared stages = %v, want [v0.2.0]", got)
+	}
+	if desktop.isHidden() {
+		t.Fatal("the update result did not open the hidden window")
+	}
+
+	if err := sh.HandleIntent([]byte(`{"action":"dismiss-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the dismissed result", func() bool {
+		return settingsView(t, window).ResultStatus == ""
+	})
+	if got := updater.clearResultCount(); got != 1 {
+		t.Fatalf("ClearResult calls = %d, want 1", got)
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestPartialUpdateResultIsShown(t *testing.T) {
+	updater := &fakeUpdater{
+		hasResult: true,
+		result: update.Result{
+			Status: update.StatusPartial, Tag: "v0.2.0",
+			ClientUpdated: true, ServerWasRunning: true,
+		},
+	}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShell(rt, desktop, updater)
+	done := start(t, sh, true)
+
+	waitFor(t, "the partial result", func() bool {
+		window := desktop.getWindow()
+		if window == nil {
+			return false
+		}
+		view, ok := window.lastSettings()
+		return ok && view.Update.ResultStatus == update.StatusPartial
+	})
+	view := settingsView(t, desktop.getWindow())
+	if !strings.Contains(view.ResultMessage, "could not be updated") {
+		t.Fatalf("partial message = %q", view.ResultMessage)
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestPendingUpdateResultIsShownAsAnError(t *testing.T) {
+	updater := &fakeUpdater{
+		hasResult: true,
+		result:    update.Result{Status: update.StatusPending, Tag: "v0.2.0"},
+	}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShell(rt, desktop, updater)
+	done := start(t, sh, true)
+
+	waitFor(t, "the pending result", func() bool {
+		window := desktop.getWindow()
+		if window == nil {
+			return false
+		}
+		view, ok := window.lastSettings()
+		return ok && view.Update.ResultStatus == update.StatusPending
+	})
+	view := settingsView(t, desktop.getWindow())
+	if !strings.Contains(view.ResultMessage, "did not complete") {
+		t.Fatalf("pending message = %q", view.ResultMessage)
 	}
 	_ = rt.Stop()
 	<-done

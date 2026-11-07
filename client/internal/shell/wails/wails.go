@@ -506,6 +506,9 @@ func (t *trayPort) buildMenu(snapshot shell.Snapshot) *application.Menu {
 	menu.AddSeparator()
 	menu.Add(labels.Settings).OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
 	switch {
+	case snapshot.Update.Installing:
+		item := menu.Add(labels.Updating)
+		item.SetEnabled(false)
 	case snapshot.Update.Downloading:
 		label := labels.Updating
 		if snapshot.Update.Total > 0 && labels.UpdateProgress != "" {

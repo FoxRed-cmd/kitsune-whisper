@@ -35,18 +35,38 @@ func TokenDir() string {
 // LogFile is the default path for the Client's log file.
 func LogFile() string { return filepath.Join(CacheDir(), "client.log") }
 
-// WizardState is where the first-run Setup wizard keeps its progress. It sits
-// next to the effective kitsune.yaml so a custom --config keeps its own state;
-// it is UI state, not configuration, and is never read by the Server.
-func WizardState(configPath string) string {
+// configStateDir is the directory that holds UI state next to the effective
+// kitsune.yaml: the explicit --config directory, or the per-user config
+// directory.
+func configStateDir(configPath string) string {
 	if configPath != "" {
-		return filepath.Join(filepath.Dir(configPath), "wizard.json")
+		return filepath.Dir(configPath)
 	}
 	base, err := os.UserConfigDir()
 	if err != nil || base == "" {
 		base = CacheDir()
 	}
-	return filepath.Join(base, "kitsune-whisper", "wizard.json")
+	return filepath.Join(base, "kitsune-whisper")
+}
+
+// WizardState is where the first-run Setup wizard keeps its progress. It sits
+// next to the effective kitsune.yaml so a custom --config keeps its own state;
+// it is UI state, not configuration, and is never read by the Server.
+func WizardState(configPath string) string {
+	return filepath.Join(configStateDir(configPath), "wizard.json")
+}
+
+// UpdateResult is where the update helper persists its pending marker and its
+// final result. It survives until the user dismisses it, so a closed window
+// does not lose the outcome.
+func UpdateResult(configPath string) string {
+	return filepath.Join(configStateDir(configPath), "update.json")
+}
+
+// UpdateLog is the helper's installer log. It is separate from the Client log
+// so the installer output cannot rotate the user's diagnostics away.
+func UpdateLog(configPath string) string {
+	return filepath.Join(configStateDir(configPath), "update.log")
 }
 
 // ControlSocket is the default path of the Client's local control socket, the
