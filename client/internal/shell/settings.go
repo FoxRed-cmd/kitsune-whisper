@@ -163,7 +163,6 @@ type ServerLabels struct {
 	ModelState      string `json:"modelState"`
 	SettingsTitle   string `json:"settingsTitle"`
 	SettingsHelp    string `json:"settingsHelp"`
-	SaveSettings    string `json:"saveSettings"`
 	AdvancedValue   string `json:"advancedValue"`
 	Source          string `json:"source"`
 	ModeRestart     string `json:"modeRestart"`
@@ -508,7 +507,6 @@ func (s *Shell) serverLabels() ServerLabels {
 		ModelState:      catalog.T("server.modelState"),
 		SettingsTitle:   catalog.T("server.settingsTitle"),
 		SettingsHelp:    catalog.T("server.settingsHelp"),
-		SaveSettings:    catalog.T("action.saveServer"),
 		AdvancedValue:   catalog.T("server.advancedValue"),
 		Source:          catalog.T("server.source"),
 		ModeRestart:     catalog.T("server.modeRestart"),

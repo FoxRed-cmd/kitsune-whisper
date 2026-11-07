@@ -27,7 +27,6 @@ func sampleView() shell.SettingsView {
 			ConfigPath:  "/home/user/.config/kitsune-whisper/kitsune.yaml",
 			Subtitle:    "Приватное распознавание речи в локальной сети",
 			Actions: dictation.Actions{
-				Save:              "Сохранить",
 				Restart:           "Перезапустить клиент",
 				Test:              "Проверить",
 				Stop:              "Остановить",
@@ -214,8 +213,8 @@ func TestPageLaysServerSettingsOutInColumns(t *testing.T) {
 	if !strings.Contains(page, `class="group group-wide server-settings"`) {
 		t.Fatal("the Server settings form does not span the pane")
 	}
-	if !strings.Contains(page, `class="server-fields"`) || !strings.Contains(page, `class="server-save"`) {
-		t.Fatal("the Server settings body and its Save footer are not split")
+	if !strings.Contains(page, `class="server-fields"`) {
+		t.Fatal("the Server settings body is not rendered")
 	}
 	if !strings.Contains(page, ".server-fields { display:grid;") {
 		t.Fatal("the Server fields are not laid out in columns")
@@ -513,7 +512,6 @@ func TestPageRendersTheDictationScreens(t *testing.T) {
 		"Нужен перезапуск",
 		"Заблокировано переменной окружения KITSUNE_CLIENT_AUDIO__DEVICE",
 		"Окружение",
-		"Сохранить",
 		"Перезапустить клиент",
 		"Уровень входа",
 		"Файл настроек",
@@ -536,6 +534,59 @@ func TestPageRendersTheDictationScreens(t *testing.T) {
 	// Toggled values render as checked checkboxes.
 	if !strings.Contains(page, `type="checkbox"`) || !strings.Contains(page, `checked`) {
 		t.Error("earcons toggle is not checked")
+	}
+}
+
+func TestPageAppliesSettingsWithoutManualSaveButtons(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, managementView())
+	for _, forbidden := range []string{
+		`data-action="save"`,
+		`id="save-button"`,
+		`data-action="save-server"`,
+		`collectPatch()`,
+		`collectServerPatch()`,
+	} {
+		if strings.Contains(page, forbidden) {
+			t.Errorf("page still renders the manual save control %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		`id="server-restart-button"`,
+		`data-action="server-restart"`,
+		`function pathPatch(`,
+		`action: "save", patch: controlPatch(`,
+		`action: "save-server", patch: serverControlPatch(`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page missing %q", want)
+		}
+	}
+}
+
+func TestPageShowsOnlyFailuresInTheMessageArea(t *testing.T) {
+	page := shell.Page(shell.Snapshot{}, sampleView())
+	if strings.Contains(page, "actionMessages.notices") {
+		t.Fatal("the message area still renders successful action notices")
+	}
+}
+
+func TestUpdateReleaseLinkOpensInTheDesktopBrowser(t *testing.T) {
+	view := sampleView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:       "Update",
+			ReleasePage: "Open the release page",
+		},
+		ReleaseURL: "https://example.test/releases/v1.2.3",
+	}
+	page := shell.Page(shell.Snapshot{}, view)
+	for _, want := range []string{
+		`data-external="https://example.test/releases/v1.2.3"`,
+		`runtime.Browser.OpenURL`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the release page link is missing %q", want)
+		}
 	}
 }
 
@@ -648,7 +699,7 @@ func TestSettingsHTMLEscapesHostileText(t *testing.T) {
 	const hostile = `</script><img src=x onerror="alert(1)">&`
 	view := dictation.View{
 		Language: i18n.English,
-		Actions:  dictation.Actions{Save: "Save", Restart: "Restart", HotkeyPlaceholder: "Press"},
+		Actions:  dictation.Actions{Restart: "Restart", HotkeyPlaceholder: "Press"},
 		Sections: []dictation.Section{{
 			ID:    "dictation",
 			Title: hostile,
@@ -751,11 +802,11 @@ func TestPageIntentBridgePostsToOneEndpoint(t *testing.T) {
 	if !strings.Contains(page, `fetch("/kitsune/intent"`) {
 		t.Fatal("the page does not post intents to the settings service")
 	}
-	if !strings.Contains(page, `collectPatch()`) {
-		t.Fatal("the page does not collect the edited values")
+	if !strings.Contains(page, `function pathPatch(`) {
+		t.Fatal("the page does not shape one control change into a patch")
 	}
-	if !strings.Contains(page, `action: "validate"`) {
-		t.Fatal("the hotkey recorder does not ask Go to validate")
+	if !strings.Contains(page, `action: "save", patch: controlPatch(el)`) {
+		t.Fatal("a hotkey change does not save through Go")
 	}
 }
 
@@ -1576,7 +1627,6 @@ func managementView() shell.SettingsView {
 		StartServer:      "Start Server",
 		SettingsTitle:    "Server settings",
 		SettingsHelp:     "Validated patches.",
-		SaveSettings:     "Save Server settings",
 		AdvancedValue:    "This value is a structured setting.",
 		ModeRestart:      "Restart required",
 		ModeHot:          "Applies live",
@@ -1643,7 +1693,6 @@ func TestPageRendersServerManagementSettingsAndDiagnostics(t *testing.T) {
 		"Server settings",
 		"Listen address",
 		"The address the Server binds.",
-		`data-action="save-server"`,
 		`data-server-path="server.host"`,
 		`data-server-path="server.port"`,
 		`data-server-path="server.decode.language"`,

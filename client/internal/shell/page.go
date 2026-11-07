@@ -44,8 +44,8 @@ func Page(initial Snapshot, settings SettingsView) string {
 		"__TITLE__", html.EscapeString(title),
 		"__SETTINGS__", SettingsHTML(settings),
 		"__ERRORS__", jsonForScript(collectViewErrors(settings)),
-		"__SAVE__", html.EscapeString(settings.Actions.Save),
 		"__RESTART__", html.EscapeString(settings.Actions.Restart),
+		"__SERVER_RESTART__", html.EscapeString(settings.Labels.RestartServer),
 		"__RESTART_HINT__", html.EscapeString(settings.Actions.RestartHint),
 		"__CLOSE_LABEL__", jsonForScript(closeLabel),
 		"__ACTIONS_STYLE__", actionsStyle,
@@ -887,8 +887,8 @@ func updatesHTML(view UpdateView) string {
 	}
 	out.WriteString(`</div>`)
 	if view.ReleaseURL != "" {
-		out.WriteString(`<p class="help"><a href="` + escape(view.ReleaseURL) + `" target="_blank" rel="noreferrer">` +
-			escape(view.ReleasePage) + `</a></p>`)
+		out.WriteString(`<p class="help"><a href="` + escape(view.ReleaseURL) + `" data-external="` + escape(view.ReleaseURL) +
+			`" target="_blank" rel="noreferrer">` + escape(view.ReleasePage) + `</a></p>`)
 	}
 	out.WriteString(`</section>`)
 	return out.String()
@@ -990,7 +990,6 @@ func serverSettingsHTML(view servers.View, labels ServerLabels) string {
 		drawGroup(valueOr(labels.OtherTitle, labels.SettingsTitle), leftovers)
 	}
 	out.WriteString(`</div>`)
-	out.WriteString(`<div class="server-save"><button type="button" class="primary" data-action="save-server">` + escape(labels.SaveSettings) + `</button></div>`)
 	out.WriteString(`</section>`)
 	return out.String()
 }
@@ -1056,10 +1055,10 @@ func writeServerSetting(out *strings.Builder, path string, field servers.ConfigF
 			step = "any"
 		}
 		out.WriteString(`<input type="number" min="0" step="` + step + `" id="` + escape(id) + `" data-server-path="` + escape(path) +
-			`" data-default="` + escape(value) + `" autocomplete="off" value="` + escape(value) + `"` + disabled + `>`)
+			`" autocomplete="off" value="` + escape(value) + `"` + disabled + `>`)
 	} else {
 		out.WriteString(`<input type="text" id="` + escape(id) + `" data-server-path="` + escape(path) +
-			`" data-default="` + escape(value) + `" autocomplete="off" spellcheck="false" value="` + escape(value) + `"` + disabled + `>`)
+			`" autocomplete="off" spellcheck="false" value="` + escape(value) + `"` + disabled + `>`)
 	}
 	if info.Help != "" {
 		out.WriteString(`<p class="help">` + escape(info.Help) + `</p>`)
@@ -1072,7 +1071,7 @@ func writeServerSetting(out *strings.Builder, path string, field servers.ConfigF
 
 func writeServerBool(out *strings.Builder, id, path, value, disabled string, labels ServerLabels) {
 	out.WriteString(`<select id="` + escape(id) + `" data-server-path="` + escape(path) +
-		`" data-default="` + escape(value) + `"` + disabled + `>`)
+		`"` + disabled + `>`)
 	for _, option := range [][2]string{{"true", valueOr(labels.BoolOn, "On")}, {"false", valueOr(labels.BoolOff, "Off")}} {
 		out.WriteString(`<option value="` + option[0] + `"`)
 		if strings.EqualFold(value, option[0]) {
@@ -1089,7 +1088,7 @@ func writeServerBool(out *strings.Builder, id, path, value, disabled string, lab
 func writeServerChoice(out *strings.Builder, id, path, value, disabled string, options []dictation.Option) {
 	known := false
 	out.WriteString(`<select id="` + escape(id) + `" data-server-path="` + escape(path) +
-		`" data-default="` + escape(value) + `"` + disabled + `>`)
+		`"` + disabled + `>`)
 	for _, option := range options {
 		out.WriteString(`<option value="` + escape(option.Value) + `"`)
 		if option.Value == value {
@@ -1106,7 +1105,7 @@ func writeServerChoice(out *strings.Builder, id, path, value, disabled string, o
 
 func writeServerLanguages(out *strings.Builder, id, path, value, disabled string, labels ServerLabels) {
 	out.WriteString(`<select id="` + escape(id) + `" data-server-path="` + escape(path) +
-		`" data-default="` + escape(value) + `"` + disabled + `>`)
+		`"` + disabled + `>`)
 	for _, option := range labels.LanguageOptions {
 		out.WriteString(`<option value="` + escape(option.Value) + `"`)
 		if option.Value == value {
@@ -1529,7 +1528,6 @@ const pageHTML = `<!doctype html>
   .server-fields { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:2px 20px; align-items:start; }
   .server-fields > h3 { grid-column:1 / -1; }
   .server-fields > .field { border-top:none; padding:6px 0; }
-  .server-save { display:flex; justify-content:flex-end; margin-top:10px; padding-top:10px; border-top:1px solid var(--line-soft); }
   .settings-single .settings-pane { overflow:hidden; }
   .settings-single .wizard { flex:1 1 auto; display:grid; grid-template-columns:224px minmax(0,1fr); min-height:0; padding:0; overflow:hidden; }
   /* The rail carries the sequence; the main column carries one task. The
@@ -1799,8 +1797,8 @@ const pageHTML = `<!doctype html>
   <div class="messages" id="messages"></div>
   <div id="settings">__SETTINGS__</div>
   <footer id="actions"__ACTIONS_STYLE__>
-    <button type="button" class="primary" data-action="save" id="save-button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 12.5l4.3 4.3L19 6.8"/></svg><span class="btn-label">__SAVE__</span></button>
     <button type="button" data-action="restart" id="restart-button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3.8v4.6h-4.6"/></svg><span class="btn-label">__RESTART__</span></button>
+    <button type="button" data-action="server-restart" id="server-restart-button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 3.8v4.6h-4.6"/></svg><span class="btn-label">__SERVER_RESTART__</span></button>
     <span class="hint" id="restart-hint">__RESTART_HINT__</span>
   </footer>
 </main>
@@ -1823,7 +1821,8 @@ const pageHTML = `<!doctype html>
   // hidden card stays hidden until the user opens that screen.
   var runtimeError = "";
   var viewErrors = __ERRORS__;
-  var actionMessages = { notices: [], failures: [] };
+  // Successful actions apply silently; the message area carries failures only.
+  var actionMessages = { failures: [] };
   var dismissedAlerts = {};
   var closeNoticeLabel = __CLOSE_LABEL__;
   var lastAlerts = null;
@@ -1914,7 +1913,6 @@ const pageHTML = `<!doctype html>
       shown[key] = true;
       items.push({ kind: kind, message: message, key: key });
     }
-    (actionMessages.notices || []).forEach(function (line) { add(line, "notice"); });
     if (runtimeError) add(runtimeError, "failure");
     var visible = visibleSections();
     (viewErrors || []).forEach(function (item) {
@@ -2198,12 +2196,6 @@ const pageHTML = `<!doctype html>
     if (v && v.language) document.documentElement.lang = v.language;
     if (v && v.title) document.title = v.title;
     if (v && v.actions) {
-      var save = document.getElementById("save-button");
-      if (save && v.actions.save) {
-        var saveLabel = save.querySelector(".btn-label");
-        if (saveLabel) saveLabel.textContent = v.actions.save;
-        else save.textContent = v.actions.save;
-      }
       var restart = document.getElementById("restart-button");
       if (restart && v.actions.restart) {
         var restartLabel = restart.querySelector(".btn-label");
@@ -2212,6 +2204,14 @@ const pageHTML = `<!doctype html>
       }
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
+    }
+    if (v && v.serverLabels && v.serverLabels.restartServer) {
+      var serverRestart = document.getElementById("server-restart-button");
+      if (serverRestart) {
+        var serverRestartLabel = serverRestart.querySelector(".btn-label");
+        if (serverRestartLabel) serverRestartLabel.textContent = v.serverLabels.restartServer;
+        else serverRestart.textContent = v.serverLabels.restartServer;
+      }
     }
     var actions = document.getElementById("actions");
     if (actions) {
@@ -2305,7 +2305,6 @@ const pageHTML = `<!doctype html>
   }
   function renderMessages(m) {
     actionMessages = {
-      notices: (m && m.notices) || [],
       failures: (m && m.failures) || []
     };
     dismissedAlerts = {};
@@ -2319,53 +2318,52 @@ const pageHTML = `<!doctype html>
     if (fill) fill.style.width = (clamped * 100).toFixed(1) + "%";
     if (meter) meter.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
   }
-  function collectPatch() {
+  // pathPatch turns one control's absolute path and value into the nested patch
+  // the settings services expect. Saving one control leaves every other field
+  // untouched, so a live change can never rewrite an unrelated setting.
+  function pathPatch(absolutePath, value) {
+    var path = absolutePath.replace(/^(client|server)\./, "");
+    var parts = path.split(".");
     var patch = {};
-    var fields = document.querySelectorAll("#settings [data-path]");
-    for (var i = 0; i < fields.length; i++) {
-      var el = fields[i];
-      if (el.disabled) continue;
-      var path = el.dataset.path.replace(/^client\./, "");
-      var parts = path.split(".");
-      var cursor = patch;
-      for (var j = 0; j < parts.length - 1; j++) {
-        if (!cursor[parts[j]]) cursor[parts[j]] = {};
-        cursor = cursor[parts[j]];
-      }
-      cursor[parts[parts.length - 1]] = el.type === "checkbox" ? el.checked : el.value;
+    var cursor = patch;
+    for (var i = 0; i < parts.length - 1; i++) {
+      if (!cursor[parts[i]]) cursor[parts[i]] = {};
+      cursor = cursor[parts[i]];
     }
+    cursor[parts[parts.length - 1]] = value;
     return patch;
   }
-  function collectServerPatch() {
-    var patch = {};
-    var fields = document.querySelectorAll("#settings [data-server-path]");
-    for (var i = 0; i < fields.length; i++) {
-      var el = fields[i];
-      if (el.disabled) continue;
-      // Only send edited fields: untouched null/optional fields must not be
-      // rewritten as empty strings by a save of an unrelated setting. A select
-      // has no defaultValue, so every control carries data-default.
-      var initial = el.hasAttribute("data-default") ? el.getAttribute("data-default") : el.defaultValue;
-      if (el.value === initial) continue;
-      var path = el.dataset.serverPath.replace(/^server\./, "");
-      var parts = path.split(".");
-      var cursor = patch;
-      for (var j = 0; j < parts.length - 1; j++) {
-        if (!cursor[parts[j]]) cursor[parts[j]] = {};
-        cursor = cursor[parts[j]];
-      }
-      cursor[parts[parts.length - 1]] = el.value;
-    }
-    return patch;
+  function controlPatch(el) {
+    return pathPatch(el.dataset.path, el.type === "checkbox" ? el.checked : el.value);
+  }
+  function serverControlPatch(el) {
+    return pathPatch(el.dataset.serverPath, el.value);
   }
   function showMessage(message, failure) {
     actionMessages = {
-      notices: failure ? [] : [String(message || "")],
       failures: failure ? [String(message || "")] : []
     };
     dismissedAlerts = {};
     lastAlerts = null;
     renderAlerts();
+  }
+  // A webview has no tab to send an external link to, and a plain target
+  // attribute does nothing there. The Wails runtime's Browser.OpenURL hands the
+  // address to the desktop browser; the loopback page falls back to window.open.
+  function openExternal(url) {
+    if (!url) return;
+    if (window._wails) {
+      import("/wails/runtime.js").then(function (runtime) {
+        if (runtime && runtime.Browser && runtime.Browser.OpenURL) {
+          return runtime.Browser.OpenURL(url);
+        }
+        window.open(url, "_blank", "noreferrer");
+      }).catch(function () {
+        window.open(url, "_blank", "noreferrer");
+      });
+      return;
+    }
+    window.open(url, "_blank", "noreferrer");
   }
   function sendIntent(intent, button) {
     if (button && button.dataset.pending === "1") return null;
@@ -2465,6 +2463,12 @@ const pageHTML = `<!doctype html>
     sendIntent({ action: "revoke-device", device_id: button.dataset.deviceId || "" }, button);
   }
   document.addEventListener("click", function (event) {
+    var external = event.target.closest ? event.target.closest("[data-external]") : null;
+    if (external) {
+      event.preventDefault();
+      openExternal(external.dataset.external || external.href);
+      return;
+    }
     var themeChoice = event.target.closest ? event.target.closest("[data-theme-choice]") : null;
     if (themeChoice) {
       var themeField = themeChoice.closest("[data-field]");
@@ -2487,7 +2491,10 @@ const pageHTML = `<!doctype html>
     if (preset) {
       var field = preset.closest("[data-field]");
       var input = field ? field.querySelector("[data-path]") : null;
-      if (input) input.value = preset.dataset.indicatorAnchor || "top-center";
+      if (input && input.value !== (preset.dataset.indicatorAnchor || "top-center")) {
+        input.value = preset.dataset.indicatorAnchor || "top-center";
+        sendIntent({ action: "save", patch: controlPatch(input) });
+      }
       var presets = field ? field.querySelectorAll("[data-indicator-anchor]") : [];
       for (var p = 0; p < presets.length; p++) {
         var active = presets[p] === preset;
@@ -2504,8 +2511,7 @@ const pageHTML = `<!doctype html>
       return;
     }
     var action = button.dataset.action;
-    if (action === "save") sendIntent({ action: "save", patch: collectPatch() }, button);
-    else if (action === "gnome-shortcuts-add") sendIntent({ action: "gnome-shortcuts-add" }, button);
+    if (action === "gnome-shortcuts-add") sendIntent({ action: "gnome-shortcuts-add" }, button);
     else if (action === "gnome-shortcuts-remove") sendIntent({ action: "gnome-shortcuts-remove" }, button);
     else if (action === "restart") sendIntent({ action: "restart" }, button);
     else if (action === "test-mic") {
@@ -2580,8 +2586,6 @@ const pageHTML = `<!doctype html>
     } else if (action === "idle-timeout") {
       var idle = document.getElementById("model-idle-seconds");
       sendIntent({ action: "idle-timeout", seconds: idle ? Number(idle.value) : 0 }, button);
-    } else if (action === "save-server") {
-      sendIntent({ action: "save-server", patch: collectServerPatch() }, button);
     } else if (action === "refresh-diagnostics") {
       sendIntent({ action: "refresh-diagnostics" }, button);
     } else if (action === "load-logs") {
@@ -2712,17 +2716,16 @@ const pageHTML = `<!doctype html>
       return;
     }
     var el = target.closest("[data-path]");
-    if (!el) return;
-    if (el.dataset.path === "client.ui_language") {
-      sendIntent({ action: "save", patch: { ui_language: el.value } });
-    } else if (el.dataset.path === "client.updates.check") {
-      // The setting is hot-applied, so the toggle takes effect as soon as it
-      // changes instead of waiting for the global Save button.
-      sendIntent({ action: "save", patch: { updates: { check: el.checked } } });
-    } else if (el.dataset.path === "client.language") {
-      // The spoken language is per request. Saving it as soon as it changes
-      // removes the chance that a user tests dictation with an unsaved value.
-      sendIntent({ action: "save", patch: { language: el.value } });
+    if (el) {
+      if (el.disabled) return;
+      if (el.hasAttribute("data-indicator-preview")) syncIndicatorPreview(true);
+      sendIntent({ action: "save", patch: controlPatch(el) });
+      return;
+    }
+    var serverEl = target.closest("[data-server-path]");
+    if (serverEl) {
+      if (serverEl.disabled) return;
+      sendIntent({ action: "save-server", patch: serverControlPatch(serverEl) });
     }
   });
   document.addEventListener("keydown", function (event) {
@@ -2736,7 +2739,7 @@ const pageHTML = `<!doctype html>
     if (el.dataset.wizardHotkey) {
       sendIntent({ action: "wizard-validate-hotkey", value: spec });
     } else {
-      sendIntent({ action: "validate", path: el.dataset.path, value: spec });
+      sendIntent({ action: "save", patch: controlPatch(el) });
     }
   });
   document.addEventListener("visibilitychange", function () {

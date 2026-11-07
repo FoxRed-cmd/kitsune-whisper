@@ -163,7 +163,6 @@ var english = map[string]string{
 	"settings.configPath": "Configuration file",
 	"settings.locked":     "Locked",
 
-	"action.save":            "Save",
 	"action.restart":         "Restart Client",
 	"action.test":            "Test",
 	"action.stop":            "Stop",
@@ -497,7 +496,6 @@ var english = map[string]string{
 	"state.model.stopped":             "Model stopped",
 	"state.model.loading":             "Model loading",
 	"state.model.failed":              "Model failed",
-	"action.saveServer":               "Save Server settings",
 	"action.loadLogs":                 "Load log tail",
 	"action.copyLogs":                 "Copy Server log",
 	"action.copyClientLogs":           "Copy Client log",

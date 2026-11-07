@@ -76,7 +76,6 @@ func newFakeSettings(language i18n.Lang) *fakeSettings {
 			Title:    catalog.T("app.title"),
 			Subtitle: catalog.T("app.subtitle"),
 			Actions: dictation.Actions{
-				Save:              catalog.T("action.save"),
 				Restart:           catalog.T("action.restart"),
 				RestartHint:       catalog.T("page.restartHint"),
 				HotkeyPlaceholder: catalog.T("hotkey.capture"),

@@ -161,7 +161,6 @@ var russian = map[string]string{
 	"settings.configPath": "Файл настроек",
 	"settings.locked":     "Заблокировано",
 
-	"action.save":            "Сохранить",
 	"action.restart":         "Перезапустить клиент",
 	"action.test":            "Проверить",
 	"action.stop":            "Остановить",
@@ -495,7 +494,6 @@ var russian = map[string]string{
 	"state.model.stopped":             "Модель остановлена",
 	"state.model.loading":             "Модель загружается",
 	"state.model.failed":              "Ошибка модели",
-	"action.saveServer":               "Сохранить настройки сервера",
 	"action.loadLogs":                 "Загрузить хвост журнала",
 	"action.copyLogs":                 "Скопировать журнал сервера",
 	"action.copyClientLogs":           "Скопировать журнал клиента",
