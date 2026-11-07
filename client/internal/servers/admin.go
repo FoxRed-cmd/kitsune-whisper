@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
@@ -43,9 +44,7 @@ func fetchDevices(
 	if err != nil {
 		return nil, err
 	}
-	var body struct {
-		Devices []Device `json:"devices"`
-	}
+	var body api.DeviceListResponse
 	if err := json.Unmarshal(data, &body); err != nil {
 		return nil, fmt.Errorf("servers: decode the Device list: %w", err)
 	}
@@ -252,12 +251,7 @@ func adminClient(profile config.ServerProfile, timeout time.Duration) (*http.Cli
 }
 
 func decodeAdminError(status int, data []byte) error {
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var envelope api.ErrorEnvelope
 	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
 		return &AdminError{
 			StatusCode: status,

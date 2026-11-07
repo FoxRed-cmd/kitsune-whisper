@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
@@ -32,54 +33,29 @@ type LocalServer interface {
 // ConfigField is one Server setting as the Admin API reports it: the effective
 // value, where it came from, whether an environment variable or command-line
 // flag locks it, and whether a change applies hot or needs a restart.
-type ConfigField struct {
-	Value  any    `json:"value"`
-	Source string `json:"source"`
-	Locked bool   `json:"locked"`
-	Reason string `json:"reason,omitempty"`
-	Mode   string `json:"mode"`
-}
+type ConfigField = api.ConfigField
 
 // ServerConfig is the redacted effective configuration of one Server. Secrets
 // (today the processing API key) are replaced by the Server with "***" and
 // listed in Redacted, so this value can be rendered and copied.
-type ServerConfig struct {
-	Path     string                 `json:"path"`
-	Config   map[string]any         `json:"config"`
-	Fields   map[string]ConfigField `json:"fields"`
-	Redacted []string               `json:"redacted"`
-}
+type ServerConfig = api.ServerConfig
 
 // ServerConfigPatch is the result of one validated configuration patch.
-type ServerConfigPatch struct {
-	ServerConfig
-	Changed         []string `json:"changed"`
-	HotApplied      []string `json:"hot_applied"`
-	RestartRequired []string `json:"restart_required"`
-	Written         bool     `json:"written"`
-}
+type ServerConfigPatch = api.ServerConfigPatch
 
 // ServerLog is the tail of a Server's log file.
-type ServerLog struct {
-	Path      string   `json:"path"`
-	Lines     []string `json:"lines"`
-	Truncated bool     `json:"truncated"`
-	Tail      int      `json:"tail"`
-}
+type ServerLog = api.ServerLog
 
 // ServerLifecycle is a Server's model state after a start, stop, or restart.
 // It mirrors the flat model keys of GET /status, so the Client can consume one
 // payload from either source.
+//
+// The wire fields are generated from the Server's OpenAPI contract (ADR 0014).
+// Hard is client-only: it marks an action that ran against the Local Server's
+// process, which terminated, replaced, or started the daemon instead of
+// soft-stopping it.
 type ServerLifecycle struct {
-	Stopped           bool   `json:"stopped"`
-	Loaded            bool   `json:"loaded"`
-	Model             string `json:"model"`
-	ModelPath         string `json:"model_path,omitempty"`
-	ModelState        string `json:"model_state"`
-	IdleUnloadSeconds int    `json:"idle_unload_seconds,omitempty"`
-	Restarting        bool   `json:"restarting,omitempty"`
-	// Hard marks an action that ran against the Local Server's process: it
-	// terminated, replaced, or started the daemon instead of soft-stopping it.
+	api.ServerLifecycle
 	Hard bool `json:"hard,omitempty"`
 }
 
@@ -115,7 +91,12 @@ func (s *Service) PatchConfig(
 		s.cacheConfigError(profileID, err)
 		return ServerConfigPatch{}, err
 	}
-	config := result.ServerConfig
+	config := ServerConfig{
+		Path:     result.Path,
+		Config:   result.Config,
+		Fields:   result.Fields,
+		Redacted: result.Redacted,
+	}
 	s.cacheConfig(profileID, &config, nil)
 	return result, nil
 }
@@ -211,7 +192,7 @@ func (s *Service) runLocalLifecycle(
 	case "stop":
 		if online {
 			if _, err := serverLifecycle(ctx, profile, token, "hard-stop", s.opts.Timeout); err == nil {
-				return ServerLifecycle{Hard: true, Stopped: true, ModelState: "stopped"}, nil
+				return hardLifecycle(api.ServerLifecycle{Stopped: true, ModelState: "stopped"}), nil
 			} else if !canUseSupervisorFallback(err) || !local.Available() {
 				return ServerLifecycle{}, err
 			}
@@ -222,7 +203,7 @@ func (s *Service) runLocalLifecycle(
 		if err := local.Stop(); err != nil {
 			return ServerLifecycle{}, err
 		}
-		return ServerLifecycle{Hard: true, Stopped: true, ModelState: "stopped"}, nil
+		return hardLifecycle(api.ServerLifecycle{Stopped: true, ModelState: "stopped"}), nil
 	case "start":
 		if online {
 			result, err := serverLifecycle(ctx, profile, token, "start", s.opts.Timeout)
@@ -237,7 +218,7 @@ func (s *Service) runLocalLifecycle(
 		if err := local.Start(); err != nil {
 			return ServerLifecycle{}, err
 		}
-		return ServerLifecycle{Hard: true, ModelState: "loading"}, nil
+		return hardLifecycle(api.ServerLifecycle{ModelState: "loading"}), nil
 	case "restart":
 		// Unlike stop, a restart must be able to bring the process back. Ask
 		// for the supervisor before killing a running Server.
@@ -263,7 +244,7 @@ func (s *Service) runLocalLifecycle(
 		if err := local.Restart(); err != nil {
 			return ServerLifecycle{}, err
 		}
-		return ServerLifecycle{Hard: true, Restarting: true, ModelState: "loading"}, nil
+		return hardLifecycle(api.ServerLifecycle{Restarting: true, ModelState: "loading"}), nil
 	default:
 		return ServerLifecycle{}, fmt.Errorf("servers: unknown lifecycle action %q", action)
 	}
@@ -323,6 +304,12 @@ func isLocalServer(profile config.ServerProfile) bool {
 		return false
 	}
 	return profile.AutoPair || profile.ID == config.LocalServerID
+}
+
+// hardLifecycle marks a result that came from the Local Server's process
+// supervisor rather than from the Server's own soft lifecycle.
+func hardLifecycle(fields api.ServerLifecycle) ServerLifecycle {
+	return ServerLifecycle{ServerLifecycle: fields, Hard: true}
 }
 
 // recordLifecycle folds a just-completed stop/start/restart into the cached

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
@@ -267,7 +268,7 @@ func (f *fakeServers) SetExposure(_ context.Context, profileID string, expose bo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.codeCalls = append(f.codeCalls, profileID+"|exposure")
-	result := servers.ExposureResult{Expose: expose, BindHost: "0.0.0.0", RestartRequired: []string{"server.expose_to_network"}, Changed: true}
+	result := servers.ExposureResult{ExposeToNetwork: expose, BindHost: "0.0.0.0", RestartRequired: []string{"server.expose_to_network"}, Changed: true}
 	f.view.Exposure = &result
 	return result, nil
 }
@@ -843,7 +844,7 @@ func TestExposureIntentWritesTheServerSetting(t *testing.T) {
 		t.Fatalf("exposure calls = %v", service.codeCalls)
 	}
 	view, _ := window.lastSettings()
-	if view.Servers.Exposure == nil || !view.Servers.Exposure.Expose {
+	if view.Servers.Exposure == nil || !view.Servers.Exposure.ExposeToNetwork {
 		t.Fatalf("pushed view = %+v", view)
 	}
 	messages, _ := window.lastMessages()
@@ -1031,7 +1032,10 @@ func (f *fakeServers) PatchConfig(
 		restart = []string{"server.device"}
 	}
 	return servers.ServerConfigPatch{
-		ServerConfig:    config,
+		Path:            config.Path,
+		Config:          config.Config,
+		Fields:          config.Fields,
+		Redacted:        config.Redacted,
 		Changed:         []string{"server.port"},
 		RestartRequired: restart,
 		Written:         true,
@@ -1060,7 +1064,7 @@ func (f *fakeServers) Restart(_ context.Context, profileID string) (servers.Serv
 		f.view.LifecycleError = f.restartErr.Error()
 		return servers.ServerLifecycle{}, f.restartErr
 	}
-	result := servers.ServerLifecycle{Restarting: true, ModelState: "loading"}
+	result := servers.ServerLifecycle{ServerLifecycle: api.ServerLifecycle{Restarting: true, ModelState: "loading"}}
 	f.view.Lifecycle = &result
 	return result, nil
 }
@@ -1073,7 +1077,7 @@ func (f *fakeServers) Stop(_ context.Context, profileID string) (servers.ServerL
 		f.view.LifecycleError = f.stopErr.Error()
 		return servers.ServerLifecycle{}, f.stopErr
 	}
-	result := servers.ServerLifecycle{Stopped: true, ModelState: "stopped"}
+	result := servers.ServerLifecycle{ServerLifecycle: api.ServerLifecycle{Stopped: true, ModelState: "stopped"}}
 	if f.stopResult != nil {
 		result = *f.stopResult
 	}
@@ -1091,7 +1095,7 @@ func (f *fakeServers) Start(_ context.Context, profileID string) (servers.Server
 	}
 	result := f.lifecycleResult
 	if result.ModelState == "" {
-		result = servers.ServerLifecycle{Loaded: true, ModelState: "loaded"}
+		result = servers.ServerLifecycle{ServerLifecycle: api.ServerLifecycle{Loaded: true, ModelState: "loaded"}}
 	}
 	f.view.Lifecycle = &result
 	return result, nil

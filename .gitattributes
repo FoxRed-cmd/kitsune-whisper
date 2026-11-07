@@ -1,0 +1,3 @@
+# Generated wire contract: review the source models and the diff, not the bytes.
+server/openapi.json linguist-generated=true
+client/internal/api/api.gen.go linguist-generated=true

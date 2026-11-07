@@ -8,26 +8,19 @@ package transcribe
 import (
 	"context"
 	"fmt"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 )
 
 // Applied reports which processing steps actually ran on the utterance.
-type Applied struct {
-	Refine    bool `json:"refine"`
-	Summarize bool `json:"summarize"`
-}
+type Applied = api.AppliedFlags
 
 // Transcription is the text the Server returns for an utterance. Text is the
 // Delivered text (after any requested processing); RawText is the untouched
 // Transcription, and Warnings explains any step that was requested but skipped.
-type Transcription struct {
-	Text                string   `json:"text"`
-	RawText             string   `json:"raw_text"`
-	Language            string   `json:"language"`
-	LanguageProbability float64  `json:"language_probability"`
-	Duration            float64  `json:"duration"`
-	Applied             Applied  `json:"applied"`
-	Warnings            []string `json:"warnings"`
-}
+//
+// The shape is generated from the Server's OpenAPI contract (ADR 0014).
+type Transcription = api.TranscribeResponse
 
 // Transcriber transcribes one utterance's audio.
 type Transcriber interface {

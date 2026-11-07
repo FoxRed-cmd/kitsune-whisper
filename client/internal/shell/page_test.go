@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/dictation"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
@@ -1294,7 +1295,7 @@ func managementView() shell.SettingsView {
 		Path:  "/home/kim/.local/state/kitsune-whisper/server.log",
 		Lines: []string{"line 4", "line 5"},
 	}
-	view.Servers.Lifecycle = &servers.ServerLifecycle{Loaded: true, ModelState: "loaded"}
+	view.Servers.Lifecycle = &servers.ServerLifecycle{ServerLifecycle: api.ServerLifecycle{Loaded: true, ModelState: "loaded"}}
 	view.Diagnostics = shell.DiagnosticsView{
 		ClientVersion: "1.2.3",
 		ServerVersion: "0.9.0",

@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/lanaddr"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/settings"
@@ -50,16 +51,11 @@ type Tokens interface {
 	Delete(profileID string) error
 }
 
-// Device is one trusted Device returned by the Admin API.
-type Device struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	CreatedAt   float64  `json:"created_at"`
-	LastSeen    *float64 `json:"last_seen"`
-	LastAddress string   `json:"last_address"`
-	// Current marks the Device that made the Admin API request.
-	Current bool `json:"current"`
-}
+// Device is one trusted Device returned by the Admin API. Current marks the
+// Device that made the request.
+//
+// The shape is generated from the Server's OpenAPI contract (ADR 0014).
+type Device = api.Device
 
 // Profile is one Server profile as the Settings window lists it.
 type Profile struct {
@@ -77,20 +73,11 @@ type Profile struct {
 }
 
 // PairingCode is a one-time code generated for a new Device.
-type PairingCode struct {
-	Code        string  `json:"code"`
-	ExpiresAt   float64 `json:"expires_at"`
-	Fingerprint string  `json:"fingerprint"`
-}
+type PairingCode = api.PairingCode
 
 // ExposureResult reports one LAN exposure change. The Server binds 0.0.0.0
 // only after a restart, which RestartRequired names.
-type ExposureResult struct {
-	Expose          bool     `json:"expose_to_network"`
-	BindHost        string   `json:"bind_host"`
-	RestartRequired []string `json:"restart_required"`
-	Changed         bool     `json:"changed"`
-}
+type ExposureResult = api.ExposureResult
 
 // View is the Server-management state the Settings window renders. Static
 // labels are translated by the shell; Device names and Server errors are shown

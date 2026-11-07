@@ -12,6 +12,7 @@ uv = "0.13"
 golangci-lint = "2.14.0" # keep in sync with .github/workflows/ci.yml
 zig = "0.17"            # portable C compiler for cgo when gcc is absent
 "go:golang.org/x/tools/gopls" = "0.23.0" # newest release that builds with Go 1.26
+"go:github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen" = "2.8.2" # wire-type generator (ADR 0014)
 
 [env]
 # malgo (microphone) and the X11 hotkey use cgo.
@@ -145,6 +146,26 @@ echo "Artifacts are ready in dist/. Install this build with:"
 echo "  bash dist/install.sh --from dist --insecure"
 '''
 
+# --- Contract --------------------------------------------------------------
+
+[tasks.spec]
+description = "Regenerate server/openapi.json and the Client's wire types"
+shell = "bash -c"
+run = '''
+set -eu
+(cd server && uv run python -m kitsune_server.openapi)
+oapi-codegen -config client/oapi-codegen.yaml server/openapi.json
+'''
+
+[tasks."spec:check"]
+description = "Fail when the committed wire contract is stale"
+shell = "bash -c"
+run = '''
+set -eu
+mise run spec
+git diff --exit-code -- server/openapi.json client/internal/api/api.gen.go
+'''
+
 # --- Test ------------------------------------------------------------------
 
 [tasks.test]
@@ -170,7 +191,7 @@ run = "uv run pytest"
 
 [tasks.check]
 description = "Run everything CI runs: format check, lint, types, tests"
-depends = ["fmt:check", "lint", "typecheck", "test"]
+depends = ["fmt:check", "spec:check", "lint", "typecheck", "test"]
 
 [tasks.lint]
 description = "Run the Client and Server linters"

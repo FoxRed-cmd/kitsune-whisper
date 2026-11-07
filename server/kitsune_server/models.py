@@ -30,6 +30,7 @@ from typing import Any, Literal, Protocol
 import httpx
 import yaml
 
+from .api_models import LifecycleFlags, ServerLifecycle
 from .config import ConfigError, ServerConfig
 from .gpu import resolve_engine
 from .lifecycle import Lifecycle
@@ -105,20 +106,26 @@ class ModelSnapshot:
     loaded: bool = False
     error: str = ""
 
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "stopped": self.stopped,
-            "loaded": self.loaded,
-            "model": self.model,
-            "model_state": self.state,
-            "model_path": self.path,
-            "idle_unload_seconds": self.idle_unload_seconds,
-            "model_error": self.error,
-        }
+    def lifecycle(self, *, restarting: bool = False) -> ServerLifecycle:
+        """The one payload every lifecycle endpoint and ``GET /status`` returns.
 
-    def lifecycle_dict(self) -> dict[str, bool]:
+        ``restarting`` is set only by the restart actions; every other action
+        reports the same shape with ``restarting: false``.
+        """
+        return ServerLifecycle(
+            stopped=self.stopped,
+            loaded=self.loaded,
+            model=self.model,
+            model_state=self.state,
+            model_path=self.path,
+            idle_unload_seconds=self.idle_unload_seconds,
+            model_error=self.error,
+            restarting=restarting,
+        )
+
+    def lifecycle_flags(self) -> LifecycleFlags:
         """The backward-compatible nested key ``GET /status`` already had."""
-        return {"stopped": self.stopped, "loaded": self.loaded}
+        return LifecycleFlags(stopped=self.stopped, loaded=self.loaded)
 
 
 class CatalogError(ConfigError):

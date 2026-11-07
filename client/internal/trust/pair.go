@@ -13,30 +13,23 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 )
 
 // Device is a trusted Server-side Device as returned by pairing.
-type Device struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	CreatedAt   float64  `json:"created_at"`
-	LastSeen    *float64 `json:"last_seen"`
-	LastAddress string   `json:"last_address"`
-}
+type Device = api.Device
 
 // Pairing is the result of a successful pair: the token to store, the Device
-// record, and the certificate fingerprint to pin.
-type Pairing struct {
-	Device      Device `json:"device"`
-	Token       string `json:"token"`
-	Fingerprint string `json:"fingerprint"`
-	// Version is the Server release. An older Server omits it, which disables
-	// the compatibility check.
-	Version string `json:"version,omitempty"`
-}
+// record, and the certificate fingerprint to pin. Version is the Server
+// release; an older Server omits it, which disables the compatibility check.
+//
+// The fields are generated from the Server's OpenAPI contract (ADR 0014). The
+// defined type (rather than an alias) keeps the redacting String method that
+// stops an accidental log line from exposing the Device token.
+type Pairing api.Pairing
 
-// String renders a Pairing without its token, so logging a decoded value by
-// accident cannot leak the credential.
+// String renders a Pairing without its token.
 func (p Pairing) String() string {
 	return fmt.Sprintf(
 		"Pairing{device:%q fingerprint:%q token:<redacted>}",
@@ -216,12 +209,7 @@ func probeFingerprint(ctx context.Context, parsed *url.URL) (string, error) {
 }
 
 func serverError(status int, data []byte) error {
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var envelope api.ErrorEnvelope
 	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
 		return &PairingHTTPError{
 			StatusCode: status,

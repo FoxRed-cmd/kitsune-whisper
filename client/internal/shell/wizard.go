@@ -408,7 +408,7 @@ func (s *Shell) ensureWizardModels() {
 		}()
 		return
 	}
-	if view.Models.HasActiveDownload() {
+	if servers.HasActiveDownload(*view.Models) {
 		s.watchWizardModel()
 	}
 }
@@ -462,7 +462,7 @@ func (s *Shell) watchWizardModel() {
 				s.loadWizardModels()
 				view := s.opts.Servers.View()
 				s.pushWizard()
-				if view.Models == nil || !view.Models.HasActiveDownload() {
+				if view.Models == nil || !servers.HasActiveDownload(*view.Models) {
 					return
 				}
 			}

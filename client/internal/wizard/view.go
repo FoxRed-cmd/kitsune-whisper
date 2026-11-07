@@ -571,7 +571,7 @@ func downloadView(catalog i18n.Catalog, download *servers.ModelDownload) *Downlo
 	}
 	view := &DownloadView{
 		State:      download.State,
-		InProgress: download.InProgress(),
+		InProgress: servers.DownloadInProgress(download),
 		Error:      download.Error,
 	}
 	state := catalog.T("download." + download.State)

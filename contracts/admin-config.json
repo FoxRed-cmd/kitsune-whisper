@@ -1,0 +1,57 @@
+{
+  "path": "/home/kim/.config/kitsune-whisper/kitsune.yaml",
+  "config": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "expose_to_network": false,
+    "allow_anonymous": false,
+    "processing": {
+      "enabled": true,
+      "api_key": "***",
+      "model": "gpt-4o-mini",
+      "base_url": "https://api.example.test/v1"
+    },
+    "decode": {
+      "language": "auto",
+      "beam_size": 5
+    }
+  },
+  "redacted": ["server.processing.api_key"],
+  "fields": {
+    "server.host": {
+      "value": "127.0.0.1",
+      "source": "file",
+      "locked": false,
+      "reason": "",
+      "mode": "restart"
+    },
+    "server.port": {
+      "value": 8765,
+      "source": "file",
+      "locked": false,
+      "reason": "",
+      "mode": "restart"
+    },
+    "server.expose_to_network": {
+      "value": false,
+      "source": "file",
+      "locked": true,
+      "reason": "security change: use POST /admin/exposure",
+      "mode": "restart"
+    },
+    "server.processing.api_key": {
+      "value": "***",
+      "source": "file",
+      "locked": false,
+      "reason": "",
+      "mode": "hot"
+    },
+    "server.decode.language": {
+      "value": "auto",
+      "source": "default",
+      "locked": false,
+      "reason": "",
+      "mode": "hot"
+    }
+  }
+}

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 )
 
@@ -70,20 +71,12 @@ type Status struct {
 // NetworkStatus is the Server's effective listener from the authenticated
 // /status body. BindHost is the address the process is actually listening on,
 // which differs from the configured server.host while LAN exposure is on.
-type NetworkStatus struct {
-	ExposeToNetwork bool   `json:"expose_to_network"`
-	BindHost        string `json:"bind_host"`
-	Port            int    `json:"port"`
-}
+type NetworkStatus = api.NetworkStatus
 
 // GPUStatus is the Server's CUDA availability from the authenticated /status
 // body. Available is true when at least one CUDA device was detected, even if
 // the Server is configured to use CPU.
-type GPUStatus struct {
-	Available   bool   `json:"available"`
-	DeviceCount int    `json:"device_count"`
-	Device      string `json:"device"`
-}
+type GPUStatus = api.GPUStatus
 
 // CheckServer probes one Server profile: /health for liveness and the version,
 // then the authenticated /status for the token. A certificate problem is
@@ -109,10 +102,7 @@ func CheckServer(
 	if err != nil {
 		return statusForError(err)
 	}
-	var healthBody struct {
-		Status  string `json:"status"`
-		Version string `json:"version"`
-	}
+	var healthBody api.HealthResponse
 	if err := json.Unmarshal(health, &healthBody); err != nil {
 		return Status{State: StateOffline, Error: "the Server returned an unreadable health response"}
 	}
@@ -135,29 +125,12 @@ func CheckServer(
 	return status
 }
 
-// statusBody is the part of the authenticated /status response the Tray and
-// Diagnostics render. Older Servers omit these keys; the zero values keep the
-// reachability report intact.
-type statusBody struct {
-	Model             string         `json:"model"`
-	ModelState        string         `json:"model_state"`
-	ModelPath         string         `json:"model_path"`
-	IdleUnloadSeconds int            `json:"idle_unload_seconds"`
-	Device            string         `json:"device"`
-	ComputeType       string         `json:"compute_type"`
-	GPU               *GPUStatus     `json:"gpu"`
-	Network           *NetworkStatus `json:"network"`
-	Lifecycle         struct {
-		Stopped bool `json:"stopped"`
-		Loaded  bool `json:"loaded"`
-	} `json:"lifecycle"`
-}
-
 // applyStatus copies the model state from /status into the health result. The
 // body is already authenticated; an unreadable body only loses the advisory
-// fields, not the online state.
+// fields, not the online state. Older Servers omit keys; the zero values keep
+// the reachability report intact.
 func applyStatus(status *Status, body []byte) {
-	var parsed statusBody
+	var parsed api.StatusResponse
 	if err := json.Unmarshal(body, &parsed); err != nil {
 		return
 	}

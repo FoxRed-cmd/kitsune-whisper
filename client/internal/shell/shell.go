@@ -1074,7 +1074,7 @@ func (s *Shell) loadModelsForCheck(ctx context.Context) {
 		return
 	}
 	// A running download still needs its progress refreshed.
-	if loaded == view.ActiveID && (view.Models == nil || !view.Models.HasActiveDownload()) {
+	if loaded == view.ActiveID && (view.Models == nil || !servers.HasActiveDownload(*view.Models)) {
 		return
 	}
 	modelsCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
