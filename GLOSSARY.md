@@ -66,8 +66,11 @@ A named set of connection settings for one Server that the Client can route utte
 _Avoid_: endpoint, connection, backend, host
 
 **Server switch**:
-The user's manual choice of which Server profile the Client routes utterances to.
-_Avoid_: fallback, failover, rotation
+Changing which Server profile the Client routes the next utterance to: the
+user's explicit choice, or an automatic move away from an unreachable active
+profile to the first profile that answers. A failed utterance is never retried
+on another profile.
+_Avoid_: fallback, failover, rotation, per-utterance retry
 
 **Soft-stop**:
 Stopping a Server's processing — unloading the model and refusing transcription — without terminating the process.

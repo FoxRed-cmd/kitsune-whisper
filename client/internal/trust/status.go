@@ -16,7 +16,8 @@ import (
 )
 
 // ServerState is the reachability and authentication state the Tray and
-// Settings show. It is advisory: it never changes where an Utterance is sent.
+// Settings show. The Servers service never routes on it; the shell may switch
+// the active profile when the current one is offline and another one answers.
 type ServerState string
 
 const (

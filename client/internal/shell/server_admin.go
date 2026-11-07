@@ -221,6 +221,13 @@ func (s *Shell) runServerAction(action string) {
 		return
 	}
 	name := s.activeProfileName()
+	// A start or restart is expected to be offline for a moment. Hold the
+	// health-driven switch until the lifecycle action settles or awaitServer
+	// gives up.
+	suppressSwitch := action == actionServerRestart || action == actionServerStart
+	if suppressSwitch {
+		s.setServerLifecycleWait(true)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var lifecycle servers.ServerLifecycle
@@ -234,6 +241,9 @@ func (s *Shell) runServerAction(action string) {
 		lifecycle, err = s.opts.Servers.Start(ctx, profileID)
 	}
 	if err != nil {
+		if suppressSwitch {
+			s.setServerLifecycleWait(false)
+		}
 		s.pushSettings()
 		key := "error.server." + action
 		s.pushMessages(nil, []string{s.catalog().T(key, err.Error())})
@@ -257,14 +267,15 @@ func (s *Shell) runServerAction(action string) {
 		s.pushMessages([]string{s.catalog().T(key, name)}, nil)
 	case actionServerStart:
 		key := "notice.server.started"
-		wait := false
-		if lifecycle.Hard && lifecycle.ModelState == "loading" {
+		wait := lifecycle.Hard && lifecycle.ModelState == "loading"
+		if wait {
 			key = "notice.server.localStarting"
-			wait = true
 		}
 		s.pushMessages([]string{s.catalog().T(key, name)}, nil)
 		if wait {
 			go s.awaitServer()
+		} else {
+			s.setServerLifecycleWait(false)
 		}
 	}
 }
@@ -273,6 +284,8 @@ func (s *Shell) runServerAction(action string) {
 // ready again, bounded so a Server the supervisor cannot restart does not
 // leave a goroutine probing forever.
 func (s *Shell) awaitServer() {
+	s.setServerLifecycleWait(true)
+	defer s.setServerLifecycleWait(false)
 	interval := s.opts.RestartPollInterval
 	if interval <= 0 {
 		interval = 500 * time.Millisecond

@@ -335,10 +335,14 @@ Diagnostics copy and log copy stay in English on purpose: the copied block is a
 bug-report artifact that users paste into an issue tracker, while every label
 around it in the window is translated.
 
-The background health probe is advisory and never writes trust state. Pairing
-happens once when the Client starts; a Local Server that starts after the Client
-is reported offline until the Client restarts. That trade-off is deliberate:
-a periodic probe must not mint a Device token or change the active profile.
+The background health probe never writes trust state and never mints a Device
+token. Pairing happens once when the Client starts; a Local Server that starts
+after the Client is reported offline until the Client restarts. When the active
+profile is unreachable and another profile answers, the background probe
+switches the active selection to the first reachable profile and persists it.
+A manual Refresh, a Server that is starting or restarting, and a soft-stopped
+alternative do not trigger a switch. A failed Utterance is still never retried
+on another profile.
 
 Desktop notifications are Linux-only (`notify-send`). Other platforms log one
 message and keep the failure in the Settings window and the Tray menu with the
@@ -357,7 +361,7 @@ fingerprint produces a distinct "certificate changed, pair again" error.
 | Key | Type | Default | Notes |
 | --- | --- | --- | --- |
 | `servers` | list | Local Server profile | Ordered **Server profiles**. Each entry has `id` (required, unique), `name`, `url` (required, absolute), `fingerprint` (pinned Server certificate SHA-256; `""` until pairing), and `auto_pair` (`true` only for the Local Server). Unknown profile keys and duplicate ids are rejected. |
-| `active_server` | string | first profile | The `id` of the profile that receives every Utterance. Exactly one profile is active; there is no automatic fallback. Defaults to the first profile when omitted. |
+| `active_server` | string | first profile | The `id` of the profile that receives every Utterance. Exactly one profile is active. If it becomes unreachable, the health probe switches to the first profile that answers and rewrites this key; with no reachable alternative it stays selected. Defaults to the first profile when omitted. |
 | `server_url` | URL | `https://localhost:8765` | **Deprecated.** Full URL of a single Server. When no `servers` list exists it migrates into one active profile (`Default Server`); once `servers` exists it no longer decides routing, but it must still be a valid URL when present. |
 | `hotkey` | string | `Ctrl+Shift+Space` | Global toggle key. |
 | `hotkey_backend` | `auto`\|`portal`\|`x11`\|`external` | `auto` | Linux session backend. `external` grabs no keys and relies on a compositor keybinding that runs `kitsune-client toggle`. See [Wayland](wayland.md). |

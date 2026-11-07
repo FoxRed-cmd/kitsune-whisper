@@ -66,9 +66,9 @@ type Profile struct {
 	// AutoPair marks the Local Server profile, which pairs without a code.
 	AutoPair bool `json:"auto_pair"`
 	Active   bool `json:"active"`
-	// Health is the advisory reachability and authentication state of this
-	// profile. It is refreshed on demand and in the background, and never
-	// changes routing.
+	// Health is the reachability and authentication state of this profile. It
+	// is refreshed on demand and in the background. The service never routes
+	// on it; the shell may switch the active profile after an offline result.
 	Health trust.Status `json:"health"`
 }
 
@@ -410,9 +410,10 @@ func (s *Service) RemoveProfile(profileID string) (Profile, error) {
 	return profileView(s.opts.Store.Snapshot().Config, removed), nil
 }
 
-// CheckHealth probes one profile and caches the result for View. The token is
-// advisory here: a profile without one reports "not paired" after /health
-// answers, and the check never changes routing.
+// CheckHealth probes one profile and caches the result for View. A profile
+// without a token reports "not paired" after /health answers. The check itself
+// never changes routing; the shell decides whether an offline result should
+// move the active selection to another reachable profile.
 func (s *Service) CheckHealth(ctx context.Context, profileID string) trust.Status {
 	s.mu.Lock()
 	snapshot := s.opts.Store.Snapshot()

@@ -12,7 +12,7 @@ The authenticated desktop slice from issue #83 is a separate harness:
 [`scripts/e2e_trust.py`](../../scripts/e2e_trust.py), driven by
 `scripts/e2e-trust.sh` / `scripts/e2e-trust.ps1`. It starts a TLS-enabled,
 token-protected Server and covers local auto-pairing, a remote Pairing code,
-Device revocation and re-pairing, the manual Server switch, soft-stop/start, a
+Device revocation and re-pairing, the Server switch, soft-stop/start, a
 supervised restart (including a persisted soft-stop), an unreachable Server, and
 Spool save/retry/delete (`transcribe-file --spool-on-error`, `spool list`,
 `spool retry`, `spool delete`). The release matrix lives in

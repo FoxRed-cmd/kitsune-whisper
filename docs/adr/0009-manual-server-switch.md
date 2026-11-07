@@ -1,6 +1,6 @@
 # The Client switches Server profiles manually; there is no automatic fallback
 
-**Status:** accepted
+**Status:** superseded by [ADR 0016](0016-health-driven-server-switch.md)
 
 The original plan was automatic fallback: send to the Remote Server, and on
 failure retry the same utterance on the Local Server. Automatic routing hides
@@ -31,5 +31,6 @@ Spool. It never retries another profile on its own and never injects twice.
 - When autostart includes the Local Server, it starts at login with the model
   loaded (subject to the idle unload timeout), so switching to it is instant
   when it is warm.
-- Health and status are still shown in the Tray and Settings; they inform the
-  user but never change routing.
+- Health and status are still shown in the Tray and Settings. ADR 0016 later
+  allowed an offline result to move the active profile to another reachable
+  one, but never to retry a failed Utterance.

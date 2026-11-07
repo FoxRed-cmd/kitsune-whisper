@@ -565,8 +565,8 @@ func (s *Shell) serverLabels() ServerLabels {
 	}
 }
 
-// serverStateLabels translates every advisory health state whose label the
-// profile rows render.
+// serverStateLabels translates every health state whose label the profile rows
+// render.
 func serverStateLabels(catalog i18n.Catalog) map[string]string {
 	states := []trust.ServerState{
 		trust.StateUnknown,
@@ -707,11 +707,9 @@ func collectViewErrors(view SettingsView) []ViewError {
 
 	add("dictation-microphone", view.DeviceError)
 	add("dictation-hotkeys", view.Gnome.Error)
-	for _, profile := range view.Servers.Profiles {
-		if profile.Health.State != trust.StateOnline {
-			add("servers", profile.Name+": "+profile.Health.Error)
-		}
-	}
+	// An unavailable Server profile is already labelled in its row. Turning the
+	// health detail into a banner would repeat one alert per profile on every
+	// background probe and bury the failures the user can act on.
 	add("servers", view.Servers.LifecycleError)
 	add("devices", view.Servers.PairingError)
 	add("devices", view.Servers.DevicesError)
@@ -1339,6 +1337,31 @@ func (s *Shell) copyConnectAddress() {
 	s.pushMessages([]string{s.catalog().T("notice.server.copied", address)}, nil)
 }
 
+// serverApplyError marks a Server switch that was persisted but could not be
+// applied to the running Client.
+type serverApplyError struct{ err error }
+
+func (e *serverApplyError) Error() string { return e.err.Error() }
+func (e *serverApplyError) Unwrap() error { return e.err }
+
+// switchServerProfile makes one profile the persisted active Server and applies
+// the resulting configuration. It resets cached Devices and pushes no view;
+// callers decide what to report. A serverApplyError means the selection was
+// saved but the running Client still uses the previous configuration.
+func (s *Shell) switchServerProfile(profileID string) (servers.Profile, error) {
+	profile, err := s.opts.Servers.SetActive(profileID)
+	if err != nil {
+		return servers.Profile{}, err
+	}
+	s.resetDevices()
+	if s.opts.ApplyConfig != nil {
+		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
+			return profile, &serverApplyError{err: err}
+		}
+	}
+	return profile, nil
+}
+
 // useProfile makes one Server profile active, persists it, and applies the new
 // configuration to the running Client. The next Utterance uses it; nothing
 // retries on another profile.
@@ -1350,19 +1373,17 @@ func (s *Shell) useProfile(profileID string) {
 	if strings.TrimSpace(profileID) == "" {
 		return
 	}
-	profile, err := s.opts.Servers.SetActive(profileID)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.server.select", err.Error())})
-		return
-	}
+	profile, err := s.switchServerProfile(profileID)
 	failures := []string{}
-	if s.opts.ApplyConfig != nil {
-		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
-			failures = append(failures, s.catalog().T("error.server.apply", err.Error()))
+	if err != nil {
+		var applyErr *serverApplyError
+		if !errors.As(err, &applyErr) {
+			s.pushSettings()
+			s.pushMessages(nil, []string{s.catalog().T("error.server.select", err.Error())})
+			return
 		}
+		failures = append(failures, s.catalog().T("error.server.apply", applyErr.Error()))
 	}
-	s.resetDevices()
 	s.pushSettings()
 	s.pushMessages([]string{s.catalog().T("notice.server.selected", profile.Name)}, failures)
 	s.update(s.opts.Runtime.Status())

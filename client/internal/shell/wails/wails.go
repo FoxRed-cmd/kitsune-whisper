@@ -477,8 +477,9 @@ func (t *trayPort) buildMenu(snapshot shell.Snapshot) *application.Menu {
 	menu := application.NewMenu()
 	// Status rows live in the tooltip and the Settings window; the menu starts
 	// with actions so the first clickable item is not below four dead labels.
-	// The profile submenu is the manual Server switch. Health labels are
-	// advisory and never change what the radio item selects.
+	// The profile submenu is the manual Server switch. A health probe can move
+	// the radio item when the active profile is unreachable, so the menu always
+	// renders the selection the shell currently routes to.
 	if len(snapshot.Profiles) > 0 {
 		submenu := menu.AddSubmenu(labels.Profiles)
 		for _, profile := range snapshot.Profiles {

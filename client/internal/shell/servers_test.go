@@ -542,9 +542,10 @@ func TestTheTrayProfileActionSwitchesTheActiveServer(t *testing.T) {
 	}
 }
 
-// TestBackgroundHealthRefreshIsAdvisory proves the slow probe reports each
-// profile but never changes the active selection or applies a configuration.
-func TestBackgroundHealthRefreshIsAdvisory(t *testing.T) {
+// TestBackgroundHealthCheckSwitchesFromAnUnreachableProfile proves the probe
+// switches to the first reachable profile and persists it when the active one
+// is offline.
+func TestBackgroundHealthCheckSwitchesFromAnUnreachableProfile(t *testing.T) {
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
 	settings := newFakeSettings(i18n.English)
@@ -552,6 +553,169 @@ func TestBackgroundHealthRefreshIsAdvisory(t *testing.T) {
 	service.health = map[string]trust.Status{
 		"local":          {State: trust.StateOffline, Error: "connection refused"},
 		"remote-desktop": {State: trust.StateOnline, Version: "0.1.0"},
+	}
+	var appliedMu sync.Mutex
+	var applied config.ClientConfig
+	sh := shell.New(shell.Options{
+		Runtime:  rt,
+		Desktop:  desktop,
+		Settings: settings,
+		Servers:  service,
+		ApplyConfig: func(cfg config.ClientConfig) error {
+			appliedMu.Lock()
+			applied = cfg
+			appliedMu.Unlock()
+			return nil
+		},
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "the automatic switch", func() bool {
+		service.mu.Lock()
+		switched := len(service.useCalls) == 1 && service.useCalls[0] == "remote-desktop"
+		service.mu.Unlock()
+		if !switched {
+			return false
+		}
+		appliedMu.Lock()
+		defer appliedMu.Unlock()
+		return applied.ActiveServer == "remote-desktop"
+	})
+	appliedMu.Lock()
+	appliedConfig := applied
+	appliedMu.Unlock()
+	if appliedConfig.ActiveServer != "remote-desktop" {
+		t.Fatalf("applied config = %+v, want the reachable profile", appliedConfig)
+	}
+	if service.View().ActiveID != "remote-desktop" {
+		t.Fatalf("active profile = %q, want remote-desktop", service.View().ActiveID)
+	}
+	waitFor(t, "the switched active profile", func() bool {
+		snapshot := sh.Snapshot()
+		return snapshot.Profile == "Desktop" && snapshot.Server.State == trust.StateOnline
+	})
+	view, ok := desktop.getWindow().lastSettings()
+	if !ok || view.Servers.ActiveID != "remote-desktop" {
+		t.Fatalf("pushed view = %+v", view)
+	}
+	if profileHealthBanner(view) {
+		t.Fatalf("an unreachable profile was repeated as a banner: %+v", view.Errors)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// TestBackgroundHealthCheckDoesNotSwitchToASoftStoppedProfile proves a Server
+// that answers health but refuses transcription is not a usable fallback.
+func TestBackgroundHealthCheckDoesNotSwitchToASoftStoppedProfile(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOffline, Error: "connection refused"},
+		"remote-desktop": {State: trust.StateOnline, Stopped: true, ModelState: "stopped"},
+	}
+	applyCalls := 0
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Settings:      settings,
+		Servers:       service,
+		ApplyConfig:   func(config.ClientConfig) error { applyCalls++; return nil },
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "both profiles probed", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.healthCalls) >= 2
+	})
+	if service.View().ActiveID != "local" {
+		t.Fatalf("an active soft-stopped profile was selected: %q", service.View().ActiveID)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("a soft-stopped fallback applied the configuration %d times", applyCalls)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// TestBackgroundHealthCheckKeepsTheSelectionWhenApplyingTheSwitchFails proves
+// a persisted switch is rolled back when the running Client cannot use it, so
+// the configuration file and routing do not diverge.
+func TestBackgroundHealthCheckKeepsTheSelectionWhenApplyingTheSwitchFails(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOffline, Error: "connection refused"},
+		"remote-desktop": {State: trust.StateOnline},
+	}
+	applyCalls := 0
+	sh := shell.New(shell.Options{
+		Runtime:  rt,
+		Desktop:  desktop,
+		Settings: settings,
+		Servers:  service,
+		ApplyConfig: func(config.ClientConfig) error {
+			applyCalls++
+			return errors.New("the runtime refused the configuration")
+		},
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "the switch attempt and its rollback", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.useCalls) == 2 && service.useCalls[1] == "local"
+	})
+	if applyCalls != 1 {
+		t.Fatalf("apply calls = %d, want one failed attempt", applyCalls)
+	}
+	if service.View().ActiveID != "local" {
+		t.Fatalf("active profile = %q, want the original local profile", service.View().ActiveID)
+	}
+	if snapshot := sh.Snapshot(); snapshot.Profile != "Local Server" {
+		t.Fatalf("Tray profile = %q, want Local Server", snapshot.Profile)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// TestBackgroundHealthCheckKeepsAnUnreachableProfileWhenNoOtherAnswers proves
+// the selection survives when no alternative is reachable, and that the row's
+// health label is the only place the failure appears.
+func TestBackgroundHealthCheckKeepsAnUnreachableProfileWhenNoOtherAnswers(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOffline, Error: "connection refused"},
+		"remote-desktop": {State: trust.StateOffline, Error: "no route to host"},
 	}
 	applyCalls := 0
 	sh := shell.New(shell.Options{
@@ -574,11 +738,58 @@ func TestBackgroundHealthRefreshIsAdvisory(t *testing.T) {
 	})
 	waitFor(t, "the health in the window", func() bool {
 		view, ok := desktop.getWindow().lastSettings()
-		return ok && len(view.Servers.Profiles) == 2 && view.Servers.Profiles[1].Health.State == trust.StateOnline
+		return ok && len(view.Servers.Profiles) == 2 && view.Servers.Profiles[1].Health.State == trust.StateOffline
 	})
 	if sh.Snapshot().Server.State != trust.StateOffline {
 		t.Fatalf("active health = %+v, want offline", sh.Snapshot().Server)
 	}
+	if service.View().ActiveID != "local" {
+		t.Fatalf("health changed the active profile to %q without an alternative", service.View().ActiveID)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("health applied the configuration %d times", applyCalls)
+	}
+	view, ok := desktop.getWindow().lastSettings()
+	if !ok || profileHealthBanner(view) {
+		t.Fatalf("health errors should not become banners: %+v", view.Errors)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// TestBackgroundHealthCheckKeepsAnOnlineActiveProfile proves a healthy
+// selection is never moved just because another profile also answers.
+func TestBackgroundHealthCheckKeepsAnOnlineActiveProfile(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOnline},
+		"remote-desktop": {State: trust.StateOnline},
+	}
+	applyCalls := 0
+	sh := shell.New(shell.Options{
+		Runtime:       rt,
+		Desktop:       desktop,
+		Settings:      settings,
+		Servers:       service,
+		ApplyConfig:   func(config.ClientConfig) error { applyCalls++; return nil },
+		Version:       "test",
+		Profile:       "Local Server",
+		CheckInterval: time.Hour,
+		Logger:        &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "both profiles probed", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.healthCalls) >= 2
+	})
 	if service.View().ActiveID != "local" {
 		t.Fatalf("health changed the active profile to %q", service.View().ActiveID)
 	}
@@ -602,13 +813,113 @@ func TestBackgroundHealthRefreshIsAdvisory(t *testing.T) {
 	}
 }
 
+// TestStartupProbeDoesNotSwitchBeforeTheLocalGrace proves a Local Server that
+// is still starting is not treated as a lasting outage.
+func TestStartupProbeDoesNotSwitchBeforeTheLocalGrace(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	service.view.Profiles[0].AutoPair = true
+	service.profile = service.view.Profiles[0]
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOffline, Error: "connection refused"},
+		"remote-desktop": {State: trust.StateOnline},
+	}
+	applyCalls := 0
+	sh := shell.New(shell.Options{
+		Runtime:                   rt,
+		Desktop:                   desktop,
+		Settings:                  settings,
+		Servers:                   service,
+		ApplyConfig:               func(config.ClientConfig) error { applyCalls++; return nil },
+		Version:                   "test",
+		Profile:                   "Local Server",
+		CheckInterval:             time.Hour,
+		LocalPairingRetryAttempts: 1,
+		LocalPairingRetryInterval: time.Hour,
+		Logger:                    &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "both profiles probed", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return len(service.healthCalls) >= 2
+	})
+	if service.View().ActiveID != "local" {
+		t.Fatalf("the startup grace switched to %q", service.View().ActiveID)
+	}
+	if applyCalls != 0 {
+		t.Fatalf("the startup grace applied the configuration %d times", applyCalls)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// TestStartupGraceAllowsASwitchAfterTheLocalRetryWindow proves a Local Server
+// that stays unreachable past the grace yields to a reachable profile.
+func TestStartupGraceAllowsASwitchAfterTheLocalRetryWindow(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	settings := newFakeSettings(i18n.English)
+	service := twoProfileServers()
+	service.view.Profiles[0].AutoPair = true
+	service.profile = service.view.Profiles[0]
+	service.health = map[string]trust.Status{
+		"local":          {State: trust.StateOffline, Error: "connection refused"},
+		"remote-desktop": {State: trust.StateOnline},
+	}
+	sh := shell.New(shell.Options{
+		Runtime:                   rt,
+		Desktop:                   desktop,
+		Settings:                  settings,
+		Servers:                   service,
+		Version:                   "test",
+		Profile:                   "Local Server",
+		CheckInterval:             time.Hour,
+		LocalPairingRetryAttempts: 1,
+		LocalPairingRetryInterval: time.Millisecond,
+		Logger:                    &fakeLogger{},
+	})
+
+	done := startWithWindow(t, sh, desktop)
+	waitFor(t, "the switch after the startup grace", func() bool {
+		service.mu.Lock()
+		defer service.mu.Unlock()
+		return service.view.ActiveID == "remote-desktop"
+	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+// profileHealthBanner reports whether the view still turns a profile health
+// failure into the shared message area.
+func profileHealthBanner(view shell.SettingsView) bool {
+	for _, item := range view.Errors {
+		if item.Section != "servers" {
+			continue
+		}
+		if strings.Contains(item.Message, "connection refused") || strings.Contains(item.Message, "no route to host") {
+			return true
+		}
+	}
+	return false
+}
+
 func TestTraySnapshotCarriesEveryProfileAndItsHealth(t *testing.T) {
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()
 	service := twoProfileServers()
 	service.health = map[string]trust.Status{
-		"local":          {State: trust.StateOffline},
-		"remote-desktop": {State: trust.StateOnline},
+		"local":          {State: trust.StateOnline},
+		"remote-desktop": {State: trust.StateOffline},
 	}
 	sh := shell.New(shell.Options{
 		Runtime:       rt,
@@ -622,11 +933,14 @@ func TestTraySnapshotCarriesEveryProfileAndItsHealth(t *testing.T) {
 	done := start(t, sh, true)
 	waitFor(t, "the Tray profiles", func() bool {
 		snapshot := sh.Snapshot()
-		return len(snapshot.Profiles) == 2 && snapshot.Profiles[1].StateLabel == "Online"
+		return len(snapshot.Profiles) == 2 && snapshot.Profiles[1].StateLabel == "Unreachable"
 	})
 	snapshot := sh.Snapshot()
-	if !snapshot.Profiles[0].Active || snapshot.Profiles[0].StateLabel != "Unreachable" {
+	if !snapshot.Profiles[0].Active || snapshot.Profiles[0].StateLabel != "Online" {
 		t.Fatalf("local profile = %+v", snapshot.Profiles[0])
+	}
+	if snapshot.Profiles[1].Active {
+		t.Fatalf("an unreachable inactive profile became active: %+v", snapshot.Profiles[1])
 	}
 	if snapshot.Labels.Profiles == "" {
 		t.Fatal("the Tray profile submenu has no label")
