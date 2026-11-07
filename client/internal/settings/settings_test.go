@@ -722,6 +722,7 @@ func TestClassify(t *testing.T) {
 		"client.timeout_seconds",
 		"client.spool_dir",
 		"client.active_server",
+		"client.updates.check",
 	}
 	for _, path := range hot {
 		if got := settings.Classify(path); got != settings.ApplyHot {

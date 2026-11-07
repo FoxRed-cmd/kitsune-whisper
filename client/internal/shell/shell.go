@@ -426,6 +426,9 @@ type Options struct {
 	// Updater checks and installs releases. Nil hides the updates screen and
 	// the Tray item.
 	Updater Updater
+	// UpdateCheckDelay is the wait between startup and the first automatic
+	// release check; 0 uses 60 seconds. Tests shorten it.
+	UpdateCheckDelay time.Duration
 }
 
 // Shell drives the desktop shell lifecycle.
@@ -454,6 +457,10 @@ type Shell struct {
 	updateInstalling bool
 	updateLaunched   bool
 	updateError      string
+
+	// autoUpdateSync wakes the automatic-check scheduler after a settings
+	// save, so a toggle change starts or cancels checks without a restart.
+	autoUpdateSync chan struct{}
 
 	// diagnosticsLoading guards the automatic Diagnostics preload so opening
 	// the window while the page is loading does not fetch twice.
@@ -489,12 +496,13 @@ func New(opts Options) *Shell {
 	}
 	server := trust.Status{State: trust.StateUnknown}
 	return &Shell{
-		opts:      opts,
-		log:       log,
-		quitCh:    make(chan struct{}),
-		restartCh: make(chan struct{}),
-		server:    server,
-		snapshot:  NewSnapshot(runtime.Status{}, opts.Version, opts.Profile),
+		opts:           opts,
+		log:            log,
+		quitCh:         make(chan struct{}),
+		restartCh:      make(chan struct{}),
+		autoUpdateSync: make(chan struct{}, 1),
+		server:         server,
+		snapshot:       NewSnapshot(runtime.Status{}, opts.Version, opts.Profile),
 	}
 }
 
@@ -549,7 +557,7 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 		go s.monitorServer(monitorCtx)
 	}
 	if s.opts.Updater != nil {
-		go s.checkUpdates(monitorCtx, false)
+		go s.runAutoUpdates(monitorCtx)
 	}
 
 	runtimeDone := make(chan error, 1)

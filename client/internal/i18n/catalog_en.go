@@ -352,6 +352,8 @@ var english = map[string]string{
 	"page.restartHint":       "Restart the Client to apply changes marked “Restart required”.",
 	"update.title":           "Updates",
 	"update.help":            "The Client checks GitHub Releases once at startup and when you ask. It downloads the installer only on request and verifies its SHA-256 before launching it.",
+	"update.autoCheck":       "Check for updates automatically",
+	"update.autoCheckHelp":   "Check GitHub Releases about a minute after the Client starts. Off means no automatic requests; the manual check still works.",
 	"update.current":         "Current version",
 	"update.latest":          "Latest version",
 	"update.check":           "Check for updates",

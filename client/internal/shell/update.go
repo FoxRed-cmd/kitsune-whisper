@@ -18,6 +18,8 @@ type Updater interface {
 type UpdateLabels struct {
 	Title               string `json:"title"`
 	Help                string `json:"help"`
+	AutoCheck           string `json:"autoCheck"`
+	AutoCheckHelp       string `json:"autoCheckHelp"`
 	Current             string `json:"current"`
 	Latest              string `json:"latest"`
 	Check               string `json:"check"`
@@ -41,6 +43,8 @@ type UpdateView struct {
 	CurrentVersion string `json:"currentVersion"`
 	LatestVersion  string `json:"latestVersion,omitempty"`
 	ReleaseURL     string `json:"releaseUrl,omitempty"`
+	// CheckEnabled is the automatic release-check setting.
+	CheckEnabled bool `json:"checkEnabled"`
 	// Checked reports that at least one release check completed.
 	Checked bool `json:"checked"`
 	// Installable reports that this platform has a downloadable installer.
@@ -71,6 +75,8 @@ func (s *Shell) updateLabels() UpdateLabels {
 	return UpdateLabels{
 		Title:               catalog.T("update.title"),
 		Help:                catalog.T("update.help"),
+		AutoCheck:           catalog.T("update.autoCheck"),
+		AutoCheckHelp:       catalog.T("update.autoCheckHelp"),
 		Current:             catalog.T("update.current"),
 		Latest:              catalog.T("update.latest"),
 		Check:               catalog.T("update.check"),
@@ -103,6 +109,7 @@ func (s *Shell) updateView() UpdateView {
 		CurrentVersion: s.opts.Version,
 		LatestVersion:  info.Latest,
 		ReleaseURL:     info.URL,
+		CheckEnabled:   s.updatesCheckEnabled(),
 		Checked:        checked,
 		Installable:    info.Installable,
 		Busy:           busy,
@@ -146,26 +153,34 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 	checkCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	info, err := s.opts.Updater.Check(checkCtx)
+	// Disabling automatic checks cancels an in-flight check. That is not a
+	// failure: it leaves the card and the message area as they were.
+	cancelled := ctx.Err() != nil
 
 	s.mu.Lock()
 	s.updateBusy = false
-	s.updateChecked = true
-	if err != nil {
-		s.updateError = err.Error()
-	} else {
-		s.updateInfo = info
-		s.updateError = ""
+	if !cancelled {
+		s.updateChecked = true
+		if err != nil {
+			s.updateError = err.Error()
+		} else {
+			s.updateInfo = info
+			s.updateError = ""
+		}
 	}
 	s.mu.Unlock()
-	if err != nil {
-		s.log.Debug("update: check failed: %v", err)
+	if cancelled {
+		return
 	}
 	s.pushSettings()
 	s.update(s.opts.Runtime.Status())
 	if err != nil {
-		// The card carries no error of its own: every failure goes to the one
-		// message area, including a check the Client ran on its own.
-		s.pushMessages(nil, []string{s.catalog().T("error.update.check", err.Error())})
+		s.log.Debug("update: check failed: %v", err)
+		// A background failure stays in the card and the log; only a check the
+		// user asked for raises the one message area.
+		if manual {
+			s.pushMessages(nil, []string{s.catalog().T("error.update.check", err.Error())})
+		}
 		return
 	}
 	if manual {
@@ -173,6 +188,115 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 			s.pushMessages([]string{s.catalog().T("notice.update.available", info.Latest)}, nil)
 		} else {
 			s.pushMessages([]string{s.catalog().T("notice.update.current")}, nil)
+		}
+	}
+}
+
+// updatesCheckEnabled reports the client.updates.check setting. Without a
+// settings service the Client keeps the built-in default: automatic checks on.
+func (s *Shell) updatesCheckEnabled() bool {
+	if s.opts.Settings == nil {
+		return true
+	}
+	return s.opts.Settings.Config().Updates.Check
+}
+
+// reconcileAutoUpdates wakes the scheduler after a written settings save. The
+// buffered channel coalesces unrelated saves, and the scheduler ignores a
+// reconcile that does not change the setting.
+func (s *Shell) reconcileAutoUpdates() {
+	if s.opts.Updater == nil || s.autoUpdateSync == nil {
+		return
+	}
+	select {
+	case s.autoUpdateSync <- struct{}{}:
+	default:
+	}
+}
+
+// autoUpdateDelay is the wait before the startup check; 0 means 60 seconds.
+func (s *Shell) autoUpdateDelay() time.Duration {
+	if s.opts.UpdateCheckDelay > 0 {
+		return s.opts.UpdateCheckDelay
+	}
+	return 60 * time.Second
+}
+
+// runAutoUpdates runs the automatic release check. It waits for the startup
+// delay when the setting is on, reacts to the toggle being saved, and cancels
+// an in-flight automatic check when the setting is turned off. There are no
+// periodic checks: the setting allows at most one check per enable.
+func (s *Shell) runAutoUpdates(ctx context.Context) {
+	enabled := s.updatesCheckEnabled()
+
+	var (
+		timer  *time.Timer
+		timerC <-chan time.Time
+		cancel context.CancelFunc
+		done   chan struct{}
+	)
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer, timerC = nil, nil
+	}
+	start := func() {
+		if cancel != nil {
+			return
+		}
+		checkCtx, stop := context.WithCancel(ctx)
+		cancel = stop
+		finished := make(chan struct{})
+		done = finished
+		go func() {
+			defer close(finished)
+			s.checkUpdates(checkCtx, false)
+			stop()
+		}()
+	}
+	if enabled {
+		timer = time.NewTimer(s.autoUpdateDelay())
+		timerC = timer.C
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			stopTimer()
+			if cancel != nil {
+				cancel()
+			}
+			return
+		case <-s.autoUpdateSync:
+			want := s.updatesCheckEnabled()
+			if want == enabled {
+				continue
+			}
+			enabled = want
+			if !enabled {
+				stopTimer()
+				if cancel != nil {
+					cancel()
+				}
+				continue
+			}
+			// Turning the toggle on checks immediately, not after the
+			// startup delay.
+			stopTimer()
+			start()
+		case <-timerC:
+			timer, timerC = nil, nil
+			if enabled {
+				start()
+			}
+		case <-done:
+			cancel, done = nil, nil
 		}
 	}
 }

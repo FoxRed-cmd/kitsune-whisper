@@ -872,17 +872,20 @@ func TestPageKeepsEveryErrorInTheOneAreaUnderTheStatusCard(t *testing.T) {
 	}
 }
 
-func TestUpdatesCardShowsOnlyVersionsAndTheCheckButton(t *testing.T) {
+func TestUpdatesCardShowsVersionsTheAutomaticToggleAndTheCheckButton(t *testing.T) {
 	view := managementView()
 	view.Update = shell.UpdateView{
 		UpdateLabels: shell.UpdateLabels{
-			Title:   "Обновления",
-			Help:    "The Client checks GitHub Releases on its own.",
-			Current: "Текущая версия",
-			Latest:  "Последняя версия",
-			Check:   "Проверить обновления",
+			Title:         "Обновления",
+			Help:          "The Client checks GitHub Releases on its own.",
+			AutoCheck:     "Проверять обновления автоматически",
+			AutoCheckHelp: "Проверка запускается примерно через минуту после старта.",
+			Current:       "Текущая версия",
+			Latest:        "Последняя версия",
+			Check:         "Проверить обновления",
 		},
 		CurrentVersion: "1.2.3",
+		CheckEnabled:   true,
 	}
 	html := shell.SettingsHTML(view)
 	for _, unwanted := range []string{"The Client checks GitHub Releases on its own."} {
@@ -890,10 +893,24 @@ func TestUpdatesCardShowsOnlyVersionsAndTheCheckButton(t *testing.T) {
 			t.Errorf("the updates card still shows its explanatory text: %q", unwanted)
 		}
 	}
-	for _, want := range []string{"Текущая версия", "1.2.3", "Последняя версия", "Проверить обновления"} {
+	for _, want := range []string{
+		"Текущая версия", "1.2.3", "Последняя версия", "Проверить обновления",
+		`data-path="client.updates.check" checked`,
+		"Проверять обновления автоматически",
+		"Проверка запускается примерно через минуту после старта.",
+	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("the updates card is missing %q", want)
 		}
+	}
+
+	view.Update.CheckEnabled = false
+	html = shell.SettingsHTML(view)
+	if strings.Contains(html, `data-path="client.updates.check" checked`) {
+		t.Error("the toggle is checked while automatic checks are disabled")
+	}
+	if !strings.Contains(html, `data-path="client.updates.check"`) {
+		t.Error("the updates card lost the automatic-check toggle")
 	}
 }
 
