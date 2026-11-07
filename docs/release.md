@@ -52,7 +52,7 @@ installer/document drift check, and every build job depends on `verify-version`.
 | `client-windows` | `kitsune-client_windows_amd64.zip` |
 | `server-bundle` | `kitsune-server_linux_amd64.tar.gz` |
 | `server-bundle-windows` | `kitsune-server_windows_amd64.tar.gz` |
-| `release` | `install.sh`, `install.ps1`, `checksums.txt`, `checksums.txt.sig`, all of the above |
+| `release` | `install.sh`, `install.ps1`, `VERSION`, `checksums.txt`, `checksums.txt.sig`, all of the above |
 
 The installers consume the GTK4 + WebKitGTK 6.0 Client archive. A host without
 those libraries still installs and runs headless, with Settings in the browser.
@@ -97,9 +97,10 @@ identifiers in `install.sh` / `install.ps1` and the table in
 ## Checksums and signature
 
 `checksums.txt` is generated in the release job with `sha256sum` over every
-`kitsune-*` archive plus `install.sh` and `install.ps1`. Both installers verify
-the signature over `checksums.txt` before trusting any digest, and every archive
-against that file before extraction.
+`kitsune-*` archive plus `install.sh`, `install.ps1`, and `VERSION`. Both
+installers verify the signature over `checksums.txt` before trusting any digest,
+and every archive against that file before extraction. `VERSION` lets the Client
+stage a complete update set without inventing one.
 
 The release job then signs `checksums.txt` with the offline release key and
 uploads the detached signature next to it. A release without a signature is
@@ -200,7 +201,7 @@ the checksums:
 ```sh
 scripts/sign-release-checksums.sh \
   --key /secure/offline/release-signing-key.pem --checksums dist/checksums.txt
-gh release upload v1.2.1 dist/checksums.txt dist/checksums.txt.sig --clobber
+gh release upload v1.2.1 dist/VERSION dist/checksums.txt dist/checksums.txt.sig --clobber
 ```
 
 Before tagging:

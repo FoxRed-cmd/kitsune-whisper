@@ -776,6 +776,10 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			// Server for the status card.
 			healthCheck = serverCheck(cfg, bootstrap.manager, nil)
 		}
+		// The Component set is read once per launch, before any step runs. The
+		// wizard and the update composition both use it; the active Server
+		// profile is irrelevant.
+		installed := components.Detect(components.Default())
 		// The Setup wizard keeps its resumable progress in a sibling
 		// wizard.json, never in the shared configuration file.
 		var wizardService *wizard.Service
@@ -786,7 +790,6 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			// The Component set is read once per launch, before any step runs.
 			// It stays out of wizard.json so upgrading a Client-only install
 			// with the Local Server brings its steps back on the next start.
-			installed := components.Detect(components.Default())
 			logger.Info("wizard: client=%t server=%t", installed.Client, installed.Server)
 			wizardService = wizard.Open(stateStore, wizard.Options{
 				OnLog:      func(message string) { logger.Warning("wizard: %s", message) },
@@ -822,7 +825,7 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			Version:              Version,
 			Profile:              server.Name,
 			CheckServer:          healthCheck,
-			Updater:              update.New(update.Options{Current: Version}),
+			Updater:              update.New(update.Options{Current: Version, Components: installed}),
 			Notifier:             shellNotifier{send: newNotifier(logger)},
 			Logger:               logger,
 		})

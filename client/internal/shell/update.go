@@ -7,11 +7,14 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/update"
 )
 
-// Updater checks GitHub Releases and installs the artifact it offers.
-// *update.Service implements it.
+// Updater checks GitHub Releases, stages a verified update set, and reuses the
+// staged copy after a restart. *update.Service implements it.
 type Updater interface {
 	Check(ctx context.Context) (update.Info, error)
-	Install(ctx context.Context, info update.Info) (string, error)
+	Download(ctx context.Context, info update.Info, progress func(update.Progress)) (update.Stage, error)
+	Staged(tag string) (update.Stage, bool)
+	VerifyStaged(ctx context.Context, stage update.Stage) error
+	ClearStaged(tag string) error
 }
 
 // UpdateLabels are the translated strings of the updates screen and Tray item.
@@ -25,11 +28,15 @@ type UpdateLabels struct {
 	Check               string `json:"check"`
 	Download            string `json:"download"`
 	AvailableMessage    string `json:"availableMessage"`
+	ReadyMessage        string `json:"readyMessage"`
+	DownloadProgress    string `json:"downloadProgress"`
+	DownloadingFile     string `json:"downloadingFile"`
+	Cancel              string `json:"cancel"`
+	Retry               string `json:"retry"`
 	UpToDateMessage     string `json:"upToDate"`
 	NotInstalledMessage string `json:"notInstalled"`
 	Checking            string `json:"checking"`
-	Downloading         string `json:"downloading"`
-	LaunchedMessage     string `json:"launched"`
+	DownloadingMessage  string `json:"downloadingMessage"`
 	ReleasePage         string `json:"releasePage"`
 	DevBuildMessage     string `json:"devBuild"`
 	CheckUpdates        string `json:"checkUpdates"`
@@ -49,25 +56,37 @@ type UpdateView struct {
 	Checked bool `json:"checked"`
 	// Installable reports that this platform has a downloadable installer.
 	Installable bool `json:"installable"`
-	// Busy reports an in-flight check or download.
+	// Busy reports an in-flight release check.
 	Busy bool `json:"busy"`
-	// Installing distinguishes a download from a plain release check.
-	Installing bool `json:"installing"`
-	// Launched reports that the verified installer was started.
-	Launched bool `json:"launched"`
+	// Downloading reports an in-flight staged download.
+	Downloading bool `json:"downloading"`
+	// Ready reports a complete, verified set waiting for installation.
+	Ready bool `json:"ready"`
+	// ReceivedBytes and TotalBytes are the aggregate download progress; Total
+	// is 0 when the size is unknown.
+	ReceivedBytes int64 `json:"receivedBytes"`
+	TotalBytes    int64 `json:"totalBytes"`
+	// CurrentFile is the artifact being downloaded now, or "".
+	CurrentFile string `json:"currentFile,omitempty"`
+	// Cancelable reports that the download can be cancelled.
+	Cancelable bool `json:"cancelable"`
 	// Available reports a newer release.
 	Available bool `json:"available"`
-	// Error is the last check or install failure, or "".
+	// Error is the last check or download failure, or "".
 	Error string `json:"error,omitempty"`
 }
 
 // SnapshotUpdate is the compact update state the Tray renders.
 type SnapshotUpdate struct {
-	Available  bool   `json:"available"`
-	Latest     string `json:"latest,omitempty"`
-	Busy       bool   `json:"busy,omitempty"`
-	Installing bool   `json:"installing,omitempty"`
-	Error      string `json:"error,omitempty"`
+	Available   bool   `json:"available"`
+	Latest      string `json:"latest,omitempty"`
+	Busy        bool   `json:"busy,omitempty"`
+	Downloading bool   `json:"downloading,omitempty"`
+	Ready       bool   `json:"ready,omitempty"`
+	Received    int64  `json:"received,omitempty"`
+	Total       int64  `json:"total,omitempty"`
+	File        string `json:"file,omitempty"`
+	Error       string `json:"error,omitempty"`
 }
 
 func (s *Shell) updateLabels() UpdateLabels {
@@ -82,11 +101,15 @@ func (s *Shell) updateLabels() UpdateLabels {
 		Check:               catalog.T("update.check"),
 		Download:            catalog.T("update.download"),
 		AvailableMessage:    catalog.T("update.available"),
+		ReadyMessage:        catalog.T("update.ready"),
+		DownloadProgress:    catalog.T("update.progress"),
+		DownloadingFile:     catalog.T("update.downloadingFile"),
+		Cancel:              catalog.T("update.cancel"),
+		Retry:               catalog.T("update.retry"),
 		UpToDateMessage:     catalog.T("update.upToDate"),
 		NotInstalledMessage: catalog.T("update.notInstalled"),
 		Checking:            catalog.T("update.checking"),
-		Downloading:         catalog.T("update.downloading"),
-		LaunchedMessage:     catalog.T("update.launched"),
+		DownloadingMessage:  catalog.T("update.downloading"),
 		ReleasePage:         catalog.T("update.releasePage"),
 		DevBuildMessage:     catalog.T("update.devBuild"),
 		CheckUpdates:        catalog.T("tray.checkUpdates"),
@@ -100,12 +123,16 @@ func (s *Shell) updateView() UpdateView {
 		return UpdateView{}
 	}
 	s.mu.Lock()
-	info, checked, busy, installing, launched, updateErr :=
-		s.updateInfo, s.updateChecked, s.updateBusy, s.updateInstalling, s.updateLaunched, s.updateError
+	info := s.updateInfo
+	checked := s.updateChecked
+	busy := s.updateBusy
+	downloadIng := s.updateDownloading
+	ready := s.updateReady
+	progress := s.updateProgress
+	updateErr := s.updateError
 	s.mu.Unlock()
-	labels := s.updateLabels()
 	return UpdateView{
-		UpdateLabels:   labels,
+		UpdateLabels:   s.updateLabels(),
 		CurrentVersion: s.opts.Version,
 		LatestVersion:  info.Latest,
 		ReleaseURL:     info.URL,
@@ -113,26 +140,36 @@ func (s *Shell) updateView() UpdateView {
 		Checked:        checked,
 		Installable:    info.Installable,
 		Busy:           busy,
-		Installing:     installing,
-		Launched:       launched,
+		Downloading:    downloadIng,
+		Ready:          ready,
+		ReceivedBytes:  progress.Received,
+		TotalBytes:     progress.Total,
+		CurrentFile:    progress.File,
+		Cancelable:     downloadIng,
 		Available:      info.Available,
 		Error:          updateErr,
 	}
 }
 
-// snapshotUpdate is the compact state the Tray renders. s.mu must be held.
+// snapshotUpdateLocked is the compact state the Tray renders. s.mu must be held.
 func (s *Shell) snapshotUpdateLocked() SnapshotUpdate {
 	return SnapshotUpdate{
-		Available:  s.updateInfo.Available && !s.updateLaunched,
-		Latest:     s.updateInfo.Latest,
-		Busy:       s.updateBusy,
-		Installing: s.updateInstalling,
-		Error:      s.updateError,
+		Available:   s.updateInfo.Available,
+		Latest:      s.updateInfo.Latest,
+		Busy:        s.updateBusy,
+		Downloading: s.updateDownloading,
+		Ready:       s.updateReady,
+		Received:    s.updateProgress.Received,
+		Total:       s.updateProgress.Total,
+		File:        s.updateProgress.File,
+		Error:       s.updateError,
 	}
 }
 
 // checkUpdates asks GitHub Releases for the latest version. A failure is
-// logged; a manual check also raises the translated message.
+// logged; a manual check also raises the translated message. A successful
+// automatic check also starts the background download. A manual check never
+// downloads on its own.
 func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 	if s.opts.Updater == nil {
 		if manual {
@@ -141,12 +178,11 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 		return
 	}
 	s.mu.Lock()
-	if s.updateBusy {
+	if s.updateBusy || s.updateDownloading {
 		s.mu.Unlock()
 		return
 	}
 	s.updateBusy = true
-	s.updateInstalling = false
 	s.mu.Unlock()
 	s.pushSettings()
 
@@ -157,6 +193,15 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 	// failure: it leaves the card and the message area as they were.
 	cancelled := ctx.Err() != nil
 
+	var (
+		stage    update.Stage
+		staged   bool
+		staleTag string
+	)
+	if !cancelled && err == nil && info.Available && info.Installable {
+		stage, staged = s.opts.Updater.Staged(info.Tag)
+	}
+
 	s.mu.Lock()
 	s.updateBusy = false
 	if !cancelled {
@@ -164,11 +209,20 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 		if err != nil {
 			s.updateError = err.Error()
 		} else {
+			if s.updateStage.Tag != "" && s.updateStage.Tag != info.Tag {
+				staleTag = s.updateStage.Tag
+			}
 			s.updateInfo = info
 			s.updateError = ""
+			s.updateReady = staged
+			s.updateStage = stage
+			s.updateProgress = update.Progress{}
 		}
 	}
 	s.mu.Unlock()
+	if staleTag != "" {
+		_ = s.opts.Updater.ClearStaged(staleTag)
+	}
 	if cancelled {
 		return
 	}
@@ -189,6 +243,9 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 		} else {
 			s.pushMessages([]string{s.catalog().T("notice.update.current")}, nil)
 		}
+	}
+	if !manual && info.Available && info.Installable && !staged {
+		s.downloadUpdate(ctx, info, false)
 	}
 }
 
@@ -222,10 +279,10 @@ func (s *Shell) autoUpdateDelay() time.Duration {
 	return 60 * time.Second
 }
 
-// runAutoUpdates runs the automatic release check. It waits for the startup
-// delay when the setting is on, reacts to the toggle being saved, and cancels
-// an in-flight automatic check when the setting is turned off. There are no
-// periodic checks: the setting allows at most one check per enable.
+// runAutoUpdates runs the automatic release check and the background download
+// that follows it. It waits for the startup delay when the setting is on,
+// reacts to the toggle being saved, and cancels an in-flight automatic check or
+// download when the setting is turned off. There are no periodic checks.
 func (s *Shell) runAutoUpdates(ctx context.Context) {
 	enabled := s.updatesCheckEnabled()
 
@@ -301,50 +358,127 @@ func (s *Shell) runAutoUpdates(ctx context.Context) {
 	}
 }
 
-// installUpdate downloads and launches the installer for the checked release.
-// The Client keeps running until the installer replaces it.
-func (s *Shell) installUpdate() {
+// updateAction starts the manual staged download. The update action keeps its
+// install-update name so the Settings page and Tray stay compatible; until
+// #109 lands, a completed download only shows readiness and does not install.
+func (s *Shell) updateAction() {
 	if s.opts.Updater == nil {
 		s.pushMessages(nil, []string{s.catalog().T("error.update.unavailable")})
 		return
 	}
 	s.mu.Lock()
-	if s.updateBusy {
+	if s.updateBusy || s.updateDownloading {
 		s.mu.Unlock()
 		return
 	}
 	info := s.updateInfo
+	ready := s.updateReady
+	s.mu.Unlock()
+	if ready {
+		// Installation is a later step; a click on a ready set leaves it ready.
+		return
+	}
 	if !info.Available || !info.Installable {
-		s.mu.Unlock()
 		s.pushMessages(nil, []string{s.catalog().T("error.update.none")})
 		return
 	}
-	s.updateBusy = true
-	s.updateInstalling = true
+	go s.downloadUpdate(context.Background(), info, true)
+}
+
+// retryUpdate retries a failed background or manual download.
+func (s *Shell) retryUpdate() {
+	s.mu.Lock()
+	s.updateError = ""
+	s.mu.Unlock()
+	s.updateAction()
+}
+
+// cancelUpdate stops an in-flight download. The service removes the partial
+// files; the card returns to "available".
+func (s *Shell) cancelUpdate() {
+	s.mu.Lock()
+	cancel := s.updateCancel
+	downloading := s.updateDownloading
+	s.mu.Unlock()
+	if downloading && cancel != nil {
+		cancel()
+	}
+}
+
+// downloadUpdate stages the release set. Automatic downloads receive the
+// scheduler's context so turning the toggle off cancels them; a manual download
+// receives an independent context and is unaffected by the toggle.
+func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual bool) {
+	if s.opts.Updater == nil {
+		return
+	}
+	downloadCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	s.mu.Lock()
+	if s.updateBusy || s.updateDownloading {
+		s.mu.Unlock()
+		return
+	}
+	s.updateDownloading = true
+	s.updateReady = false
+	s.updateAutoDownload = !manual
+	s.updateCancel = cancel
+	s.updateProgress = update.Progress{}
 	s.updateError = ""
 	s.mu.Unlock()
 	s.pushSettings()
+	s.update(s.opts.Runtime.Status())
 
-	go func() {
-		installCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		_, err := s.opts.Updater.Install(installCtx, info)
+	var lastPush time.Time
+	report := func(progress update.Progress) {
 		s.mu.Lock()
-		s.updateBusy = false
-		s.updateInstalling = false
-		if err != nil {
-			s.updateError = err.Error()
-		} else {
-			s.updateLaunched = true
+		s.updateProgress = progress
+		now := time.Now()
+		push := now.Sub(lastPush) >= 100*time.Millisecond
+		if push {
+			lastPush = now
 		}
 		s.mu.Unlock()
-		if err != nil {
-			s.log.Warning("update: install failed: %v", err)
-			s.pushSettings()
-			s.pushMessages(nil, []string{s.catalog().T("error.update.install", err.Error())})
+		if !push {
 			return
 		}
 		s.pushSettings()
-		s.pushMessages([]string{s.catalog().T("notice.update.launched")}, nil)
-	}()
+		s.update(s.opts.Runtime.Status())
+	}
+
+	stage, err := s.opts.Updater.Download(downloadCtx, info, report)
+	cancelled := downloadCtx.Err() != nil
+
+	s.mu.Lock()
+	s.updateDownloading = false
+	s.updateAutoDownload = false
+	s.updateCancel = nil
+	switch {
+	case cancelled:
+		s.updateReady = false
+		s.updateStage = update.Stage{}
+		s.updateProgress = update.Progress{}
+		s.updateError = ""
+	case err != nil:
+		s.updateReady = false
+		s.updateStage = update.Stage{}
+		s.updateProgress = update.Progress{}
+		s.updateError = err.Error()
+	default:
+		s.updateReady = true
+		s.updateStage = stage
+		s.updateError = ""
+	}
+	s.mu.Unlock()
+
+	if err != nil && !cancelled {
+		// A background download failure stays in the card and the log; it never
+		// pops over the window. A manual failure uses the same card.
+		s.log.Warning("update: download failed: %v", err)
+	}
+	// Always push the final state, even when the throttled progress callback
+	// skipped the last sample.
+	s.pushSettings()
+	s.update(s.opts.Runtime.Status())
 }
