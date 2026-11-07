@@ -365,9 +365,25 @@ def create_app(
     # Every operation documents the shared error envelope. FastAPI only emits
     # a model that a route references, so this also keeps ErrorEnvelope in the
     # generated OpenAPI that the Client's error decoders are built from.
+    # Descriptions are fixed here rather than taken from HTTPStatus: Python
+    # renamed 413's phrase, and the committed schema must not depend on the
+    # interpreter that generated it.
+    error_descriptions = {
+        400: "Bad Request",
+        401: "Unauthorized",
+        403: "Forbidden",
+        404: "Not Found",
+        409: "Conflict",
+        410: "Gone",
+        413: "Payload Too Large",
+        415: "Unsupported Media Type",
+        429: "Too Many Requests",
+        500: "Internal Server Error",
+        503: "Service Unavailable",
+    }
     error_responses: dict[int | str, dict[str, Any]] = {
-        status: {"model": ErrorEnvelope}
-        for status in (400, 401, 403, 404, 409, 410, 413, 415, 429, 500, 503)
+        status: {"model": ErrorEnvelope, "description": description}
+        for status, description in error_descriptions.items()
     }
     app = FastAPI(
         title="kitsune-whisper server",

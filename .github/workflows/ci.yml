@@ -47,6 +47,10 @@ jobs:
 
       - name: Install the Server environment
         working-directory: server
+        env:
+          # The release bundle ships 3.11; generate the schema with the same
+          # interpreter so its OpenAPI text is reproducible.
+          UV_PYTHON: "3.11"
         run: uv sync --frozen
 
       - name: Install oapi-codegen
