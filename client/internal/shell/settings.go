@@ -1301,7 +1301,7 @@ func (s *Shell) setExposure(value string) {
 	}
 	s.pushSettings()
 	state := "off"
-	if result.Expose {
+	if result.ExposeToNetwork {
 		state = "on"
 	}
 	s.pushMessages([]string{s.catalog().T("notice.server.exposure", state)}, nil)

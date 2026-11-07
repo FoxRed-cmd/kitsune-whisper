@@ -39,7 +39,7 @@ func (s *Service) connectPortLocked(profiles []Profile, activeID string) string 
 	network := s.healthForLocked(activeID).Network
 	// A saved switch applies only to the profile it was made on, and only
 	// until the Server reports its live listener.
-	pending := s.exposureFor == activeID && s.exposure != nil && s.exposure.Expose
+	pending := s.exposureFor == activeID && s.exposure != nil && s.exposure.ExposeToNetwork
 	if !pending && (network == nil || !network.ExposeToNetwork) {
 		return ""
 	}

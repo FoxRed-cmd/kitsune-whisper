@@ -29,6 +29,39 @@ jobs:
       - run: uv run basedpyright
       - run: uv run pytest
 
+  contract:
+    name: contract (openapi and generated types)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: server/uv.lock
+
+      - name: Install the Server environment
+        working-directory: server
+        run: uv sync --frozen
+
+      - name: Install oapi-codegen
+        run: go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@v2.8.2
+
+      - name: Regenerate the wire contract
+        run: |
+          set -euo pipefail
+          (cd server && uv run python -m kitsune_server.openapi)
+          "$(go env GOPATH)/bin/oapi-codegen" \
+            -config client/oapi-codegen.yaml server/openapi.json
+
+      - name: Fail on drift
+        run: git diff --exit-code -- server/openapi.json client/internal/api/api.gen.go
+
   client:
     name: client (fmt, lint, tests)
     runs-on: ubuntu-latest

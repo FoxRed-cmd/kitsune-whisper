@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/version"
 )
@@ -175,9 +176,7 @@ func (h *HTTP) checkCompatibility(ctx context.Context) error {
 		if err != nil {
 			return
 		}
-		var health struct {
-			Version string `json:"version"`
-		}
+		var health api.HealthResponse
 		if json.Unmarshal(data, &health) != nil || health.Version == "" {
 			return
 		}
@@ -197,12 +196,7 @@ func (h *HTTP) effectiveLanguage() string {
 }
 
 func decodeError(status int, data []byte) error {
-	var envelope struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
+	var envelope api.ErrorEnvelope
 	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Code != "" {
 		return &ServerError{StatusCode: status, Code: envelope.Error.Code, Message: envelope.Error.Message}
 	}

@@ -31,13 +31,15 @@ window. It supports `dnf`, `apt`, `pacman`, and `zypper`. Use
 | `mise run build:server` | Build the Server wheel into `dist-local/` |
 | `mise run build:artifacts` (`mise run dist`) | Full Linux release set in `dist/` |
 | `mise run build:windows` | Windows Client with GUI subsystem (Windows only) |
+| `mise run spec` | Regenerate `server/openapi.json` and the Client's wire types |
+| `mise run spec:check` | Fail when either committed generated file is stale |
 | `mise run test` | Client and Server test suites |
 | `mise run test:desktop` | Desktop-tagged Wails adapter tests |
 | `mise run lint` | `golangci-lint` (both tag sets) and `ruff check` |
 | `mise run typecheck` | `basedpyright` |
 | `mise run fmt` | `gofmt -w` and `ruff format` |
 | `mise run fmt:check` | Check formatting without changing files |
-| `mise run check` | Everything CI runs: format, lint, types, tests |
+| `mise run check` | Everything CI runs: format, wire contract, lint, types, tests |
 | `mise run run:server` | Run the Server in the foreground |
 | `mise run run:client` | Build and run the dictation loop |
 | `mise run run:client-gui` | Build and run with the Settings window and Tray |
@@ -53,6 +55,16 @@ mise run e2e:live -- --profile local-cpu --report e2e-cpu.md
 
 The `run:*` tasks copy `kitsune.example.yaml` to the gitignored `kitsune.yaml`
 when it does not exist yet.
+
+## Wire contract
+
+The Server owns the JSON contract (ADR 0014). Response models live in
+`server/kitsune_server/api_models.py`; `mise run spec` writes
+`server/openapi.json` and regenerates the Client's `client/internal/api` types.
+Commit both files with the model change. CI regenerates them and fails on any
+diff, so a renamed or forgotten field is visible in the pull request. The
+generated Go file is the only codegen in the Client: transport, TLS pinning,
+the Device token, multipart upload, and error classification stay hand-written.
 
 ## Full build in `dist/`
 
@@ -91,6 +103,7 @@ component. The task supports Linux only.
 | golangci-lint | 2.14.0 | Keep in sync with `.github/workflows/ci.yml` |
 | zig | 0.17 | `CC="zig cc"` fallback when no gcc is installed |
 | gopls | 0.23.0 | Newest release that builds with Go 1.26 |
+| oapi-codegen | 2.8.2 | Generate the Client's wire types from `server/openapi.json` |
 
 `CGO_ENABLED=1`, `GOTOOLCHAIN=local`, and the `CC` fallback live in the
 `[env]` section. `server/.venv/bin` (or `server/.venv/Scripts` on Windows) is

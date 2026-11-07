@@ -14,6 +14,21 @@ import (
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 )
 
+func TestPairingStringRedactsTheDeviceToken(t *testing.T) {
+	paired := trust.Pairing{
+		Device:      trust.Device{ID: "dev-1"},
+		Token:       "ktn_top_secret",
+		Fingerprint: "fingerprint",
+	}
+	rendered := paired.String()
+	if strings.Contains(rendered, paired.Token) {
+		t.Fatalf("String() leaked the Device token: %q", rendered)
+	}
+	if !strings.Contains(rendered, "token:<redacted>") {
+		t.Fatalf("String() = %q", rendered)
+	}
+}
+
 func pairingServer(t *testing.T, fingerprint string) (*httptest.Server, *int) {
 	t.Helper()
 	calls := 0

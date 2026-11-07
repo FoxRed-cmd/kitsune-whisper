@@ -385,7 +385,7 @@ func serversHTML(view servers.View, labels ServerLabels, modelLabels ModelLabels
 	if live == nil {
 		if view.Exposure != nil {
 			state := labels.ExposureOffState
-			if view.Exposure.Expose {
+			if view.Exposure.ExposeToNetwork {
 				state = labels.ExposureOnState
 			}
 			out.WriteString(`<p class="notice">` + escape(labels.ExposureTitle) + `: ` + escape(state) + `</p>`)
@@ -483,7 +483,7 @@ func pendingExposure(view servers.View, live *trust.NetworkStatus) bool {
 		return true
 	}
 	if view.Exposure != nil {
-		return view.Exposure.Expose != live.ExposeToNetwork
+		return view.Exposure.ExposeToNetwork != live.ExposeToNetwork
 	}
 	configured, ok := configuredExposure(view.Config)
 	return ok && configured != live.ExposeToNetwork
@@ -627,7 +627,7 @@ func savedAt(seconds float64) string {
 // icon buttons with tooltips, so the catalog stays compact; an active model
 // needs no action because its badge already sits beside the name.
 func modelActions(model servers.Model, view *servers.ModelsView, labels ModelLabels) string {
-	if model.Download.InProgress() {
+	if servers.DownloadInProgress(model.Download) {
 		return `<button type="button" class="icon-button" data-action="cancel-download" data-model="` +
 			escape(model.Name) + `" title="` + escape(labels.Cancel) + `" aria-label="` +
 			escape(labels.Cancel) + `">` + pageIcon("close") + `</button>`

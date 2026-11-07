@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/wizard"
@@ -127,7 +128,7 @@ func TestModelPresence(t *testing.T) {
 			data: wizard.Data{Servers: servers.View{
 				ActiveID: "local",
 				Lifecycle: &servers.ServerLifecycle{
-					Model: "base", ModelState: "loaded",
+					ServerLifecycle: api.ServerLifecycle{Model: "base", ModelState: "loaded"},
 				},
 			}},
 			known:  true,

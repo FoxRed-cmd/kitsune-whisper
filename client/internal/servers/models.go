@@ -8,34 +8,23 @@ import (
 	"net/url"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
 )
 
 // Model is one entry in the Model catalog as the Server reports it.
-type Model struct {
-	Name           string `json:"name"`
-	DiskBytes      int64  `json:"disk_bytes"`
-	MemoryBytes    int64  `json:"memory_bytes"`
-	Speed          string `json:"speed"`
-	Quality        string `json:"quality"`
-	Recommended    bool   `json:"recommended"`
-	Installed      bool   `json:"installed"`
-	InstalledBytes int64  `json:"installed_bytes"`
-	// Download is the progress of this model's download, or nil.
-	Download *ModelDownload `json:"download"`
-}
+// Download is the progress of this model's download, or nil.
+type Model = api.Model
 
 // ModelDownload is one download's progress and outcome.
-type ModelDownload struct {
-	Model         string `json:"model"`
-	State         string `json:"state"`
-	ReceivedBytes int64  `json:"received_bytes"`
-	TotalBytes    int64  `json:"total_bytes"`
-	Error         string `json:"error"`
-}
+type ModelDownload = api.ModelDownload
 
-// InProgress reports a download the user can still cancel.
-func (d *ModelDownload) InProgress() bool {
+// ModelsView is the Server's Model catalog and lifecycle state. Warning
+// reports a change that applied but could not be persisted.
+type ModelsView = api.ModelsView
+
+// DownloadInProgress reports a download the user can still cancel.
+func DownloadInProgress(d *ModelDownload) bool {
 	if d == nil {
 		return false
 	}
@@ -47,24 +36,10 @@ func (d *ModelDownload) InProgress() bool {
 	}
 }
 
-// ModelsView is the Server's Model catalog and lifecycle state.
-type ModelsView struct {
-	Device            string  `json:"device"`
-	Recommended       string  `json:"recommended"`
-	State             string  `json:"state"`
-	ActiveModel       string  `json:"active_model"`
-	ActivePath        string  `json:"active_path"`
-	Error             string  `json:"error"`
-	IdleUnloadSeconds int     `json:"idle_unload_seconds"`
-	Models            []Model `json:"models"`
-	// Warning reports a change that applied but could not be persisted.
-	Warning string `json:"warning,omitempty"`
-}
-
 // HasActiveDownload reports whether the catalog still has a download to watch.
-func (v ModelsView) HasActiveDownload() bool {
-	for _, model := range v.Models {
-		if model.Download.InProgress() {
+func HasActiveDownload(view ModelsView) bool {
+	for _, model := range view.Models {
+		if DownloadInProgress(model.Download) {
 			return true
 		}
 	}

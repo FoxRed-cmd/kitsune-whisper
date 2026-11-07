@@ -716,10 +716,10 @@ func TestSetExposureSendsTheConfirmationAndCachesTheResult(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expose: %v", err)
 	}
-	if !result.Expose || result.BindHost != "0.0.0.0" {
+	if !result.ExposeToNetwork || result.BindHost != "0.0.0.0" {
 		t.Fatalf("result = %+v", result)
 	}
-	if view := service.View(); view.Exposure == nil || !view.Exposure.Expose {
+	if view := service.View(); view.Exposure == nil || !view.Exposure.ExposeToNetwork {
 		t.Fatalf("view = %+v", view)
 	}
 }

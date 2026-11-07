@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/api"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/i18n"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/shell"
@@ -32,7 +33,7 @@ func managementService() *fakeServers {
 		Truncated: true,
 	}
 	service.lifecycleResult = servers.ServerLifecycle{
-		Stopped: false, Loaded: true, Model: "small", ModelState: "loaded",
+		ServerLifecycle: api.ServerLifecycle{Stopped: false, Loaded: true, Model: "small", ModelState: "loaded"},
 	}
 	return service
 }
@@ -378,7 +379,7 @@ func TestStopServerIntentCallsLifecycleAndStartClearsIt(t *testing.T) {
 
 func TestHardStoppingTheLocalServerShowsItAsUnreachable(t *testing.T) {
 	service := managementService()
-	hard := servers.ServerLifecycle{Hard: true, Stopped: true, ModelState: "stopped"}
+	hard := servers.ServerLifecycle{ServerLifecycle: api.ServerLifecycle{Stopped: true, ModelState: "stopped"}, Hard: true}
 	service.stopResult = &hard
 	sh, desktop := newManagementShell(t, service, nil)
 

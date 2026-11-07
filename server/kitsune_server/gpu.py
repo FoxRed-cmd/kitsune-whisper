@@ -96,13 +96,6 @@ class GpuStatus:
     device_count: int
     device: str
 
-    def as_dict(self) -> dict[str, object]:
-        return {
-            "available": self.available,
-            "device_count": self.device_count,
-            "device": self.device,
-        }
-
 
 def gpu_status(config: ServerConfig, *, cuda_device_count: int) -> GpuStatus:
     """Resolve GPU availability and the device the Server would run on."""
