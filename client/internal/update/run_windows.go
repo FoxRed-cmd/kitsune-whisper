@@ -4,27 +4,30 @@ package update
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/process"
 )
 
-// start launches the verified install.ps1 with PowerShell 7 without waiting
-// for it to finish. The script installs per-user and needs no elevation.
-func start(path string, args []string, env []string) error {
+// startHelper launches the generated PowerShell helper with no console window.
+// process.Command sets CREATE_NO_WINDOW; the output goes to the update log.
+func startHelper(scriptPath, logPath string) error {
 	pwsh, err := exec.LookPath("pwsh.exe")
 	if err != nil {
-		return fmt.Errorf("PowerShell 7 (pwsh.exe) is required to run %s: %w", path, err)
+		return fmt.Errorf("PowerShell 7 (pwsh.exe) is required to install this update: %w", err)
 	}
-	commandArgs := []string{
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path,
+	log, err := openHelperLog(logPath)
+	if err != nil {
+		return err
 	}
-	commandArgs = append(commandArgs, args...)
-	command := process.Command(pwsh, commandArgs...)
-	command.Env = append(os.Environ(), env...)
+	defer log.Close()
+	command := process.Command(
+		pwsh,
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+		"-File", scriptPath,
+	)
 	command.Stdin = nil
-	command.Stdout = nil
-	command.Stderr = nil
+	command.Stdout = log
+	command.Stderr = log
 	return command.Start()
 }

@@ -120,10 +120,6 @@ type Progress struct {
 	Total    int64
 }
 
-// Runner launches an installer. Production starts the process detached;
-// tests record the call.
-type Runner func(path string, args []string, env []string) error
-
 // Downloader fetches one URL into w. Nil uses the Service's HTTP client.
 type Downloader func(ctx context.Context, url string, w io.Writer) error
 
@@ -143,14 +139,29 @@ type Options struct {
 	// DownloadDir holds the verified installer; "" uses the OS temporary
 	// directory.
 	DownloadDir string
-	// Run launches the verified installer. Nil uses startDetached.
-	Run Runner
 	// Download fetches an asset. Nil uses Client.
 	Download Downloader
 	// Components is the set installed on this machine. It selects the
 	// Component archives to stage; the active Server profile is irrelevant.
 	// The zero value means Client-only.
 	Components components.Set
+	// ConfigPath is the explicit --config path. The helper passes it to the
+	// relaunched Client and the result/log paths sit next to it.
+	ConfigPath string
+	// ClientPath is the installed Client the helper relaunches. "" uses
+	// os.Executable().
+	ClientPath string
+	// ResultPath persists the pending marker and the final result. "" uses
+	// ResultPath(ConfigPath).
+	ResultPath string
+	// LogPath receives the helper and installer output. "" uses
+	// UpdateLogPath(ConfigPath).
+	LogPath string
+	// HelperTimeout bounds one installer run; 0 uses 15 minutes.
+	HelperTimeout time.Duration
+	// StartHelper launches the generated helper. Nil uses the hidden platform
+	// launcher.
+	StartHelper Runner
 }
 
 // Service checks and installs updates.
@@ -177,6 +188,20 @@ func New(opts Options) *Service {
 	}
 	if !opts.Components.Any() {
 		opts.Components = components.Set{Client: true}
+	}
+	if opts.ClientPath == "" {
+		if executable, err := os.Executable(); err == nil {
+			opts.ClientPath = executable
+		}
+	}
+	if opts.ResultPath == "" {
+		opts.ResultPath = ResultPath(opts.ConfigPath)
+	}
+	if opts.LogPath == "" {
+		opts.LogPath = UpdateLogPath(opts.ConfigPath)
+	}
+	if opts.HelperTimeout <= 0 {
+		opts.HelperTimeout = 15 * time.Minute
 	}
 	return &Service{opts: opts}
 }
@@ -290,57 +315,6 @@ func ComponentAssets(platform, arch string) (client, server string, err error) {
 		}
 	}
 	return "", "", fmt.Errorf("%w: %s/%s", ErrUnsupportedPlatform, platform, arch)
-}
-
-// Install downloads the release's installer, verifies it against checksums.txt,
-// and launches it. The returned path is the verified file.
-func (s *Service) Install(ctx context.Context, info Info) (string, error) {
-	if !info.Installable || info.Asset == "" {
-		return "", ErrUnsupportedPlatform
-	}
-	if info.Tag == "" {
-		return "", errors.New("update: the release tag is missing")
-	}
-	if info.AssetURL == "" || info.ChecksumsURL == "" {
-		return "", errors.New("update: the release has no installer or checksums URL; check again")
-	}
-	checksums, err := s.fetchChecksums(ctx, info.ChecksumsURL)
-	if err != nil {
-		return "", err
-	}
-	expected, ok := checksums[info.Asset]
-	if !ok {
-		return "", fmt.Errorf("update: %s has no checksum in %s", info.Asset, ChecksumsAsset)
-	}
-	if err := os.MkdirAll(s.downloadDir(), 0o700); err != nil {
-		return "", fmt.Errorf("update: create %s: %w", s.downloadDir(), err)
-	}
-	if err := os.Chmod(s.downloadDir(), 0o700); err != nil {
-		return "", fmt.Errorf("update: secure %s: %w", s.downloadDir(), err)
-	}
-	path := filepath.Join(s.downloadDir(), info.Asset)
-	if err := s.downloadVerified(ctx, info.AssetURL, path, expected); err != nil {
-		return "", err
-	}
-	if s.opts.Platform != "windows" {
-		if err := os.Chmod(path, 0o700); err != nil {
-			return "", fmt.Errorf("update: make %s executable: %w", path, err)
-		}
-	}
-	run := s.opts.Run
-	if run == nil {
-		run = startDetached
-	}
-	var args []string
-	if s.opts.Platform == "windows" {
-		// The updater downloaded a script, not an executable: PowerShell runs
-		// it pinned to the release that was just verified.
-		args = []string{"-Version", info.Tag}
-	}
-	if err := run(path, args, launchEnv(s.opts.Platform, info.Tag)); err != nil {
-		return "", fmt.Errorf("update: launch %s: %w", path, err)
-	}
-	return path, nil
 }
 
 // downloadItem is one artifact Download will fetch into the stage.
@@ -809,53 +783,6 @@ func verifyFile(path, expected string) error {
 	return nil
 }
 
-// fetchChecksums downloads checksums.txt and parses "digest  name" lines.
-func (s *Service) fetchChecksums(ctx context.Context, url string) (map[string]string, error) {
-	var buffer strings.Builder
-	err := s.download(ctx, url, &limitedWriter{w: &buffer, left: ChecksumLimit})
-	if err != nil {
-		return nil, fmt.Errorf("update: download %s: %w", ChecksumsAsset, err)
-	}
-	return parseChecksums(buffer.String())
-}
-
-// downloadVerified streams one asset to path and rejects a checksum mismatch.
-func (s *Service) downloadVerified(ctx context.Context, url, path, expected string) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), ".kitsune-update-*")
-	if err != nil {
-		return fmt.Errorf("update: create %s: %w", path, err)
-	}
-	name := temp.Name()
-	defer func() {
-		_ = temp.Close()
-		_ = os.Remove(name)
-	}()
-	hash := sha256.New()
-	writer := io.MultiWriter(temp, hash)
-	if err := s.download(ctx, url, writer); err != nil {
-		return fmt.Errorf("update: download %s: %w", url, err)
-	}
-	if err := temp.Sync(); err != nil {
-		return fmt.Errorf("update: sync %s: %w", name, err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("update: close %s: %w", name, err)
-	}
-	actual := hex.EncodeToString(hash.Sum(nil))
-	if !strings.EqualFold(actual, expected) {
-		return fmt.Errorf(
-			"update: checksum mismatch for %s: expected %s, got %s",
-			filepath.Base(path),
-			expected,
-			actual,
-		)
-	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("update: replace %s: %w", path, err)
-	}
-	return nil
-}
-
 func (s *Service) download(ctx context.Context, url string, w io.Writer) error {
 	if s.opts.Download != nil {
 		return s.opts.Download(ctx, url, w)
@@ -892,20 +819,6 @@ func (s *Service) downloadDir() string {
 		base = os.TempDir()
 	}
 	return filepath.Join(base, "kitsune-whisper", "updates")
-}
-
-// launchEnv pins the Linux installer to the release that was checked. Windows
-// passes the same tag as an argument because install.ps1 is a script.
-func launchEnv(platform, tag string) []string {
-	if platform == "windows" {
-		return nil
-	}
-	return []string{"KITSUNE_VERSION=" + tag}
-}
-
-func startDetached(path string, args []string, env []string) error {
-	// Implemented per platform in run_*.go.
-	return start(path, args, env)
 }
 
 type limitedWriter struct {

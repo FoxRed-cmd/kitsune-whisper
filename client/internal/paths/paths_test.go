@@ -53,3 +53,25 @@ func TestWizardStateFallsBackToTheUserConfigDir(t *testing.T) {
 		t.Fatalf("WizardState(\"\") = %q, want %q", got, want)
 	}
 }
+
+func TestUpdateResultAndLogSitNextToTheEffectiveConfig(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "custom", "kitsune.yaml")
+	dir := filepath.Dir(configPath)
+	if got, want := paths.UpdateResult(configPath), filepath.Join(dir, "update.json"); got != want {
+		t.Fatalf("UpdateResult(%q) = %q, want %q", configPath, got, want)
+	}
+	if got, want := paths.UpdateLog(configPath), filepath.Join(dir, "update.log"); got != want {
+		t.Fatalf("UpdateLog(%q) = %q, want %q", configPath, got, want)
+	}
+}
+
+func TestUpdateResultAndLogFallBackToTheUserConfigDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	if got, want := paths.UpdateResult(""), filepath.Join(dir, "kitsune-whisper", "update.json"); got != want {
+		t.Fatalf("UpdateResult(\"\") = %q, want %q", got, want)
+	}
+	if got, want := paths.UpdateLog(""), filepath.Join(dir, "kitsune-whisper", "update.log"); got != want {
+		t.Fatalf("UpdateLog(\"\") = %q, want %q", got, want)
+	}
+}

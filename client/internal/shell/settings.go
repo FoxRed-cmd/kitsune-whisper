@@ -881,6 +881,7 @@ const (
 	IntentInstallUpdate      = "install-update"
 	IntentCancelUpdate       = "cancel-update"
 	IntentRetryUpdate        = "retry-update"
+	IntentDismissUpdate      = "dismiss-update"
 
 	IntentWizardOpen           = "wizard-open"
 	IntentWizardClose          = "wizard-close"
@@ -1093,6 +1094,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		return nil
 	case IntentRetryUpdate:
 		s.retryUpdate()
+		return nil
+	case IntentDismissUpdate:
+		s.dismissUpdate()
 		return nil
 	case IntentWizardOpen, IntentWizardClose, IntentWizardNext, IntentWizardBack,
 		IntentWizardSkip, IntentWizardSkipAll, IntentWizardRestart, IntentWizardFinish,

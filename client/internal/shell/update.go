@@ -2,19 +2,31 @@ package shell
 
 import (
 	"context"
+	"errors"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/config"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/runtime"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/servers"
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/trust"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/update"
 )
 
-// Updater checks GitHub Releases, stages a verified update set, and reuses the
-// staged copy after a restart. *update.Service implements it.
+// Updater checks GitHub Releases, stages a verified update set, installs the
+// staged copy through the generated helper, and reuses the staged copy after a
+// restart. *update.Service implements it.
 type Updater interface {
 	Check(ctx context.Context) (update.Info, error)
 	Download(ctx context.Context, info update.Info, progress func(update.Progress)) (update.Stage, error)
 	Staged(tag string) (update.Stage, bool)
 	VerifyStaged(ctx context.Context, stage update.Stage) error
 	ClearStaged(tag string) error
+	Install(ctx context.Context, req update.InstallRequest) error
+	Result() (update.Result, bool)
+	ClearResult() error
 }
 
 // UpdateLabels are the translated strings of the updates screen and Tray item.
@@ -42,6 +54,16 @@ type UpdateLabels struct {
 	CheckUpdates        string `json:"checkUpdates"`
 	UpdateTo            string `json:"updateTo"`
 	Updating            string `json:"updating"`
+	InstallingMessage   string `json:"installingMessage"`
+	InstalledMessage    string `json:"installedMessage"`
+	PartialMessage      string `json:"partialMessage"`
+	FailedMessage       string `json:"failedMessage"`
+	TimeoutMessage      string `json:"timeoutMessage"`
+	PendingMessage      string `json:"pendingMessage"`
+	ServerUpdated       string `json:"serverUpdated"`
+	ServerRunning       string `json:"serverRunning"`
+	ServerStopped       string `json:"serverStopped"`
+	Dismiss             string `json:"dismiss"`
 }
 
 // UpdateView is the Settings window's Updates screen.
@@ -70,23 +92,43 @@ type UpdateView struct {
 	CurrentFile string `json:"currentFile,omitempty"`
 	// Cancelable reports that the download can be cancelled.
 	Cancelable bool `json:"cancelable"`
+	// Installing reports that the Client is finishing the update install and
+	// is about to exit for the helper.
+	Installing bool `json:"installing"`
 	// Available reports a newer release.
 	Available bool `json:"available"`
+	// ResultStatus is the persisted outcome after the Client restarted:
+	// success, partial, error, timeout, or pending.
+	ResultStatus string `json:"resultStatus,omitempty"`
+	// ResultTag is the release the result belongs to.
+	ResultTag string `json:"resultTag,omitempty"`
+	// ResultServerUpdated reports whether the local Server was updated.
+	ResultServerUpdated bool `json:"resultServerUpdated,omitempty"`
+	// ResultServerWasRunning reports whether the local Server ran before the
+	// update and is expected to run again.
+	ResultServerWasRunning bool `json:"resultServerWasRunning,omitempty"`
+	// ResultMessage is the translated success, partial, or failure text.
+	ResultMessage string `json:"resultMessage,omitempty"`
+	// ResultLogPath is the helper log shown with a failure.
+	ResultLogPath string `json:"resultLogPath,omitempty"`
 	// Error is the last check or download failure, or "".
 	Error string `json:"error,omitempty"`
 }
 
 // SnapshotUpdate is the compact update state the Tray renders.
 type SnapshotUpdate struct {
-	Available   bool   `json:"available"`
-	Latest      string `json:"latest,omitempty"`
-	Busy        bool   `json:"busy,omitempty"`
-	Downloading bool   `json:"downloading,omitempty"`
-	Ready       bool   `json:"ready,omitempty"`
-	Received    int64  `json:"received,omitempty"`
-	Total       int64  `json:"total,omitempty"`
-	File        string `json:"file,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Available    bool   `json:"available"`
+	Latest       string `json:"latest,omitempty"`
+	Busy         bool   `json:"busy,omitempty"`
+	Downloading  bool   `json:"downloading,omitempty"`
+	Installing   bool   `json:"installing,omitempty"`
+	Ready        bool   `json:"ready,omitempty"`
+	Received     int64  `json:"received,omitempty"`
+	Total        int64  `json:"total,omitempty"`
+	File         string `json:"file,omitempty"`
+	ResultStatus string `json:"resultStatus,omitempty"`
+	ResultTag    string `json:"resultTag,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 func (s *Shell) updateLabels() UpdateLabels {
@@ -115,6 +157,16 @@ func (s *Shell) updateLabels() UpdateLabels {
 		CheckUpdates:        catalog.T("tray.checkUpdates"),
 		UpdateTo:            catalog.T("tray.updateTo"),
 		Updating:            catalog.T("tray.updating"),
+		InstallingMessage:   catalog.T("update.installing"),
+		InstalledMessage:    catalog.T("update.installed"),
+		PartialMessage:      catalog.T("update.partial"),
+		FailedMessage:       catalog.T("update.failed"),
+		TimeoutMessage:      catalog.T("update.timeout"),
+		PendingMessage:      catalog.T("update.pending"),
+		ServerUpdated:       catalog.T("update.serverUpdated"),
+		ServerRunning:       catalog.T("update.serverRunning"),
+		ServerStopped:       catalog.T("update.serverStopped"),
+		Dismiss:             catalog.T("update.dismiss"),
 	}
 }
 
@@ -127,11 +179,13 @@ func (s *Shell) updateView() UpdateView {
 	checked := s.updateChecked
 	busy := s.updateBusy
 	downloadIng := s.updateDownloading
+	installing := s.updateInstalling
 	ready := s.updateReady
 	progress := s.updateProgress
 	updateErr := s.updateError
+	result, hasResult := s.updateResult, s.updateResultSet
 	s.mu.Unlock()
-	return UpdateView{
+	view := UpdateView{
 		UpdateLabels:   s.updateLabels(),
 		CurrentVersion: s.opts.Version,
 		LatestVersion:  info.Latest,
@@ -141,6 +195,7 @@ func (s *Shell) updateView() UpdateView {
 		Installable:    info.Installable,
 		Busy:           busy,
 		Downloading:    downloadIng,
+		Installing:     installing,
 		Ready:          ready,
 		ReceivedBytes:  progress.Received,
 		TotalBytes:     progress.Total,
@@ -149,21 +204,63 @@ func (s *Shell) updateView() UpdateView {
 		Available:      info.Available,
 		Error:          updateErr,
 	}
+	if hasResult {
+		view.ResultStatus = result.Status
+		view.ResultTag = result.Tag
+		view.ResultServerUpdated = result.ServerUpdated
+		view.ResultServerWasRunning = result.ServerWasRunning
+		view.ResultMessage = s.updateResultMessage(result)
+		view.ResultLogPath = result.LogPath
+	}
+	return view
+}
+
+// updateResultMessage builds the one-line outcome shown in the Updates card.
+func (s *Shell) updateResultMessage(result update.Result) string {
+	catalog := s.catalog()
+	tag := strings.TrimPrefix(strings.TrimPrefix(result.Tag, "v"), "V")
+	switch result.Status {
+	case update.StatusSuccess:
+		message := catalog.T("update.installed", tag)
+		if result.ServerUpdated {
+			message += " " + catalog.T("update.serverUpdated")
+			if result.ServerWasRunning {
+				message += " " + catalog.T("update.serverRunning")
+			} else {
+				message += " " + catalog.T("update.serverStopped")
+			}
+		}
+		return message
+	case update.StatusPartial:
+		return catalog.T("update.partial", tag)
+	case update.StatusTimeout:
+		return catalog.T("update.timeout", tag)
+	case update.StatusPending:
+		return catalog.T("update.pending")
+	default:
+		return catalog.T("update.failed", tag)
+	}
 }
 
 // snapshotUpdateLocked is the compact state the Tray renders. s.mu must be held.
 func (s *Shell) snapshotUpdateLocked() SnapshotUpdate {
-	return SnapshotUpdate{
+	snapshot := SnapshotUpdate{
 		Available:   s.updateInfo.Available,
 		Latest:      s.updateInfo.Latest,
 		Busy:        s.updateBusy,
 		Downloading: s.updateDownloading,
+		Installing:  s.updateInstalling,
 		Ready:       s.updateReady,
 		Received:    s.updateProgress.Received,
 		Total:       s.updateProgress.Total,
 		File:        s.updateProgress.File,
 		Error:       s.updateError,
 	}
+	if s.updateResultSet {
+		snapshot.ResultStatus = s.updateResult.Status
+		snapshot.ResultTag = s.updateResult.Tag
+	}
+	return snapshot
 }
 
 // checkUpdates asks GitHub Releases for the latest version. A failure is
@@ -178,7 +275,7 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 		return
 	}
 	s.mu.Lock()
-	if s.updateBusy || s.updateDownloading {
+	if s.updateBusy || s.updateDownloading || s.updateInstalling {
 		s.mu.Unlock()
 		return
 	}
@@ -245,7 +342,7 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 		}
 	}
 	if !manual && info.Available && info.Installable && !staged {
-		s.downloadUpdate(ctx, info, false)
+		_, _ = s.downloadUpdate(ctx, info, false)
 	}
 }
 
@@ -358,31 +455,252 @@ func (s *Shell) runAutoUpdates(ctx context.Context) {
 	}
 }
 
-// updateAction starts the manual staged download. The update action keeps its
-// install-update name so the Settings page and Tray stay compatible; until
-// #109 lands, a completed download only shows readiness and does not install.
+// updateAction runs "Update to X…": download the staged set when it is not
+// ready, verify it again, stop the Local Server when it was running, let the
+// current dictation finish, and start the helper. The Client only exits after
+// the helper started successfully.
 func (s *Shell) updateAction() {
 	if s.opts.Updater == nil {
 		s.pushMessages(nil, []string{s.catalog().T("error.update.unavailable")})
 		return
 	}
 	s.mu.Lock()
-	if s.updateBusy || s.updateDownloading {
+	if s.updateBusy || s.updateDownloading || s.updateInstalling {
 		s.mu.Unlock()
 		return
 	}
 	info := s.updateInfo
-	ready := s.updateReady
+	s.updateInstalling = true
+	s.updateError = ""
 	s.mu.Unlock()
-	if ready {
-		// Installation is a later step; a click on a ready set leaves it ready.
-		return
-	}
 	if !info.Available || !info.Installable {
+		s.mu.Lock()
+		s.updateInstalling = false
+		s.mu.Unlock()
 		s.pushMessages(nil, []string{s.catalog().T("error.update.none")})
 		return
 	}
-	go s.downloadUpdate(context.Background(), info, true)
+	s.pushSettings()
+	s.update(s.opts.Runtime.Status())
+	go s.installUpdate(info)
+}
+
+// installUpdate is the update action's background worker.
+func (s *Shell) installUpdate(info update.Info) {
+	fail := func(err error) {
+		s.mu.Lock()
+		s.updateInstalling = false
+		s.updateError = err.Error()
+		s.mu.Unlock()
+		s.log.Warning("update: install failed: %v", err)
+		s.pushSettings()
+		s.update(s.opts.Runtime.Status())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	s.mu.Lock()
+	ready, stage := s.updateReady, s.updateStage
+	s.mu.Unlock()
+	if !ready || stage.Tag != info.Tag {
+		staged, err := s.downloadUpdate(ctx, info, true)
+		if err != nil {
+			// A cancelled download is not an install failure: the card returns
+			// to "available" without an error.
+			if errors.Is(err, context.Canceled) {
+				s.mu.Lock()
+				s.updateInstalling = false
+				s.updateError = ""
+				s.mu.Unlock()
+				s.pushSettings()
+				s.update(s.opts.Runtime.Status())
+				return
+			}
+			fail(err)
+			return
+		}
+		stage = staged
+	}
+	if err := s.opts.Updater.VerifyStaged(ctx, stage); err != nil {
+		fail(err)
+		return
+	}
+
+	installed := s.installedComponents(stage)
+	serverWasRunning := s.stopLocalServerForUpdate(ctx)
+	s.waitForUpdateIdle(ctx)
+
+	err := s.opts.Updater.Install(ctx, update.InstallRequest{
+		Stage:            stage,
+		Components:       installed,
+		ServerWasRunning: serverWasRunning,
+		ClientPID:        os.Getpid(),
+	})
+	if err != nil {
+		fail(err)
+		return
+	}
+
+	s.mu.Lock()
+	s.updateInstalling = false
+	s.updateReady = false
+	s.updateStage = update.Stage{}
+	s.updateProgress = update.Progress{}
+	s.mu.Unlock()
+	s.pushSettings()
+	s.update(s.opts.Runtime.Status())
+	// The helper is alive and will wait for this process to exit. The shell
+	// stops the runtime and the CLI releases the single-instance lock.
+	s.requestUpdateInstall()
+}
+
+// installedComponents is the set the update must cover. The active Server
+// profile has no effect.
+func (s *Shell) installedComponents(stage update.Stage) components.Set {
+	if s.opts.Startup != nil {
+		if installed := s.opts.Startup.Status().Installed; installed.Any() {
+			installed.Client = true
+			return installed
+		}
+	}
+	if stage.Components.Any() {
+		set := stage.Components
+		set.Client = true
+		return set
+	}
+	return components.Set{Client: true}
+}
+
+// localServerProfile finds the Local Server profile, preferring the stable
+// local id and falling back to an auto-pairing loopback profile. It never uses
+// the active profile: a Remote Server may be active.
+func (s *Shell) localServerProfile() (servers.Profile, bool) {
+	if s.opts.Servers == nil {
+		return servers.Profile{}, false
+	}
+	profiles := s.opts.Servers.View().Profiles
+	for _, profile := range profiles {
+		if profile.ID == config.LocalServerID {
+			return profile, true
+		}
+	}
+	for _, profile := range profiles {
+		if profile.AutoPair {
+			return profile, true
+		}
+	}
+	return servers.Profile{}, false
+}
+
+// stopLocalServerForUpdate stops the Local Server before the installer replaces
+// its files, even when a Remote Server profile is active. It reports whether
+// the Server was running, so the relaunched Client can start it again.
+func (s *Shell) stopLocalServerForUpdate(ctx context.Context) bool {
+	profile, ok := s.localServerProfile()
+	if !ok {
+		return false
+	}
+	status := s.opts.Servers.CheckHealth(ctx, profile.ID)
+	running := status.State == trust.StateOnline ||
+		status.State == trust.StateUnauthenticated ||
+		status.State == trust.StateVersionMismatch
+	if running && serverSoftStopped(status) {
+		running = false
+	}
+	if !running {
+		return false
+	}
+	if _, err := s.opts.Servers.Stop(ctx, profile.ID); err != nil {
+		s.log.Warning("update: stop the Local Server: %v", err)
+	}
+	return true
+}
+
+// waitForUpdateIdle lets the current dictation finish before the Client exits.
+// It never aborts an utterance; on timeout it logs and continues so an update
+// cannot hang forever.
+func (s *Shell) waitForUpdateIdle(ctx context.Context) {
+	timeout := s.opts.UpdateIdleTimeout
+	if timeout <= 0 {
+		timeout = 2 * time.Minute
+	}
+	interval := s.opts.UpdateIdlePoll
+	if interval <= 0 {
+		interval = 200 * time.Millisecond
+	}
+	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	for {
+		if s.opts.Runtime.Status().Phase == runtime.PhaseIdle {
+			return
+		}
+		if !time.Now().Before(deadline) {
+			s.log.Warning("update: the current dictation did not finish within %s; continuing", timeout)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			timer.Reset(interval)
+		}
+	}
+}
+
+// dismissUpdate clears the persisted result after the user read it.
+func (s *Shell) dismissUpdate() {
+	if s.opts.Updater == nil {
+		return
+	}
+	if err := s.opts.Updater.ClearResult(); err != nil {
+		s.log.Warning("update: clear the result: %v", err)
+	}
+	s.mu.Lock()
+	s.updateResult = update.Result{}
+	s.updateResultSet = false
+	s.mu.Unlock()
+	s.pushSettings()
+	s.update(s.opts.Runtime.Status())
+}
+
+// loadUpdateResult reads the helper's persisted outcome on startup. A pending
+// marker means the helper never finished; it is shown as an error.
+func (s *Shell) loadUpdateResult() {
+	if s.opts.Updater == nil {
+		return
+	}
+	result, ok := s.opts.Updater.Result()
+	if !ok {
+		return
+	}
+	s.mu.Lock()
+	s.updateResult = result
+	s.updateResultSet = true
+	if result.Status == update.StatusSuccess {
+		s.updateReady = false
+		s.updateStage = update.Stage{}
+	}
+	s.mu.Unlock()
+	if result.Status == update.StatusSuccess {
+		if err := s.opts.Updater.ClearStaged(result.Tag); err != nil {
+			s.log.Debug("update: clear the staged set: %v", err)
+		}
+	}
+}
+
+// updateResultVisible reports whether the startup window must open so the user
+// sees an update outcome.
+func (s *Shell) updateResultVisible() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updateResultSet
+}
+
+// requestUpdateInstall ends the shell through the update-specific exit path.
+func (s *Shell) requestUpdateInstall() {
+	s.installOnce.Do(func() { close(s.installCh) })
 }
 
 // retryUpdate retries a failed background or manual download.
@@ -405,12 +723,13 @@ func (s *Shell) cancelUpdate() {
 	}
 }
 
-// downloadUpdate stages the release set. Automatic downloads receive the
-// scheduler's context so turning the toggle off cancels them; a manual download
-// receives an independent context and is unaffected by the toggle.
-func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual bool) {
+// downloadUpdate stages the release set and returns it for an immediate
+// install. Automatic downloads receive the scheduler's context so turning the
+// toggle off cancels them; a manual download receives an independent context
+// and is unaffected by the toggle.
+func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual bool) (update.Stage, error) {
 	if s.opts.Updater == nil {
-		return
+		return update.Stage{}, errors.New("update checking is not available in this build")
 	}
 	downloadCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -418,7 +737,7 @@ func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual boo
 	s.mu.Lock()
 	if s.updateBusy || s.updateDownloading {
 		s.mu.Unlock()
-		return
+		return update.Stage{}, errors.New("another update download is already in progress")
 	}
 	s.updateDownloading = true
 	s.updateReady = false
@@ -481,4 +800,11 @@ func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual boo
 	// skipped the last sample.
 	s.pushSettings()
 	s.update(s.opts.Runtime.Status())
+	if cancelled {
+		return update.Stage{}, downloadCtx.Err()
+	}
+	if err != nil {
+		return update.Stage{}, err
+	}
+	return stage, nil
 }
