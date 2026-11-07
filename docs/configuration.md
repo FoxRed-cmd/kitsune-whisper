@@ -394,6 +394,7 @@ transcription injects nothing and leaves the clipboard untouched.
 ## See also
 
 - [Install, upgrade, and uninstall](install.md)
+- [Updates: automatic check, staged download, quiet install](updates.md)
 - [Security, trust, and pairing](security.md)
 - [Models](models.md)
 - [Recommended hardware](install.md#recommended-hardware)

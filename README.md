@@ -516,6 +516,7 @@ More detail is in [docs/troubleshooting.md](docs/troubleshooting.md).
 ## Documentation
 
 - [Install, flags, paths, autostart, upgrade](docs/install.md)
+- [Updates: automatic check, staged download, quiet install](docs/updates.md)
 - [Full dependency matrix and Wayland injection setup](docs/dependencies.md)
 - [Configuration reference](docs/configuration.md)
 - [Security: TLS, Device tokens, pairing](docs/security.md)

@@ -29,6 +29,25 @@ Either of the two programs the installer can place on this machine: the Client
 or the Local Server. A machine may have either alone or both.
 _Avoid_: part, module, package
 
+**Update**:
+Replacing the Components installed on this machine with a newer release while
+keeping configuration, models, Devices, and pairing state. An Update is
+requested by the user and is never installed automatically.
+_Avoid_: install, auto-update, silent update
+
+**Automatic update check**:
+The optional check of GitHub Releases about a minute after the Client starts,
+followed by a background Staged update when a newer release exists. It never
+installs anything.
+_Avoid_: auto-update, automatic install, periodic check
+
+**Staged update**:
+A complete, checksum-verified set of release artifacts downloaded into the
+user cache and waiting for the user to start the install. It is reused after a
+restart, replaced when a newer release appears, and cleared after a successful
+install.
+_Avoid_: cached update, pending update, downloaded installer
+
 **Autostart mode**:
 The setting that chooses which installed Components may start at login: Client +
 Server, Client only, or Server only. Off by default, and only modes whose

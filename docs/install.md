@@ -60,6 +60,29 @@ turn it on in **Settings → Startup** if you want the selected Components to
 start at login. The first-run wizard downloads the model with progress —
 nothing is downloaded at install time or when the Server starts.
 
+## Updates and the installer
+
+The installers still start and enable nothing; that is
+[ADR 0013](adr/0013-scripts-only-distribution.md) and it has not changed. A
+manual run of `install.sh` / `install.ps1` installs files and stops there. You
+start the Client yourself afterwards.
+
+The Client's **Update** flow also uses these same installers, but it does not
+run them from the Client process. A separate generated **helper** starts the
+installer in the background with no terminal, writes the installer output to
+the update log, and then relaunches the installed Client with `gui` (and the
+same `--config` when one was given). The Client exits before the installer
+runs because the Windows installer force-stops `kitsune-client`. After a
+successful install the Client starts the Local Server again only if it was
+running before the update; a partial failure leaves it stopped. The installers
+themselves still start nothing, so the helper and the Client remain responsible
+for starting the Components.
+
+A manual re-run of the installer is unchanged and remains the documented
+upgrade path above. It does not use the helper: you run it yourself, and you
+start the Client yourself when it finishes. See [Updates](updates.md) for the
+automatic check, staged download, quiet install, result, and retry flow.
+
 ## What gets installed
 
 | Piece | Linux | Windows |
