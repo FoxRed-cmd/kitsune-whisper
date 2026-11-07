@@ -879,6 +879,8 @@ const (
 	IntentServerStart        = "server-start"
 	IntentCheckUpdates       = "check-updates"
 	IntentInstallUpdate      = "install-update"
+	IntentCancelUpdate       = "cancel-update"
+	IntentRetryUpdate        = "retry-update"
 
 	IntentWizardOpen           = "wizard-open"
 	IntentWizardClose          = "wizard-close"
@@ -1084,7 +1086,13 @@ func (s *Shell) HandleIntent(payload []byte) error {
 		s.checkUpdates(context.Background(), true)
 		return nil
 	case IntentInstallUpdate:
-		s.installUpdate()
+		s.updateAction()
+		return nil
+	case IntentCancelUpdate:
+		s.cancelUpdate()
+		return nil
+	case IntentRetryUpdate:
+		s.retryUpdate()
 		return nil
 	case IntentWizardOpen, IntentWizardClose, IntentWizardNext, IntentWizardBack,
 		IntentWizardSkip, IntentWizardSkipAll, IntentWizardRestart, IntentWizardFinish,

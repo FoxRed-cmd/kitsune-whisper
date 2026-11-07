@@ -140,7 +140,7 @@ KITSUNE_SERVER_PYTHON="$PWD/.bundle-venv/bin/python" \
   scripts/build-linux-artifacts.sh --output dist --version "$version"
 cp install.sh dist/install.sh
 cp VERSION dist/VERSION
-(cd dist && sha256sum install.sh >> checksums.txt)
+(cd dist && sha256sum install.sh VERSION >> checksums.txt)
 echo
 echo "Artifacts are ready in dist/. Install this build with:"
 echo "  bash dist/install.sh --from dist --insecure"

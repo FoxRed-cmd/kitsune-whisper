@@ -134,8 +134,13 @@ const (
 	ActionQuit Action = "quit"
 	// ActionCheckUpdates asks GitHub Releases for a newer build.
 	ActionCheckUpdates Action = "check-updates"
-	// ActionInstallUpdate downloads and launches the verified installer.
+	// ActionInstallUpdate starts the manual download; a ready set is left for
+	// the install step.
 	ActionInstallUpdate Action = "install-update"
+	// ActionCancelUpdate cancels an in-flight download.
+	ActionCancelUpdate Action = "cancel-update"
+	// ActionRetryUpdate retries a failed download.
+	ActionRetryUpdate Action = "retry-update"
 )
 
 // profileActionPrefix marks a Tray menu click on one Server profile.
@@ -218,6 +223,9 @@ type Labels struct {
 	CheckUpdates    string `json:"checkUpdates"`
 	CheckingUpdates string `json:"checkingUpdates"`
 	UpdateTo        string `json:"updateTo"`
+	UpdateReady     string `json:"updateReady"`
+	UpdateProgress  string `json:"updateProgress"`
+	UpdateFile      string `json:"updateFile"`
 	Updating        string `json:"updating"`
 }
 
@@ -314,6 +322,9 @@ func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 		CheckUpdates:    catalog.T("tray.checkUpdates"),
 		CheckingUpdates: catalog.T("tray.checkingUpdates"),
 		UpdateTo:        catalog.T("tray.updateTo"),
+		UpdateReady:     catalog.T("tray.updateReady"),
+		UpdateProgress:  catalog.T("tray.updateProgress"),
+		UpdateFile:      catalog.T("tray.updateFile"),
 		Updating:        catalog.T("tray.updating"),
 	}
 }
@@ -451,12 +462,16 @@ type Shell struct {
 	healthState   string
 	modelsLoaded  string
 
-	updateInfo       update.Info
-	updateChecked    bool
-	updateBusy       bool
-	updateInstalling bool
-	updateLaunched   bool
-	updateError      string
+	updateInfo         update.Info
+	updateChecked      bool
+	updateBusy         bool
+	updateDownloading  bool
+	updateReady        bool
+	updateStage        update.Stage
+	updateProgress     update.Progress
+	updateAutoDownload bool
+	updateCancel       context.CancelFunc
+	updateError        string
 
 	// autoUpdateSync wakes the automatic-check scheduler after a settings
 	// save, so a toggle change starts or cancels checks without a restart.
@@ -1160,7 +1175,11 @@ func (s *Shell) handleAction(action Action) {
 	case ActionCheckUpdates:
 		go s.checkUpdates(context.Background(), true)
 	case ActionInstallUpdate:
-		s.installUpdate()
+		s.updateAction()
+	case ActionCancelUpdate:
+		s.cancelUpdate()
+	case ActionRetryUpdate:
+		s.retryUpdate()
 	case ActionQuit:
 		s.requestQuit()
 	}

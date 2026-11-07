@@ -914,6 +914,103 @@ func TestUpdatesCardShowsVersionsTheAutomaticToggleAndTheCheckButton(t *testing.
 	}
 }
 
+func TestUpdatesCardShowsDownloadProgressAndCancel(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:            "Обновления",
+			Check:            "Проверить обновления",
+			UpdateTo:         "Обновить до v%s…",
+			DownloadProgress: "Загрузка %s — %d%% (%s из %s)",
+			DownloadingFile:  "Загрузка %s…",
+			Cancel:           "Отменить загрузку",
+			Retry:            "Повторить загрузку",
+			ReadyMessage:     "Готово к установке.",
+		},
+		CurrentVersion: "1.2.3",
+		LatestVersion:  "1.3.0",
+		Available:      true,
+		Installable:    true,
+		Downloading:    true,
+		ReceivedBytes:  1_500_000,
+		TotalBytes:     3_000_000,
+		CurrentFile:    "kitsune-client_linux_amd64.tar.gz",
+		Cancelable:     true,
+	}
+	html := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-update-downloading="true"`,
+		`data-update-percent="50"`,
+		"50%",
+		"1.5 MB",
+		"3.0 MB",
+		"kitsune-client_linux_amd64.tar.gz",
+		`data-action="cancel-update"`,
+		"Отменить загрузку",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the downloading card is missing %q", want)
+		}
+	}
+
+	view.Update.TotalBytes = 0
+	html = shell.SettingsHTML(view)
+	if !strings.Contains(html, `data-update-indeterminate="true"`) {
+		t.Error("an unknown download size did not render an indeterminate meter")
+	}
+	if strings.Contains(html, `data-update-percent=`) {
+		t.Error("an unknown download size rendered a percentage")
+	}
+}
+
+func TestUpdatesCardDistinguishesReadyAndFailedDownloads(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:            "Обновления",
+			Check:            "Проверить обновления",
+			UpdateTo:         "Обновить до v%s…",
+			ReadyMessage:     "Обновление скачано и проверено. Оно готово к установке.",
+			AvailableMessage: "Доступна более новая версия.",
+			Retry:            "Повторить загрузку",
+			Cancel:           "Отменить загрузку",
+		},
+		CurrentVersion: "1.2.3",
+		LatestVersion:  "1.3.0",
+		Available:      true,
+		Installable:    true,
+		Ready:          true,
+	}
+	html := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-update-ready="true"`,
+		"Обновление скачано и проверено. Оно готово к установке.",
+		`data-action="install-update"`,
+		"Обновить до v1.3.0…",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the ready card is missing %q", want)
+		}
+	}
+	if strings.Contains(html, "Доступна более новая версия.") {
+		t.Error("the ready card still shows the available message")
+	}
+
+	view.Update.Ready = false
+	view.Update.Error = "checksum mismatch"
+	html = shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-update-error="true"`,
+		"checksum mismatch",
+		`data-action="retry-update"`,
+		"Повторить загрузку",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the failed card is missing %q", want)
+		}
+	}
+}
+
 func TestPageShowsTheLiveListenerAndAPendingRestart(t *testing.T) {
 	view := sampleView()
 	view.Servers.Profiles[0].Health.Network = &trust.NetworkStatus{
