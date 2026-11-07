@@ -3,6 +3,9 @@ package shell_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -48,13 +51,23 @@ type fakeUpdater struct {
 	result          update.Result
 	hasResult       bool
 	clearResultCall int
+
+	// events records the observable order of check, download, and install.
+	events []string
 }
 
 func (u *fakeUpdater) Install(_ context.Context, req update.InstallRequest) error {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.events = append(u.events, "install")
 	u.installs = append(u.installs, req)
 	return u.installErr
+}
+
+func (u *fakeUpdater) eventLog() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.events...)
 }
 
 func (u *fakeUpdater) Result() (update.Result, bool) {
@@ -102,6 +115,7 @@ func (f *fakeStartup) SetMode(bool, components.Mode) error { return nil }
 func (u *fakeUpdater) Check(ctx context.Context) (update.Info, error) {
 	u.mu.Lock()
 	u.checks++
+	u.events = append(u.events, "check")
 	block, started := u.block, u.started
 	info, checkErr := u.info, u.checkErr
 	u.mu.Unlock()
@@ -124,6 +138,7 @@ func (u *fakeUpdater) Check(ctx context.Context) (update.Info, error) {
 func (u *fakeUpdater) Download(ctx context.Context, info update.Info, progress func(update.Progress)) (update.Stage, error) {
 	u.mu.Lock()
 	u.downloads++
+	u.events = append(u.events, "download")
 	block := u.downloadBlock
 	started := u.downloadStarted
 	downloadErr := u.downloadErr
@@ -1321,4 +1336,305 @@ func TestPendingUpdateResultIsShownAsAnError(t *testing.T) {
 	}
 	_ = rt.Stop()
 	<-done
+}
+
+// writeUpdateLog writes a log with more lines than the card keeps, including
+// markup that must be escaped in the rendered details.
+func writeUpdateLog(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "update.log")
+	var lines []string
+	for i := 1; i <= 80; i++ {
+		lines = append(lines, fmt.Sprintf("log line %d", i))
+	}
+	lines = append(lines, "<script>alert('update')</script>")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestFailedUpdateResultsShowDetailsAndRetry(t *testing.T) {
+	for _, status := range []string{
+		update.StatusError,
+		update.StatusTimeout,
+		update.StatusPartial,
+		update.StatusPending,
+	} {
+		t.Run(status, func(t *testing.T) {
+			logPath := writeUpdateLog(t)
+			updater := &fakeUpdater{
+				hasResult: true,
+				result: update.Result{
+					Status: status, Tag: "v0.2.0", LogPath: logPath,
+				},
+			}
+			rt := newFakeRuntime()
+			desktop := newFakeDesktop()
+			sh := newUpdateShell(rt, desktop, updater)
+			done := start(t, sh, true)
+
+			waitFor(t, "the failed result", func() bool {
+				window := desktop.getWindow()
+				if window == nil {
+					return false
+				}
+				view, ok := window.lastSettings()
+				return ok && view.Update.ResultStatus == status
+			})
+			view := settingsView(t, desktop.getWindow())
+			if view.ResultMessage == "" {
+				t.Fatal("the failed result has no short message")
+			}
+			if !view.ResultFailed {
+				t.Fatal("the failed result is not marked as a failure")
+			}
+			if view.ResultLogPath != logPath {
+				t.Fatalf("result log path = %q, want %q", view.ResultLogPath, logPath)
+			}
+			if !strings.Contains(view.ResultDetail, "<script>alert('update')</script>") {
+				t.Fatalf("result detail is missing the last log line: %q", view.ResultDetail)
+			}
+			if strings.Contains(view.ResultDetail, "\nlog line 1\n") {
+				t.Fatalf("result detail kept the beginning of a long log: %q", view.ResultDetail)
+			}
+			if got := len(strings.Split(view.ResultDetail, "\n")); got > 50 {
+				t.Fatalf("result detail has %d lines, want at most 50", got)
+			}
+
+			full, ok := desktop.getWindow().lastSettings()
+			if !ok {
+				t.Fatal("the failed result has no settings view")
+			}
+			html := shell.SettingsHTML(full)
+			for _, want := range []string{
+				`data-update-details="true"`,
+				"<summary>Details</summary>",
+				`<pre class="update-log"`,
+				"&lt;script&gt;alert(&#39;update&#39;)&lt;/script&gt;",
+				`data-update-log-path="true"`,
+				logPath,
+				`data-action="retry-update"`,
+				`data-action="dismiss-update"`,
+			} {
+				if !strings.Contains(html, want) {
+					t.Errorf("the failed result card is missing %q", want)
+				}
+			}
+			if strings.Contains(html, "<script>alert('update')</script>") {
+				t.Error("the update log was rendered as raw HTML")
+			}
+			_ = rt.Stop()
+			<-done
+		})
+	}
+}
+
+func TestFailedUpdateResultWithAMissingLogStillShowsThePath(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "missing.log")
+	updater := &fakeUpdater{
+		hasResult: true,
+		result:    update.Result{Status: update.StatusError, Tag: "v0.2.0", LogPath: logPath},
+	}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShell(rt, desktop, updater)
+	done := start(t, sh, true)
+
+	waitFor(t, "the failed result", func() bool {
+		window := desktop.getWindow()
+		if window == nil {
+			return false
+		}
+		view, ok := window.lastSettings()
+		return ok && view.Update.ResultStatus == update.StatusError
+	})
+	view := settingsView(t, desktop.getWindow())
+	if view.ResultDetail != "" {
+		t.Fatalf("a missing log produced details: %q", view.ResultDetail)
+	}
+	full, ok := desktop.getWindow().lastSettings()
+	if !ok {
+		t.Fatal("the failed result has no settings view")
+	}
+	html := shell.SettingsHTML(full)
+	for _, want := range []string{
+		`data-update-details="true"`,
+		logPath,
+		"The update log is empty or unavailable.",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("a missing log card is missing %q", want)
+		}
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestRetryFromPersistedResultClearsItThenChecksDownloadsAndInstalls(t *testing.T) {
+	updater := &fakeUpdater{
+		info: update.Info{
+			Current: "v0.1.0", Latest: "0.2.0", Tag: "v0.2.0",
+			Available: true, Installable: true, Asset: "install.sh",
+		},
+		hasResult:  true,
+		result:     update.Result{Status: update.StatusError, Tag: "v0.2.0", LogPath: "old.log"},
+		installErr: errors.New("the installer failed"),
+	}
+	settings := updateSettings(false)
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShellWithSettings(rt, desktop, updater, settings)
+	done := start(t, sh, true)
+	window := waitForWindow(t, desktop)
+
+	if err := sh.HandleIntent([]byte(`{"action":"retry-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the old result to be cleared", func() bool { return updater.clearResultCount() == 1 })
+	waitFor(t, "the retried check", func() bool { return updater.checkCount() == 1 })
+	waitFor(t, "the retried download", func() bool { return updater.downloadCount() == 1 })
+	waitFor(t, "the retried install", func() bool { return updater.installCount() == 1 })
+
+	if got := updater.eventLog(); strings.Join(got, ",") != "check,download,install" {
+		t.Fatalf("retry order = %v, want check,download,install", got)
+	}
+	waitFor(t, "the retried failure", func() bool {
+		view := settingsView(t, window)
+		return view.ResultStatus == "" && strings.Contains(view.Error, "installer failed")
+	})
+	select {
+	case result := <-done:
+		t.Fatalf("the shell exited after a failed retry: %v", result.err)
+	default:
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestRetryFromPersistedResultReusesAStagedSet(t *testing.T) {
+	stage := update.Stage{
+		Tag:        "v0.2.0",
+		Dir:        "/tmp/staged",
+		Components: components.Set{Client: true},
+		Files:      []string{"install.sh", update.ChecksumsAsset},
+	}
+	updater := readyUpdater(stage)
+	updater.hasResult = true
+	updater.result = update.Result{Status: update.StatusTimeout, Tag: "v0.2.0"}
+	settings := updateSettings(false)
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShellWithSettings(rt, desktop, updater, settings)
+	done := start(t, sh, true)
+	waitForWindow(t, desktop)
+
+	if err := sh.HandleIntent([]byte(`{"action":"retry-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the retried install", func() bool { return updater.installCount() == 1 })
+	if got := updater.downloadCount(); got != 0 {
+		t.Fatalf("retry downloaded a staged set again: %d downloads", got)
+	}
+	if got := updater.eventLog(); strings.Join(got, ",") != "check,install" {
+		t.Fatalf("retry order = %v, want check,install", got)
+	}
+	if res := <-done; !errors.Is(res.err, shell.ErrUpdateInstall) {
+		t.Fatalf("Run error = %v, want ErrUpdateInstall", res.err)
+	}
+	_ = rt.Stop()
+}
+
+func TestRetryFromPersistedResultReportsUpToDateWithoutAnErrorCard(t *testing.T) {
+	updater := &fakeUpdater{
+		info: update.Info{
+			Current: "v0.2.0", Latest: "0.2.0", Tag: "v0.2.0",
+			Available: false,
+		},
+		hasResult: true,
+		result:    update.Result{Status: update.StatusError, Tag: "v0.2.0"},
+	}
+	settings := updateSettings(false)
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShellWithSettings(rt, desktop, updater, settings)
+	done := start(t, sh, true)
+	window := waitForWindow(t, desktop)
+
+	if err := sh.HandleIntent([]byte(`{"action":"retry-update"}`)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "the retried check", func() bool { return updater.checkCount() == 1 })
+	waitFor(t, "the up-to-date notice", func() bool {
+		last, ok := window.lastMessages()
+		if !ok {
+			return false
+		}
+		return len(last.notices) == 1 && strings.Contains(last.notices[0], "up to date")
+	})
+	view := settingsView(t, window)
+	if view.ResultStatus != "" {
+		t.Fatalf("retry kept the old result: %q", view.ResultStatus)
+	}
+	if view.Error != "" {
+		t.Fatalf("an up-to-date retry left an error card: %q", view.Error)
+	}
+	if got := updater.downloadCount(); got != 0 {
+		t.Fatalf("an up-to-date retry downloaded: %d downloads", got)
+	}
+	if got := updater.installCount(); got != 0 {
+		t.Fatalf("an up-to-date retry installed: %d installs", got)
+	}
+	_ = rt.Stop()
+	<-done
+}
+
+func TestUpdateResultSurvivesAClosedWindowUntilDismissed(t *testing.T) {
+	updater := &fakeUpdater{
+		hasResult: true,
+		result:    update.Result{Status: update.StatusError, Tag: "v0.2.0", LogPath: "gone.log"},
+	}
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newUpdateShell(rt, desktop, updater)
+	done := start(t, sh, true)
+	waitFor(t, "the first shell's result", func() bool {
+		window := desktop.getWindow()
+		if window == nil {
+			return false
+		}
+		view, ok := window.lastSettings()
+		return ok && view.Update.ResultStatus == update.StatusError
+	})
+	window := desktop.getWindow()
+	waitFor(t, "the close handler", func() bool { return window.closeInstalled() })
+	window.close(t)
+	waitFor(t, "the closed window", func() bool {
+		_, hides := desktop.getWindow().counts()
+		return hides == 1
+	})
+	_ = rt.Stop()
+	<-done
+	if got := updater.clearResultCount(); got != 0 {
+		t.Fatalf("closing the window cleared the result: %d ClearResult calls", got)
+	}
+
+	// A new shell reads the same persisted result again.
+	rt = newFakeRuntime()
+	desktop = newFakeDesktop()
+	sh = newUpdateShell(rt, desktop, updater)
+	done = start(t, sh, true)
+	waitFor(t, "the restarted shell's result", func() bool {
+		window := desktop.getWindow()
+		if window == nil {
+			return false
+		}
+		view, ok := window.lastSettings()
+		return ok && view.Update.ResultStatus == update.StatusError
+	})
+	_ = rt.Stop()
+	<-done
+	if got := updater.clearResultCount(); got != 0 {
+		t.Fatalf("restarting the shell cleared the result: %d ClearResult calls", got)
+	}
 }

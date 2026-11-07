@@ -63,6 +63,9 @@ type UpdateLabels struct {
 	ServerUpdated       string `json:"serverUpdated"`
 	ServerRunning       string `json:"serverRunning"`
 	ServerStopped       string `json:"serverStopped"`
+	Details             string `json:"details"`
+	LogPath             string `json:"logPath"`
+	LogUnavailable      string `json:"logUnavailable"`
 	Dismiss             string `json:"dismiss"`
 }
 
@@ -109,6 +112,11 @@ type UpdateView struct {
 	ResultServerWasRunning bool `json:"resultServerWasRunning,omitempty"`
 	// ResultMessage is the translated success, partial, or failure text.
 	ResultMessage string `json:"resultMessage,omitempty"`
+	// ResultFailed marks a persisted error, timeout, partial, or pending
+	// outcome that offers details and a retry.
+	ResultFailed bool `json:"resultFailed,omitempty"`
+	// ResultDetail is the tail of the update log shown under a failure.
+	ResultDetail string `json:"resultDetail,omitempty"`
 	// ResultLogPath is the helper log shown with a failure.
 	ResultLogPath string `json:"resultLogPath,omitempty"`
 	// Error is the last check or download failure, or "".
@@ -166,6 +174,9 @@ func (s *Shell) updateLabels() UpdateLabels {
 		ServerUpdated:       catalog.T("update.serverUpdated"),
 		ServerRunning:       catalog.T("update.serverRunning"),
 		ServerStopped:       catalog.T("update.serverStopped"),
+		Details:             catalog.T("update.details"),
+		LogPath:             catalog.T("update.logPath"),
+		LogUnavailable:      catalog.T("update.logUnavailable"),
 		Dismiss:             catalog.T("update.dismiss"),
 	}
 }
@@ -184,6 +195,7 @@ func (s *Shell) updateView() UpdateView {
 	progress := s.updateProgress
 	updateErr := s.updateError
 	result, hasResult := s.updateResult, s.updateResultSet
+	resultDetail := s.updateResultDetail
 	s.mu.Unlock()
 	view := UpdateView{
 		UpdateLabels:   s.updateLabels(),
@@ -210,9 +222,49 @@ func (s *Shell) updateView() UpdateView {
 		view.ResultServerUpdated = result.ServerUpdated
 		view.ResultServerWasRunning = result.ServerWasRunning
 		view.ResultMessage = s.updateResultMessage(result)
+		view.ResultFailed = updateResultFailed(result.Status)
+		view.ResultDetail = resultDetail
 		view.ResultLogPath = result.LogPath
 	}
 	return view
+}
+
+// resultFailure reports whether the persisted outcome is a failure, either
+// because the view marks it or because its status is not success. The second
+// check keeps a view built by hand (tests, older payloads) rendering details
+// and retry.
+func (v UpdateView) resultFailure() bool {
+	return v.ResultFailed || (v.ResultStatus != "" && v.ResultStatus != update.StatusSuccess)
+}
+
+// updateResultFailed reports whether a persisted outcome needs details and a
+// retry. Success is the only outcome that does not.
+func updateResultFailed(status string) bool {
+	return status != "" && status != update.StatusSuccess
+}
+
+const (
+	// updateDetailBytes bounds the log read before the last lines are kept.
+	updateDetailBytes = 32 << 10
+	// updateDetailLines is how much of the helper log the card shows.
+	updateDetailLines = 50
+)
+
+// updateLogTail returns the last few lines of the helper log. A missing or
+// unreadable log is empty, not an error: the card still shows the path.
+func updateLogTail(path string) string {
+	if path == "" {
+		return ""
+	}
+	text, _ := tailLogFile(path, updateDetailBytes)
+	if text == "" {
+		return ""
+	}
+	lines := strings.Split(text, "\n")
+	if len(lines) > updateDetailLines {
+		lines = lines[len(lines)-updateDetailLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // updateResultMessage builds the one-line outcome shown in the Updates card.
@@ -660,6 +712,7 @@ func (s *Shell) dismissUpdate() {
 	s.mu.Lock()
 	s.updateResult = update.Result{}
 	s.updateResultSet = false
+	s.updateResultDetail = ""
 	s.mu.Unlock()
 	s.pushSettings()
 	s.update(s.opts.Runtime.Status())
@@ -675,9 +728,14 @@ func (s *Shell) loadUpdateResult() {
 	if !ok {
 		return
 	}
+	detail := ""
+	if updateResultFailed(result.Status) {
+		detail = updateLogTail(result.LogPath)
+	}
 	s.mu.Lock()
 	s.updateResult = result
 	s.updateResultSet = true
+	s.updateResultDetail = detail
 	if result.Status == update.StatusSuccess {
 		s.updateReady = false
 		s.updateStage = update.Stage{}
@@ -703,11 +761,70 @@ func (s *Shell) requestUpdateInstall() {
 	s.installOnce.Do(func() { close(s.installCh) })
 }
 
-// retryUpdate retries a failed background or manual download.
+// retryUpdate retries a failed download or a persisted failure. A persisted
+// failure is cleared once the retry starts, then the Client checks again and
+// downloads and installs in the same action. A download error retries the
+// current update action.
 func (s *Shell) retryUpdate() {
+	if s.opts.Updater == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.update.unavailable")})
+		return
+	}
 	s.mu.Lock()
+	if s.updateBusy || s.updateDownloading || s.updateInstalling || s.updateRetrying {
+		s.mu.Unlock()
+		return
+	}
+	hasResult := s.updateResultSet
 	s.updateError = ""
+	if !hasResult {
+		s.mu.Unlock()
+		s.updateAction()
+		return
+	}
+	s.updateRetrying = true
 	s.mu.Unlock()
+
+	// The user acknowledged the old outcome by starting the retry. Clearing it
+	// here also stops a stale failure from lingering beside the new attempt.
+	if err := s.opts.Updater.ClearResult(); err != nil {
+		s.log.Warning("update: clear the result: %v", err)
+	}
+	s.mu.Lock()
+	s.updateResult = update.Result{}
+	s.updateResultSet = false
+	s.updateResultDetail = ""
+	s.mu.Unlock()
+	s.pushSettings()
+	s.update(s.opts.Runtime.Status())
+
+	go s.retryUpdateFromCheck()
+}
+
+// retryUpdateFromCheck re-runs the manual release check behind a retry of a
+// persisted failure. A fresh available release proceeds to the normal
+// download-and-install action; an up-to-date result keeps the normal notice.
+func (s *Shell) retryUpdateFromCheck() {
+	defer func() {
+		s.mu.Lock()
+		s.updateRetrying = false
+		s.mu.Unlock()
+		s.pushSettings()
+		s.update(s.opts.Runtime.Status())
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	s.checkUpdates(ctx, true)
+
+	s.mu.Lock()
+	info := s.updateInfo
+	checked := s.updateChecked
+	updateErr := s.updateError
+	s.mu.Unlock()
+	if updateErr != "" || !checked || !info.Available || !info.Installable {
+		return
+	}
 	s.updateAction()
 }
 
