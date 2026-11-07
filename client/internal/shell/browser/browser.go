@@ -236,13 +236,18 @@ func (w *window) Show() {
 	if w.desktop.url == "" {
 		return
 	}
-	open := w.desktop.opts.Open
+	if err := w.desktop.OpenURL(w.desktop.url); err != nil {
+		w.desktop.log("browser settings: open %s: %v", w.desktop.url, err)
+	}
+}
+
+// OpenURL hands an external link to the user's browser.
+func (d *desktop) OpenURL(url string) error {
+	open := d.opts.Open
 	if open == nil {
 		open = openURL
 	}
-	if err := open(w.desktop.url); err != nil {
-		w.desktop.log("browser settings: open %s: %v", w.desktop.url, err)
-	}
+	return open(url)
 }
 
 // Hide is a no-op: a browser tab is owned by the user.

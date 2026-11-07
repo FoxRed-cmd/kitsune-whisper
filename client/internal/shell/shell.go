@@ -111,6 +111,8 @@ type Desktop interface {
 	NewWindow(initial Snapshot, settings SettingsView, hidden bool) (Window, error)
 	// NewTray creates the Tray image and menu.
 	NewTray(initial Snapshot) (Tray, error)
+	// OpenURL opens an external link in the platform's default browser.
+	OpenURL(url string) error
 	// Run runs the platform event loop until Quit.
 	Run() error
 	// Quit stops the event loop.
@@ -471,12 +473,16 @@ type Shell struct {
 	// settingsPushMu keeps a settings render and its delivery in one order, so
 	// an older view cannot arrive after a newer one.
 	settingsPushMu sync.Mutex
-	snapshot       Snapshot
-	runtimeStatus  runtime.Status
-	server         trust.Status
-	window         Window
-	tray           Tray
-	levelTest      dictation.LevelStream
+	// saveMu serializes Client settings writes. The page saves each control as
+	// it changes, so two quick edits can arrive together; the store has no
+	// transaction of its own and would otherwise read the same base twice.
+	saveMu        sync.Mutex
+	snapshot      Snapshot
+	runtimeStatus runtime.Status
+	server        trust.Status
+	window        Window
+	tray          Tray
+	levelTest     dictation.LevelStream
 	// notifiedError is the last Dictation failure already announced.
 	notifiedError string
 	healthState   string

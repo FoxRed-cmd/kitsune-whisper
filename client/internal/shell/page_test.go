@@ -224,7 +224,7 @@ func TestPageLaysServerSettingsOutInColumns(t *testing.T) {
 	}
 }
 
-func TestPageDismissesNoticesAndErrors(t *testing.T) {
+func TestPageDismissesAlerts(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, sampleView())
 	for _, want := range []string{
 		`var dismissedAlerts = {}`,
@@ -467,7 +467,7 @@ func TestPageFailuresAreShownAboveTheScrollingContent(t *testing.T) {
 		t.Fatalf("the message area is not above the settings: messages=%d settings=%d", messages, settings)
 	}
 	for _, want := range []string{
-		`function showMessage(`,
+		`function showFailure(`,
 		`button.dataset.pending = "1"`,
 		`button.classList.add("pending")`,
 	} {
@@ -556,6 +556,7 @@ func TestPageAppliesSettingsWithoutManualSaveButtons(t *testing.T) {
 		`function pathPatch(`,
 		`action: "save", patch: controlPatch(`,
 		`action: "save-server", patch: serverControlPatch(`,
+		`action: "idle-timeout", seconds: Number(idle.value)`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page missing %q", want)
@@ -582,7 +583,7 @@ func TestUpdateReleaseLinkOpensInTheDesktopBrowser(t *testing.T) {
 	page := shell.Page(shell.Snapshot{}, view)
 	for _, want := range []string{
 		`data-external="https://example.test/releases/v1.2.3"`,
-		`runtime.Browser.OpenURL`,
+		`action: "open-url"`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the release page link is missing %q", want)
@@ -1490,7 +1491,6 @@ func TestPageRendersTheModelCatalogProgressAndIdleTimeout(t *testing.T) {
 		IdleTitle:         "Выгрузка при простое",
 		IdleHelp:          "Выгружать после простоя.",
 		IdleLabel:         "Секунд простоя",
-		IdleSave:          "Сохранить тайм-аут",
 		AdvancedTitle:     "Дополнительно",
 		AdvancedHelp:      "Локальная папка.",
 		LocalPath:         "Папка CTranslate2",
@@ -1529,7 +1529,7 @@ func TestPageRendersTheModelCatalogProgressAndIdleTimeout(t *testing.T) {
 		`data-action="delete-model"`,
 		`data-confirm="Удалить модель?"`,
 		`data-action="load-models"`,
-		`data-action="idle-timeout"`,
+		`data-idle-timeout="true"`,
 		`id="model-idle-seconds"`,
 		`value="600"`,
 		`id="model-local-path"`,

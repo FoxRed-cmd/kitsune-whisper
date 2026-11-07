@@ -263,6 +263,15 @@ func (d *desktop) NewTray(initial shell.Snapshot) (port shell.Tray, err error) {
 	return t, nil
 }
 
+// OpenURL hands an external link to the desktop's default browser. The webview
+// has no tab bar, and Wails does not follow a target="_blank" anchor itself.
+func (d *desktop) OpenURL(url string) error {
+	if d.app == nil {
+		return fmt.Errorf("wails application is not available")
+	}
+	return d.app.Browser.OpenURL(url)
+}
+
 func (d *desktop) Run() error { return d.app.Run() }
 
 // Quit stops the event loop. The platform decides how: see quit_windows.go and

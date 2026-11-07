@@ -219,6 +219,56 @@ func TestSettingsWindowRendersTheServiceView(t *testing.T) {
 	}
 }
 
+func TestOpenURLIntentHandsTheLinkToTheDesktop(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newSettingsShell(t, rt, desktop, newFakeSettings(i18n.English))
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{
+		Action: shell.IntentOpenURL,
+		URL:    "https://example.test/releases/v1.2.3",
+	}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if got := desktop.lastOpenedURL(); got != "https://example.test/releases/v1.2.3" {
+		t.Fatalf("opened URL = %q", got)
+	}
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
+func TestOpenURLIntentRejectsNonWebLinks(t *testing.T) {
+	rt := newFakeRuntime()
+	desktop := newFakeDesktop()
+	sh := newSettingsShell(t, rt, desktop, newFakeSettings(i18n.English))
+
+	done := startWithWindow(t, sh, desktop)
+	window := desktop.getWindow()
+	if err := window.sendIntent(t, shell.Intent{
+		Action: shell.IntentOpenURL,
+		URL:    "file:///etc/passwd",
+	}); err != nil {
+		t.Fatalf("intent: %v", err)
+	}
+	if got := desktop.lastOpenedURL(); got != "" {
+		t.Fatalf("opened a non-web link %q", got)
+	}
+	waitFor(t, "the rejected link error", func() bool {
+		messages, ok := window.lastMessages()
+		return ok && len(messages.failures) == 1 && strings.Contains(messages.failures[0], "link")
+	})
+
+	desktop.getTray().do(shell.ActionQuit)
+	if res := <-done; res.err != nil {
+		t.Fatalf("run: %v", res.err)
+	}
+}
+
 func TestSaveIntentGoesThroughSettingsAndPushesTheNewView(t *testing.T) {
 	rt := newFakeRuntime()
 	desktop := newFakeDesktop()

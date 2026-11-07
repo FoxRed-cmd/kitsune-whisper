@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -257,7 +258,6 @@ type ModelLabels struct {
 	IdleTitle         string `json:"idleTitle"`
 	IdleHelp          string `json:"idleHelp"`
 	IdleLabel         string `json:"idleLabel"`
-	IdleSave          string `json:"idleSave"`
 	AdvancedTitle     string `json:"advancedTitle"`
 	AdvancedHelp      string `json:"advancedHelp"`
 	LocalPath         string `json:"localPath"`
@@ -622,7 +622,6 @@ func (s *Shell) modelLabels() ModelLabels {
 		IdleTitle:         catalog.T("model.idleTitle"),
 		IdleHelp:          catalog.T("model.idleHelp"),
 		IdleLabel:         catalog.T("model.idleLabel"),
-		IdleSave:          catalog.T("action.saveIdleTimeout"),
 		AdvancedTitle:     catalog.T("model.advancedTitle"),
 		AdvancedHelp:      catalog.T("model.advancedHelp"),
 		LocalPath:         catalog.T("model.localPath"),
@@ -817,6 +816,8 @@ type Intent struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// Tail is the number of log lines for ActionLoadLogs; 0 uses 200.
 	Tail int `json:"tail,omitempty"`
+	// URL is an external link the page asks the desktop to open.
+	URL string `json:"url,omitempty"`
 	// Hotkey and Trigger carry the wizard's hotkey step values.
 	Hotkey  string `json:"hotkey,omitempty"`
 	Trigger string `json:"trigger,omitempty"`
@@ -833,6 +834,7 @@ type Intent struct {
 // Intent actions.
 const (
 	IntentSave               = "save"
+	IntentOpenURL            = "open-url"
 	IntentPreviewIndicator   = "preview-indicator"
 	IntentHideIndicator      = "hide-indicator-preview"
 	IntentValidate           = "validate"
@@ -928,6 +930,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 			}
 		}
 		s.save(patch)
+		return nil
+	case IntentOpenURL:
+		s.openExternalURL(intent.URL)
 		return nil
 	case IntentPreviewIndicator:
 		// A preview may only show while the Settings window is on screen. The
@@ -1567,8 +1572,30 @@ func modelWarnings(view servers.ModelsView) []string {
 	return []string{view.Warning}
 }
 
+// openExternalURL validates a web link from the page and hands it to the
+// platform adapter. Only http(s) links are accepted, so the page cannot ask the
+// desktop to open a local file or a command-line style URI.
+func (s *Shell) openExternalURL(raw string) {
+	link := strings.TrimSpace(raw)
+	parsed, err := url.Parse(link)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		s.pushMessages(nil, []string{s.catalog().T("error.openURL", link)})
+		return
+	}
+	if s.opts.Desktop == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.openURL", link)})
+		return
+	}
+	if err := s.opts.Desktop.OpenURL(link); err != nil {
+		s.log.Warning("open external link: %v", err)
+		s.pushMessages(nil, []string{s.catalog().T("error.openURL", err.Error())})
+	}
+}
+
 // save runs one settings save and pushes the resulting view and messages.
 func (s *Shell) save(patch map[string]any) {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	outcome, err := s.opts.Settings.Save(patch)
 	notices := outcome.Notices
 	failures := outcome.Errors

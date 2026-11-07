@@ -600,8 +600,7 @@ func modelsHTML(view *servers.ModelsView, labels ModelLabels) string {
 	out.WriteString(`<h2>` + pageIcon("power") + escape(labels.IdleTitle) + cardHelpTip(labels.IdleHelp) + `</h2>`)
 	out.WriteString(`<div class="field"><div class="field-head"><label for="model-idle-seconds">` + escape(labels.IdleLabel) + `</label></div>`)
 	out.WriteString(`<div class="inline-field">`)
-	out.WriteString(`<input type="number" min="0" step="30" id="model-idle-seconds" value="` + escape(strconv.Itoa(view.IdleUnloadSeconds)) + `">`)
-	out.WriteString(`<button type="button" data-action="idle-timeout">` + escape(labels.IdleSave) + `</button>`)
+	out.WriteString(`<input type="number" min="0" step="30" id="model-idle-seconds" data-idle-timeout="true" value="` + escape(strconv.Itoa(view.IdleUnloadSeconds)) + `">`)
 	out.WriteString(`</div></div>`)
 	out.WriteString(`</section>`)
 
@@ -2172,6 +2171,14 @@ const pageHTML = `<!doctype html>
       el.setSelectionRange(focus.start, focus.end);
     } catch (e) {}
   }
+  function setButtonLabel(id, label) {
+    if (!label) return;
+    var button = document.getElementById(id);
+    if (!button) return;
+    var text = button.querySelector(".btn-label");
+    if (text) text.textContent = label;
+    else button.textContent = label;
+  }
   function renderSettings(v) {
     // The hovered question mark is about to be replaced, so its hint must go
     // with it; a retained node would float over the rebuilt screen.
@@ -2196,22 +2203,12 @@ const pageHTML = `<!doctype html>
     if (v && v.language) document.documentElement.lang = v.language;
     if (v && v.title) document.title = v.title;
     if (v && v.actions) {
-      var restart = document.getElementById("restart-button");
-      if (restart && v.actions.restart) {
-        var restartLabel = restart.querySelector(".btn-label");
-        if (restartLabel) restartLabel.textContent = v.actions.restart;
-        else restart.textContent = v.actions.restart;
-      }
+      setButtonLabel("restart-button", v.actions.restart);
       var hint = document.getElementById("restart-hint");
       if (hint) hint.textContent = v.actions.restartHint || "";
     }
-    if (v && v.serverLabels && v.serverLabels.restartServer) {
-      var serverRestart = document.getElementById("server-restart-button");
-      if (serverRestart) {
-        var serverRestartLabel = serverRestart.querySelector(".btn-label");
-        if (serverRestartLabel) serverRestartLabel.textContent = v.serverLabels.restartServer;
-        else serverRestart.textContent = v.serverLabels.restartServer;
-      }
+    if (v && v.serverLabels) {
+      setButtonLabel("server-restart-button", v.serverLabels.restartServer);
     }
     var actions = document.getElementById("actions");
     if (actions) {
@@ -2339,31 +2336,11 @@ const pageHTML = `<!doctype html>
   function serverControlPatch(el) {
     return pathPatch(el.dataset.serverPath, el.value);
   }
-  function showMessage(message, failure) {
-    actionMessages = {
-      failures: failure ? [String(message || "")] : []
-    };
+  function showFailure(message) {
+    actionMessages = { failures: [String(message || "")] };
     dismissedAlerts = {};
     lastAlerts = null;
     renderAlerts();
-  }
-  // A webview has no tab to send an external link to, and a plain target
-  // attribute does nothing there. The Wails runtime's Browser.OpenURL hands the
-  // address to the desktop browser; the loopback page falls back to window.open.
-  function openExternal(url) {
-    if (!url) return;
-    if (window._wails) {
-      import("/wails/runtime.js").then(function (runtime) {
-        if (runtime && runtime.Browser && runtime.Browser.OpenURL) {
-          return runtime.Browser.OpenURL(url);
-        }
-        window.open(url, "_blank", "noreferrer");
-      }).catch(function () {
-        window.open(url, "_blank", "noreferrer");
-      });
-      return;
-    }
-    window.open(url, "_blank", "noreferrer");
   }
   function sendIntent(intent, button) {
     if (button && button.dataset.pending === "1") return null;
@@ -2388,7 +2365,7 @@ const pageHTML = `<!doctype html>
         throw new Error((body || "").trim() || ("HTTP " + response.status));
       });
     }).catch(function (error) {
-      showMessage(String((error && error.message) || error || "request failed"), true);
+      showFailure(String((error && error.message) || error || "request failed"));
     }).then(done, done);
   }
   function primeDiagnostics() {
@@ -2466,7 +2443,7 @@ const pageHTML = `<!doctype html>
     var external = event.target.closest ? event.target.closest("[data-external]") : null;
     if (external) {
       event.preventDefault();
-      openExternal(external.dataset.external || external.href);
+      sendIntent({ action: "open-url", url: external.dataset.external || external.href });
       return;
     }
     var themeChoice = event.target.closest ? event.target.closest("[data-theme-choice]") : null;
@@ -2583,9 +2560,6 @@ const pageHTML = `<!doctype html>
       var deleteMessage = button.dataset.confirm || "";
       if (deleteMessage && window.confirm && !window.confirm(deleteMessage)) return;
       sendIntent({ action: "delete-model", model: button.dataset.model || "" }, button);
-    } else if (action === "idle-timeout") {
-      var idle = document.getElementById("model-idle-seconds");
-      sendIntent({ action: "idle-timeout", seconds: idle ? Number(idle.value) : 0 }, button);
     } else if (action === "refresh-diagnostics") {
       sendIntent({ action: "refresh-diagnostics" }, button);
     } else if (action === "load-logs") {
@@ -2713,6 +2687,11 @@ const pageHTML = `<!doctype html>
     var level = target.closest("[data-log-level]");
     if (level) {
       sendIntent({ action: "set-log-level", value: level.value });
+      return;
+    }
+    var idle = target.closest("[data-idle-timeout]");
+    if (idle) {
+      sendIntent({ action: "idle-timeout", seconds: Number(idle.value) });
       return;
     }
     var el = target.closest("[data-path]");
