@@ -397,6 +397,14 @@ def test_documentation_covers_install_release_and_troubleshooting() -> None:
         "troubleshooting.md": ("Client log", "401", "Certificate changed", "Spool"),
         "models.md": ("Model catalog", "idle_unload_seconds", "CUDA", "download"),
         "release.md": ("v1.2.1", "checksums.txt", "verify-version", "manual"),
+        "updates.md": (
+            "client.updates.check",
+            "60 seconds",
+            "checksums.txt.sig",
+            "helper",
+            "update.log",
+            "Retry",
+        ),
         "verification/manual-matrix.md": (
             "GNOME on Wayland",
             "Windows 11",
