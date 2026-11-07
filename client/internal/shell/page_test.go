@@ -877,7 +877,6 @@ func TestUpdatesCardShowsVersionsTheAutomaticToggleAndTheCheckButton(t *testing.
 	view.Update = shell.UpdateView{
 		UpdateLabels: shell.UpdateLabels{
 			Title:         "Обновления",
-			Help:          "The Client checks GitHub Releases on its own.",
 			AutoCheck:     "Проверять обновления автоматически",
 			AutoCheckHelp: "Проверка запускается примерно через минуту после старта.",
 			Current:       "Текущая версия",
@@ -888,11 +887,6 @@ func TestUpdatesCardShowsVersionsTheAutomaticToggleAndTheCheckButton(t *testing.
 		CheckEnabled:   true,
 	}
 	html := shell.SettingsHTML(view)
-	for _, unwanted := range []string{"The Client checks GitHub Releases on its own."} {
-		if strings.Contains(html, unwanted) {
-			t.Errorf("the updates card still shows its explanatory text: %q", unwanted)
-		}
-	}
 	for _, want := range []string{
 		"Текущая версия", "1.2.3", "Последняя версия", "Проверить обновления",
 		`data-path="client.updates.check" checked`,

@@ -23,6 +23,11 @@ const (
 	StatusTimeout = "timeout"
 )
 
+// helperClientExitWait is how long the generated helper waits for the old
+// Client to exit and release the single-instance lock before running the
+// installer anyway.
+const helperClientExitWait = 5 * time.Minute
+
 // Result is the persisted outcome of one install. It is written as pending
 // before the helper starts, overwritten with the final status by the helper,
 // and kept until the user dismisses it.
@@ -89,9 +94,7 @@ func (s *Service) Install(ctx context.Context, req InstallRequest) error {
 	if !set.Any() {
 		set = stage.Components
 	}
-	if !set.Any() {
-		set = components.Set{Client: true}
-	}
+	set = effectiveComponents(set)
 
 	pending := Result{
 		Status:           StatusPending,
@@ -240,18 +243,19 @@ func (s *Service) helperScript(
 		timeout = 1
 	}
 	data := helperData{
-		Stage:            stage.Dir,
-		Installer:        installer,
-		Tag:              stage.Tag,
-		LogPath:          s.opts.LogPath,
-		ResultPath:       s.opts.ResultPath,
-		ClientPath:       s.opts.ClientPath,
-		ConfigPath:       s.opts.ConfigPath,
-		ClientOnly:       !set.Server,
-		ServerSelected:   set.Server,
-		ServerWasRunning: serverWasRunning,
-		ClientPID:        clientPID,
-		TimeoutSeconds:   timeout,
+		Stage:                 stage.Dir,
+		Installer:             installer,
+		Tag:                   stage.Tag,
+		LogPath:               s.opts.LogPath,
+		ResultPath:            s.opts.ResultPath,
+		ClientPath:            s.opts.ClientPath,
+		ConfigPath:            s.opts.ConfigPath,
+		ClientOnly:            !set.Server,
+		ServerSelected:        set.Server,
+		ServerWasRunning:      serverWasRunning,
+		ClientPID:             clientPID,
+		TimeoutSeconds:        timeout,
+		ClientExitWaitSeconds: int(helperClientExitWait / time.Second),
 	}
 	if s.opts.Platform == "windows" {
 		return windowsHelper(data)
@@ -261,18 +265,19 @@ func (s *Service) helperScript(
 
 // helperData is every value embedded in the generated script.
 type helperData struct {
-	Stage            string
-	Installer        string
-	Tag              string
-	LogPath          string
-	ResultPath       string
-	ClientPath       string
-	ConfigPath       string
-	ClientOnly       bool
-	ServerSelected   bool
-	ServerWasRunning bool
-	ClientPID        int
-	TimeoutSeconds   int
+	Stage                 string
+	Installer             string
+	Tag                   string
+	LogPath               string
+	ResultPath            string
+	ClientPath            string
+	ConfigPath            string
+	ClientOnly            bool
+	ServerSelected        bool
+	ServerWasRunning      bool
+	ClientPID             int
+	TimeoutSeconds        int
+	ClientExitWaitSeconds int
 }
 
 // jsonLiteral renders a Go string as a quoted JSON string, so a path with

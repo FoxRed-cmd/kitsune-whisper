@@ -2,6 +2,9 @@
 
 **Status:** accepted
 
+**Relates to:** ADR 0013. The published artifact set is unchanged; this ADR
+adds a Client-side staged set, not a release-format change.
+
 The previous update flow downloaded only the installer script, checked its
 SHA-256, started it as a separate process, and considered the work done. Nothing
 showed progress, the installer left a running Client and Server in place on
@@ -21,8 +24,11 @@ action downloads when necessary and then installs.
 
 The set is deliberately complete: the installer, `checksums.txt`,
 `checksums.txt.sig`, `VERSION`, the Client archive, and the Server archive only
-when the Local Server Component is installed. The Client verifies each SHA-256
-as the file streams. The installer keeps verifying the detached signature over
+when the Local Server Component is installed. `VERSION` is part of the staged
+set, not a new published artifact: when the release does not attach it, the
+Client writes the verified release tag; if a future release does attach it, the
+Client downloads and verifies it against `checksums.txt` like every other file.
+The Client verifies each SHA-256 as the file streams. The installer keeps verifying the detached signature over
 `checksums.txt`, so the trust chain is unchanged. The installed Component set,
 not the active Server profile, selects the archives: a Remote Server is never
 touched, and a Client-only machine passes the installer's client-only flag.
@@ -109,6 +115,10 @@ with a running Client.
 - A partial failure intentionally leaves the Local Server stopped rather than
   running a Client and Server from different releases; the retry path is the
   way forward.
-- The installers and the release format do not change. `VERSION` becomes part
-  of the staged set so the Client can record what it installs, but the release
-  workflow already publishes it for the installer.
+- The installers and the published artifact set do not change (ADR 0013):
+  release CI still publishes the two Client archives, the two Server archives,
+  `install.sh`, `install.ps1`, `checksums.txt`, and its detached signature. The
+  release workflow is not touched by this decision. `VERSION` is staged by the
+  Client, not added to the published set: the Client synthesizes it from the
+  same verified release tag it passes to the installer when the release does
+  not attach one, and downloads and verifies it when a future release does.

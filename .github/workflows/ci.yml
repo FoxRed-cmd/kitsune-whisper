@@ -265,6 +265,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: Parse the generated update helper
+        working-directory: client
+        run: go test ./internal/update -run '^TestWindowsHelperParsesInPowerShell$' -count=1
+
       - name: Parse the remaining PowerShell entry points
         shell: pwsh
         run: |

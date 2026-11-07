@@ -1,13 +1,14 @@
-// Package update checks GitHub Releases for a newer kitsune-whisper build and
-// stages a verified set of artifacts for the installed Components. The
-// installer is still available through Install, but the Settings flow downloads
-// a complete set first and only installs from it on a later ticket.
+// Package update checks GitHub Releases for a newer kitsune-whisper build,
+// stages a verified set of artifacts for the installed Components, and installs
+// that set through a generated helper.
 //
 // The package performs no work at construction time. Check is one unauthenticated
 // GitHub API request; Download streams every selected artifact, verifies its
 // SHA-256 against the release checksums, and keeps the set in a per-tag
-// directory. The HTTP client, release base URL, download directory, and process
-// launcher are injectable so tests never touch the network or start an installer.
+// directory. Install re-verifies the staged set, writes a pending marker, and
+// starts the helper, which runs the installer after the Client exits. The HTTP
+// client, release base URL, download directory, and helper runner are injectable
+// so tests never touch the network or start a real installer.
 package update
 
 import (
@@ -136,8 +137,8 @@ type Options struct {
 	Client *http.Client
 	// APIBase is the GitHub API origin; "" uses https://api.github.com.
 	APIBase string
-	// DownloadDir holds the verified installer; "" uses the OS temporary
-	// directory.
+	// DownloadDir holds the staged update sets, one subdirectory per release
+	// tag. "" uses the per-user cache under <os.UserCacheDir>/kitsune-whisper.
 	DownloadDir string
 	// Download fetches an asset. Nil uses Client.
 	Download Downloader
@@ -186,9 +187,7 @@ func New(opts Options) *Service {
 	if opts.APIBase == "" {
 		opts.APIBase = "https://api.github.com"
 	}
-	if !opts.Components.Any() {
-		opts.Components = components.Set{Client: true}
-	}
+	opts.Components = effectiveComponents(opts.Components)
 	if opts.ClientPath == "" {
 		if executable, err := os.Executable(); err == nil {
 			opts.ClientPath = executable
@@ -359,10 +358,7 @@ func (s *Service) Download(ctx context.Context, info Info, progress func(Progres
 		return Asset{Name: name, URL: fallbackURL}, true
 	}
 
-	set := s.opts.Components
-	if !set.Any() {
-		set = components.Set{Client: true}
-	}
+	set := effectiveComponents(s.opts.Components)
 
 	items := make([]downloadItem, 0, 6)
 	add := func(name, fallbackURL string, verify bool) error {
@@ -600,7 +596,56 @@ func (s *Service) Staged(tag string) (Stage, bool) {
 	if !validTag(tag) {
 		return Stage{}, false
 	}
-	dir := s.stageDir(tag)
+	stage, ok := readStage(s.stageDir(tag))
+	if !ok || stage.Tag != tag {
+		return Stage{}, false
+	}
+	return stage, true
+}
+
+// LatestStaged returns the newest complete staged set under the download root.
+// The tag decides the order; the manifest modification time breaks a tie or
+// orders tags that do not parse as a release version. It lets a restarted Client
+// show a ready update without a release check.
+func (s *Service) LatestStaged() (Stage, bool) {
+	entries, err := os.ReadDir(s.downloadDir())
+	if err != nil {
+		return Stage{}, false
+	}
+	var (
+		best     Stage
+		bestTime time.Time
+		found    bool
+	)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		stage, ok := readStage(filepath.Join(s.downloadDir(), entry.Name()))
+		if !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if !found {
+			best, bestTime, found = stage, info.ModTime(), true
+			continue
+		}
+		switch {
+		case version.Newer(stage.Tag, best.Tag):
+			best, bestTime = stage, info.ModTime()
+		case !version.Newer(best.Tag, stage.Tag) && info.ModTime().After(bestTime):
+			best, bestTime = stage, info.ModTime()
+		}
+	}
+	return best, found
+}
+
+// readStage loads and validates one staged-set directory. A missing, corrupt,
+// or incomplete directory is reported as absent.
+func readStage(dir string) (Stage, bool) {
 	data, err := os.ReadFile(filepath.Join(dir, stageManifest))
 	if err != nil {
 		return Stage{}, false
@@ -609,7 +654,7 @@ func (s *Service) Staged(tag string) (Stage, bool) {
 	if err := json.Unmarshal(data, &stage); err != nil {
 		return Stage{}, false
 	}
-	if stage.Tag != tag || len(stage.Files) == 0 {
+	if stage.Tag == "" || len(stage.Files) == 0 || !validTag(stage.Tag) {
 		return Stage{}, false
 	}
 	for _, name := range stage.Files {
@@ -623,6 +668,15 @@ func (s *Service) Staged(tag string) (Stage, bool) {
 	}
 	stage.Dir = dir
 	return stage, true
+}
+
+// effectiveComponents applies the Client-only default once, for construction,
+// download, and install.
+func effectiveComponents(set components.Set) components.Set {
+	if !set.Any() {
+		return components.Set{Client: true}
+	}
+	return set
 }
 
 // VerifyStaged re-reads checksums.txt from the stage and re-verifies every

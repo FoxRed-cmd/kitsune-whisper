@@ -22,6 +22,7 @@ type Updater interface {
 	Check(ctx context.Context) (update.Info, error)
 	Download(ctx context.Context, info update.Info, progress func(update.Progress)) (update.Stage, error)
 	Staged(tag string) (update.Stage, bool)
+	LatestStaged() (update.Stage, bool)
 	VerifyStaged(ctx context.Context, stage update.Stage) error
 	ClearStaged(tag string) error
 	Install(ctx context.Context, req update.InstallRequest) error
@@ -32,7 +33,6 @@ type Updater interface {
 // UpdateLabels are the translated strings of the updates screen and Tray item.
 type UpdateLabels struct {
 	Title               string `json:"title"`
-	Help                string `json:"help"`
 	AutoCheck           string `json:"autoCheck"`
 	AutoCheckHelp       string `json:"autoCheckHelp"`
 	Current             string `json:"current"`
@@ -110,6 +110,9 @@ type UpdateView struct {
 	// ResultServerWasRunning reports whether the local Server ran before the
 	// update and is expected to run again.
 	ResultServerWasRunning bool `json:"resultServerWasRunning,omitempty"`
+	// ResultServerStarted reports that the local Server was updated and actually
+	// started again after the update.
+	ResultServerStarted bool `json:"resultServerStarted,omitempty"`
 	// ResultMessage is the translated success, partial, or failure text.
 	ResultMessage string `json:"resultMessage,omitempty"`
 	// ResultFailed marks a persisted error, timeout, partial, or pending
@@ -143,7 +146,6 @@ func (s *Shell) updateLabels() UpdateLabels {
 	catalog := s.catalog()
 	return UpdateLabels{
 		Title:               catalog.T("update.title"),
-		Help:                catalog.T("update.help"),
 		AutoCheck:           catalog.T("update.autoCheck"),
 		AutoCheckHelp:       catalog.T("update.autoCheckHelp"),
 		Current:             catalog.T("update.current"),
@@ -221,7 +223,8 @@ func (s *Shell) updateView() UpdateView {
 		view.ResultTag = result.Tag
 		view.ResultServerUpdated = result.ServerUpdated
 		view.ResultServerWasRunning = result.ServerWasRunning
-		view.ResultMessage = s.updateResultMessage(result)
+		view.ResultServerStarted = s.updateResultServerStarted(result)
+		view.ResultMessage = s.updateResultMessage(result, view.ResultServerStarted)
 		view.ResultFailed = updateResultFailed(result.Status)
 		view.ResultDetail = resultDetail
 		view.ResultLogPath = result.LogPath
@@ -267,8 +270,41 @@ func updateLogTail(path string) string {
 	return strings.Join(lines, "\n")
 }
 
+// UpdatePercent clamps an aggregate download's received bytes to a whole
+// percentage in [0,100]. An unknown or empty total reports 0.
+func UpdatePercent(received, total int64) int64 {
+	if total <= 0 {
+		return 0
+	}
+	percent := received * 100 / total
+	if percent < 0 {
+		return 0
+	}
+	if percent > 100 {
+		return 100
+	}
+	return percent
+}
+
+// updateResultServerStarted reports whether the relaunched Client actually
+// started the Local Server again after the update. It stays false when the
+// helper was updated but the launch failed, when the Server was stopped before
+// the update, and when the installed Autostart mode is Client-only.
+func (s *Shell) updateResultServerStarted(result update.Result) bool {
+	if !result.ServerWasRunning || !result.ServerUpdated || s.opts.ServerLaunchError != nil {
+		return false
+	}
+	if s.opts.Startup != nil {
+		state := s.opts.Startup.Status()
+		if !state.Installed.Server || state.Mode == components.ModeClientOnly {
+			return false
+		}
+	}
+	return true
+}
+
 // updateResultMessage builds the one-line outcome shown in the Updates card.
-func (s *Shell) updateResultMessage(result update.Result) string {
+func (s *Shell) updateResultMessage(result update.Result, serverStarted bool) string {
 	catalog := s.catalog()
 	tag := strings.TrimPrefix(strings.TrimPrefix(result.Tag, "v"), "V")
 	switch result.Status {
@@ -276,7 +312,7 @@ func (s *Shell) updateResultMessage(result update.Result) string {
 		message := catalog.T("update.installed", tag)
 		if result.ServerUpdated {
 			message += " " + catalog.T("update.serverUpdated")
-			if result.ServerWasRunning {
+			if serverStarted {
 				message += " " + catalog.T("update.serverRunning")
 			} else {
 				message += " " + catalog.T("update.serverStopped")
@@ -394,7 +430,7 @@ func (s *Shell) checkUpdates(ctx context.Context, manual bool) {
 		}
 	}
 	if !manual && info.Available && info.Installable && !staged {
-		_, _ = s.downloadUpdate(ctx, info, false)
+		_, _ = s.downloadUpdate(ctx, info)
 	}
 }
 
@@ -556,7 +592,7 @@ func (s *Shell) installUpdate(info update.Info) {
 	ready, stage := s.updateReady, s.updateStage
 	s.mu.Unlock()
 	if !ready || stage.Tag != info.Tag {
-		staged, err := s.downloadUpdate(ctx, info, true)
+		staged, err := s.downloadUpdate(ctx, info)
 		if err != nil {
 			// A cancelled download is not an install failure: the card returns
 			// to "available" without an error.
@@ -575,6 +611,16 @@ func (s *Shell) installUpdate(info update.Info) {
 		stage = staged
 	}
 	if err := s.opts.Updater.VerifyStaged(ctx, stage); err != nil {
+		// A corrupt set must not be retried. Drop it so the next attempt checks
+		// and downloads a fresh set instead of reusing the same files.
+		if clearErr := s.opts.Updater.ClearStaged(stage.Tag); clearErr != nil {
+			s.log.Warning("update: clear the corrupt staged set: %v", clearErr)
+		}
+		s.mu.Lock()
+		s.updateReady = false
+		s.updateStage = update.Stage{}
+		s.updateProgress = update.Progress{}
+		s.mu.Unlock()
 		fail(err)
 		return
 	}
@@ -590,6 +636,11 @@ func (s *Shell) installUpdate(info update.Info) {
 		ClientPID:        os.Getpid(),
 	})
 	if err != nil {
+		// The helper failed to start, so this Client stays alive. Put the Local
+		// Server back if this update stopped it, rather than leaving it offline.
+		if serverWasRunning {
+			s.restoreLocalServerForUpdate(ctx)
+		}
 		fail(err)
 		return
 	}
@@ -669,6 +720,19 @@ func (s *Shell) stopLocalServerForUpdate(ctx context.Context) bool {
 	return true
 }
 
+// restoreLocalServerForUpdate puts the Local Server back after an update could
+// not hand over to the helper. It is best effort: the card still reports the
+// original failure.
+func (s *Shell) restoreLocalServerForUpdate(ctx context.Context) {
+	profile, ok := s.localServerProfile()
+	if !ok {
+		return
+	}
+	if _, err := s.opts.Servers.Start(ctx, profile.ID); err != nil {
+		s.log.Warning("update: restart the Local Server after a failed install: %v", err)
+	}
+}
+
 // waitForUpdateIdle lets the current dictation finish before the Client exits.
 // It never aborts an utterance; on timeout it logs and continues so an update
 // cannot hang forever.
@@ -746,6 +810,37 @@ func (s *Shell) loadUpdateResult() {
 			s.log.Debug("update: clear the staged set: %v", err)
 		}
 	}
+}
+
+// loadLatestStaged makes a complete staged set visible after a Client restart,
+// before any release check. It is skipped when a successful result is already
+// on display, and a later check for a different tag replaces or clears it.
+func (s *Shell) loadLatestStaged() {
+	if s.opts.Updater == nil {
+		return
+	}
+	s.mu.Lock()
+	success := s.updateResultSet && s.updateResult.Status == update.StatusSuccess
+	s.mu.Unlock()
+	if success {
+		return
+	}
+	stage, ok := s.opts.Updater.LatestStaged()
+	if !ok {
+		return
+	}
+	latest := strings.TrimPrefix(strings.TrimPrefix(stage.Tag, "v"), "V")
+	s.mu.Lock()
+	s.updateStage = stage
+	s.updateReady = true
+	s.updateInfo = update.Info{
+		Current:     s.opts.Version,
+		Latest:      latest,
+		Tag:         stage.Tag,
+		Available:   true,
+		Installable: true,
+	}
+	s.mu.Unlock()
 }
 
 // updateResultVisible reports whether the startup window must open so the user
@@ -844,7 +939,7 @@ func (s *Shell) cancelUpdate() {
 // install. Automatic downloads receive the scheduler's context so turning the
 // toggle off cancels them; a manual download receives an independent context
 // and is unaffected by the toggle.
-func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual bool) (update.Stage, error) {
+func (s *Shell) downloadUpdate(ctx context.Context, info update.Info) (update.Stage, error) {
 	if s.opts.Updater == nil {
 		return update.Stage{}, errors.New("update checking is not available in this build")
 	}
@@ -858,7 +953,6 @@ func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual boo
 	}
 	s.updateDownloading = true
 	s.updateReady = false
-	s.updateAutoDownload = !manual
 	s.updateCancel = cancel
 	s.updateProgress = update.Progress{}
 	s.updateError = ""
@@ -888,7 +982,6 @@ func (s *Shell) downloadUpdate(ctx context.Context, info update.Info, manual boo
 
 	s.mu.Lock()
 	s.updateDownloading = false
-	s.updateAutoDownload = false
 	s.updateCancel = nil
 	switch {
 	case cancelled:

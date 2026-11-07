@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -167,6 +168,50 @@ func TestInstallGeneratesAClientOnlyWindowsHelper(t *testing.T) {
 	}
 	if strings.Contains(script, "--hidden") {
 		t.Error("the Windows helper relaunched the Client hidden")
+	}
+}
+
+func TestWindowsHelperParsesInPowerShell(t *testing.T) {
+	shell := ""
+	for _, name := range []string{"pwsh", "powershell"} {
+		if path, err := exec.LookPath(name); err == nil {
+			shell = path
+			break
+		}
+	}
+	if shell == "" {
+		t.Skip("PowerShell is not installed")
+	}
+
+	stage := installStage(t, "windows", "install")
+	configPath, clientPath, resultPath, logPath := installPaths(t)
+	var scriptPath string
+	svc := update.New(update.Options{
+		Current: "v0.1.0", Platform: "windows", Arch: "amd64",
+		Components: components.Set{Client: true},
+		ConfigPath: configPath, ClientPath: clientPath,
+		ResultPath: resultPath, LogPath: logPath,
+		StartHelper: func(script, _ string) error {
+			scriptPath = script
+			return nil
+		},
+	})
+	if err := svc.Install(context.Background(), update.InstallRequest{
+		Stage: stage, Components: components.Set{Client: true}, ClientPID: 4242,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if scriptPath == "" {
+		t.Fatal("Install did not generate a Windows helper")
+	}
+
+	quoted := "'" + strings.ReplaceAll(scriptPath, "'", "''") + "'"
+	command := "$tokens=$null; $errors=$null; " +
+		"[void][System.Management.Automation.Language.Parser]::ParseFile(" + quoted + ", [ref]$tokens, [ref]$errors); " +
+		"if ($errors.Count -gt 0) { $errors | ForEach-Object { Write-Output $_.Message }; exit 1 }"
+	output, err := exec.Command(shell, "-NoProfile", "-NonInteractive", "-Command", command).CombinedOutput()
+	if err != nil {
+		t.Fatalf("the PowerShell helper does not parse: %v\n%s", err, output)
 	}
 }
 

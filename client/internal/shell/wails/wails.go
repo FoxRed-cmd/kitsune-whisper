@@ -512,10 +512,7 @@ func (t *trayPort) buildMenu(snapshot shell.Snapshot) *application.Menu {
 	case snapshot.Update.Downloading:
 		label := labels.Updating
 		if snapshot.Update.Total > 0 && labels.UpdateProgress != "" {
-			percent := snapshot.Update.Received * 100 / snapshot.Update.Total
-			if percent > 100 {
-				percent = 100
-			}
+			percent := shell.UpdatePercent(snapshot.Update.Received, snapshot.Update.Total)
 			label = fmt.Sprintf(labels.UpdateProgress, snapshot.Update.File, percent)
 		} else if snapshot.Update.File != "" && labels.UpdateFile != "" {
 			label = fmt.Sprintf(labels.UpdateFile, snapshot.Update.File)

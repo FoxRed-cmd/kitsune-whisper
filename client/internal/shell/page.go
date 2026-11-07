@@ -873,7 +873,7 @@ func updatesHTML(view UpdateView) string {
 	}
 	out.WriteString(`<div class="actions-inline">`)
 	out.WriteString(`<button type="button" data-action="check-updates">` + pageIcon("download") + escape(view.Check) + `</button>`)
-	if view.Downloading {
+	if view.Cancelable {
 		out.WriteString(`<button type="button" data-action="cancel-update">` + pageIcon("close") + escape(view.Cancel) + `</button>`)
 	}
 	if view.Available && view.Installable && !view.Busy && !view.Downloading && !view.Installing {
@@ -911,10 +911,7 @@ func updateActionLabel(view UpdateView) string {
 // file. An unknown total omits the percentage and byte counts.
 func downloadProgressText(view UpdateView) string {
 	if view.TotalBytes > 0 {
-		percent := view.ReceivedBytes * 100 / view.TotalBytes
-		if percent > 100 {
-			percent = 100
-		}
+		percent := UpdatePercent(view.ReceivedBytes, view.TotalBytes)
 		template := view.DownloadProgress
 		if template == "" {
 			return view.DownloadingMessage
@@ -932,10 +929,7 @@ func updateMeterHTML(view UpdateView) string {
 	if view.TotalBytes <= 0 {
 		return `<div class="meter update-meter is-indeterminate" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-update-indeterminate="true"><div class="meter-fill"></div></div>`
 	}
-	percent := view.ReceivedBytes * 100 / view.TotalBytes
-	if percent > 100 {
-		percent = 100
-	}
+	percent := UpdatePercent(view.ReceivedBytes, view.TotalBytes)
 	value := strconv.FormatInt(percent, 10)
 	return `<div class="meter update-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="` + value +
 		`" data-update-percent="` + value + `"><div class="meter-fill" style="width:` + value + `%"></div></div>`

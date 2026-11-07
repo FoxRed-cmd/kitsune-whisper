@@ -10,9 +10,9 @@ name: Release
 #   kitsune-client_windows_amd64.zip           Client, Tray, Settings window
 #   kitsune-server_windows_amd64.tar.gz        native Server bundle
 #
-# The publish job also attaches install.sh (the Linux updater's verified asset),
-# install.ps1 (the pinned Windows bootstrap), and VERSION, with checksums.txt
-# covering the whole release and checksums.txt.sig as its detached ECDSA P-256 /
+# The publish job also attaches install.sh (the Linux updater's verified asset)
+# and install.ps1 (the pinned Windows bootstrap), with checksums.txt covering
+# the whole release and checksums.txt.sig as its detached ECDSA P-256 /
 # SHA-256 signature. A release without a signature is never published.
 on:
   push:
@@ -234,15 +234,13 @@ jobs:
         run: |
           set -euo pipefail
           # install.sh is the Linux updater's verified asset; install.ps1 is
-          # the pinned Windows bootstrap. VERSION lets the Client stage a
-          # complete update set without inventing one. All three download the
-          # rest of this release themselves.
+          # the pinned Windows bootstrap. Both download the rest of this
+          # release themselves.
           cp install.sh dist/install.sh
           cp install.ps1 dist/install.ps1
-          cp VERSION dist/VERSION
           cd dist
           rm -f checksums.txt
-          sha256sum kitsune-* install.sh install.ps1 VERSION > checksums.txt
+          sha256sum kitsune-* install.sh install.ps1 > checksums.txt
           cat checksums.txt
 
       # The private key is a repository secret with an offline backup; only
@@ -277,6 +275,5 @@ jobs:
             dist/kitsune-server_windows_amd64.tar.gz
             dist/install.sh
             dist/install.ps1
-            dist/VERSION
             dist/checksums.txt
             dist/checksums.txt.sig
