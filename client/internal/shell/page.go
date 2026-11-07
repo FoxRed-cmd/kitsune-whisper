@@ -853,6 +853,20 @@ func updatesHTML(view UpdateView) string {
 	}
 	if view.ResultStatus != "" {
 		out.WriteString(`<p class="notice" data-update-result="` + escape(view.ResultStatus) + `">` + escape(view.ResultMessage) + `</p>`)
+		if view.resultFailure() {
+			out.WriteString(`<details class="update-details" data-update-details="true">`)
+			out.WriteString(`<summary>` + escape(view.Details) + `</summary>`)
+			if view.ResultDetail != "" {
+				out.WriteString(`<pre class="update-log" data-update-log="true">` + escape(view.ResultDetail) + `</pre>`)
+			} else {
+				out.WriteString(`<p class="help">` + escape(view.LogUnavailable) + `</p>`)
+			}
+			if view.ResultLogPath != "" {
+				out.WriteString(`<p class="help update-log-path" data-update-log-path="true">` +
+					escape(view.LogPath) + `: <code>` + escape(view.ResultLogPath) + `</code></p>`)
+			}
+			out.WriteString(`</details>`)
+		}
 	}
 	if view.Error != "" {
 		out.WriteString(`<p class="notice" data-update-error="true">` + escape(view.Error) + `</p>`)
@@ -865,7 +879,8 @@ func updatesHTML(view UpdateView) string {
 	if view.Available && view.Installable && !view.Busy && !view.Downloading && !view.Installing {
 		out.WriteString(`<button type="button" class="primary" data-action="install-update">` + pageIcon("download") + escape(updateActionLabel(view)) + `</button>`)
 	}
-	if view.Error != "" && view.Available && view.Installable && !view.Downloading && !view.Installing {
+	retryable := view.resultFailure() || (view.Error != "" && view.Available && view.Installable)
+	if retryable && !view.Busy && !view.Downloading && !view.Installing {
 		out.WriteString(`<button type="button" data-action="retry-update">` + pageIcon("download") + escape(view.Retry) + `</button>`)
 	}
 	if view.ResultStatus != "" {

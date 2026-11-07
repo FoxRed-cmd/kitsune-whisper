@@ -1038,6 +1038,98 @@ func TestUpdatesCardShowsTheInstallResultAndDismiss(t *testing.T) {
 	}
 }
 
+func TestUpdatesCardShowsFailureDetailsAndRetry(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:          "Обновления",
+			Check:          "Проверить обновления",
+			Retry:          "Повторить",
+			Dismiss:        "Скрыть",
+			Details:        "Подробности",
+			LogPath:        "Лог обновления",
+			LogUnavailable: "Лог обновления пуст или недоступен.",
+		},
+		CurrentVersion: "1.2.3",
+		ResultStatus:   "error",
+		ResultTag:      "v1.3.0",
+		ResultMessage:  "Не удалось обновить до v1.3.0.",
+		ResultFailed:   true,
+		ResultDetail:   "<script>alert('x')</script>\nlast line",
+		ResultLogPath:  "/home/user/.cache/kitsune-whisper/update.log",
+	}
+	html := shell.SettingsHTML(view)
+	for _, want := range []string{
+		`data-update-result="error"`,
+		"Не удалось обновить до v1.3.0.",
+		`data-update-details="true"`,
+		"<summary>Подробности</summary>",
+		"&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;",
+		"last line",
+		`data-update-log-path="true"`,
+		"Лог обновления",
+		"/home/user/.cache/kitsune-whisper/update.log",
+		`data-action="retry-update"`,
+		"Повторить",
+		`data-action="dismiss-update"`,
+		"Скрыть",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the failed result card is missing %q", want)
+		}
+	}
+	if strings.Contains(html, "<script>alert('x')</script>") {
+		t.Error("the update log is rendered as raw HTML")
+	}
+
+	view.Update.ResultFailed = false
+	view.Update.ResultStatus = "success"
+	view.Update.ResultMessage = "Обновлено до v1.3.0."
+	html = shell.SettingsHTML(view)
+	if strings.Contains(html, `data-update-details="true"`) {
+		t.Error("a successful result still shows failure details")
+	}
+	if strings.Contains(html, `data-action="retry-update"`) {
+		t.Error("a successful result still offers retry")
+	}
+	if !strings.Contains(html, `data-action="dismiss-update"`) {
+		t.Error("a successful result lost the dismiss button")
+	}
+}
+
+func TestUpdatesCardShowsMissingLogNoteWithoutDetails(t *testing.T) {
+	view := managementView()
+	view.Update = shell.UpdateView{
+		UpdateLabels: shell.UpdateLabels{
+			Title:          "Обновления",
+			Check:          "Проверить обновления",
+			Retry:          "Повторить",
+			Dismiss:        "Скрыть",
+			Details:        "Подробности",
+			LogPath:        "Лог обновления",
+			LogUnavailable: "Лог обновления пуст или недоступен.",
+		},
+		CurrentVersion: "1.2.3",
+		ResultStatus:   "timeout",
+		ResultMessage:  "Не удалось обновить: установщик превысил таймаут.",
+		ResultFailed:   true,
+		ResultLogPath:  "/tmp/update.log",
+	}
+	html := shell.SettingsHTML(view)
+	for _, want := range []string{
+		"Лог обновления пуст или недоступен.",
+		"/tmp/update.log",
+		`data-update-details="true"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("the missing-log card is missing %q", want)
+		}
+	}
+	if strings.Contains(html, `<pre class="update-log"`) {
+		t.Error("a missing log rendered an empty pre block")
+	}
+}
+
 func TestUpdatesCardShowsTheInstallInProgressState(t *testing.T) {
 	view := managementView()
 	view.Update = shell.UpdateView{

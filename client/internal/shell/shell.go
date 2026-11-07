@@ -488,8 +488,10 @@ type Shell struct {
 	updateError        string
 
 	// updateResult is the persisted helper outcome shown until dismissed.
-	updateResult    update.Result
-	updateResultSet bool
+	updateResult       update.Result
+	updateResultSet    bool
+	updateResultDetail string
+	updateRetrying     bool
 
 	// autoUpdateSync wakes the automatic-check scheduler after a settings
 	// save, so a toggle change starts or cancels checks without a restart.
