@@ -171,6 +171,13 @@ func (f *fakeSettings) switchLanguage(language i18n.Lang) {
 	f.view.Sections[0].Title = catalog.T("section.dictation")
 }
 
+// setCheckEnabled updates the config the shell reads after a save.
+func (f *fakeSettings) setCheckEnabled(enabled bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.config.Updates.Check = enabled
+}
+
 // newSettingsShell wires a shell with a settings service.
 func newSettingsShell(t *testing.T, rt *fakeRuntime, desktop *fakeDesktop, settings shell.Settings) *shell.Shell {
 	t.Helper()

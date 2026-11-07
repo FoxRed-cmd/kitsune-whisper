@@ -56,6 +56,13 @@ type FeedbackConfig struct {
 	IndicatorOffsetY int `yaml:"indicator_offset_y"`
 }
 
+// UpdatesConfig controls the Client's automatic GitHub Releases checks.
+type UpdatesConfig struct {
+	// Check runs one automatic release check shortly after startup. Off means
+	// the Client makes no automatic GitHub requests; manual checks still work.
+	Check bool `yaml:"check"`
+}
+
 // ServerProfile is one named Server the Client can route Utterances to. The
 // fingerprint pins the Server certificate; an empty fingerprint means none is
 // pinned yet. AutoPair marks the Local Server, which pairs without a code.
@@ -97,6 +104,7 @@ type ClientConfig struct {
 	ClipboardRestore string         `yaml:"clipboard_restore"`
 	WaylandTool      string         `yaml:"wayland_tool"`
 	Feedback         FeedbackConfig `yaml:"feedback"`
+	Updates          UpdatesConfig  `yaml:"updates"`
 	SpoolDir         string         `yaml:"spool_dir"`
 	LogLevel         string         `yaml:"log_level"`
 	LogFile          string         `yaml:"log_file"`
@@ -141,6 +149,7 @@ func Default() ClientConfig {
 			IndicatorOffsetX: 0,
 			IndicatorOffsetY: 0,
 		},
+		Updates:  UpdatesConfig{Check: true},
 		SpoolDir: "",
 		LogLevel: "info",
 		LogFile:  "",
@@ -418,6 +427,7 @@ var schema = map[string]any{
 		"indicator_offset_x": nil,
 		"indicator_offset_y": nil,
 	},
+	"updates":   map[string]any{"check": nil},
 	"spool_dir": nil,
 	"log_level": nil,
 	"log_file":  nil,
@@ -698,6 +708,14 @@ func configFromMap(m map[string]any) (ClientConfig, error) {
 	}
 	if cfg.Feedback.IndicatorOffsetY < -4096 || cfg.Feedback.IndicatorOffsetY > 4096 {
 		return cfg, fieldError("client.feedback.indicator_offset_y", "must be between -4096 and 4096")
+	}
+
+	updates, err := group(m, "updates", "client.updates")
+	if err != nil {
+		return cfg, err
+	}
+	if cfg.Updates.Check, err = asBool(updates["check"], "client.updates.check"); err != nil {
+		return cfg, err
 	}
 
 	if cfg.SpoolDir, err = asString(m["spool_dir"], "client.spool_dir"); err != nil {

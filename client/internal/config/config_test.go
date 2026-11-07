@@ -344,6 +344,61 @@ func TestUnknownKeyNamesFieldPath(t *testing.T) {
 	assertErrorContains(t, err, "client.bogus")
 }
 
+func TestUpdatesCheckDefaultsToEnabled(t *testing.T) {
+	cfg, err := load(t, config.LoadOptions{
+		CWD: t.TempDir(),
+		Env: map[string]string{"XDG_CONFIG_HOME": t.TempDir()},
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Updates.Check {
+		t.Fatal("client.updates.check should default to true")
+	}
+}
+
+func TestUpdatesCheckCanBeDisabledInTheFile(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"updates": map[string]any{"check": false},
+	})
+	cfg, err := load(t, config.LoadOptions{CLIConfig: path})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Updates.Check {
+		t.Fatal("client.updates.check should be false")
+	}
+}
+
+func TestUpdatesCheckEnvOverride(t *testing.T) {
+	cfg, err := load(t, config.LoadOptions{
+		CWD: t.TempDir(),
+		Env: map[string]string{"KITSUNE_CLIENT_UPDATES__CHECK": "false"},
+	})
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Updates.Check {
+		t.Fatal("KITSUNE_CLIENT_UPDATES__CHECK=false should disable automatic checks")
+	}
+}
+
+func TestUpdatesCheckWrongTypeNamesFieldPath(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"updates": map[string]any{"check": "not-a-bool"},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.updates.check")
+}
+
+func TestUnknownUpdatesKeyNamesFieldPath(t *testing.T) {
+	path := writeConfig(t, map[string]any{
+		"updates": map[string]any{"bogus": 1},
+	})
+	_, err := load(t, config.LoadOptions{CLIConfig: path})
+	assertErrorContains(t, err, "client.updates.bogus")
+}
+
 func TestUnknownNestedKeyNamesFieldPath(t *testing.T) {
 	path := writeConfig(t, map[string]any{"audio": map[string]any{"bogus": 1}})
 	_, err := load(t, config.LoadOptions{CLIConfig: path})

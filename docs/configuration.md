@@ -38,6 +38,7 @@ CLI flags  >  environment  >  file  >  built-in defaults
   - `KITSUNE_CLIENT_SERVER_URL` (deprecated; migrates to a profile)
   - `KITSUNE_CLIENT_ACTIVE_SERVER`
   - `KITSUNE_CLIENT_AUDIO__DEVICE`
+  - `KITSUNE_CLIENT_UPDATES__CHECK`
   - `KITSUNE_SERVER_MODEL`
   - `KITSUNE_SERVER_DECODE__BEAM_SIZE`
   - `KITSUNE_SERVER_PROCESSING__BASE_URL`
@@ -368,6 +369,7 @@ fingerprint produces a distinct "certificate changed, pair again" error.
 | `language` | string | `auto` | Sent per request only when not `auto`. |
 | `ui_language` | `auto`\|`en`\|`ru` | `auto` | Language of the Settings window and Tray. `auto` follows the OS locale (`LC_ALL`/`LANGUAGE`/`LANG` on Linux, the user locale on Windows) and falls back to English. |
 | `theme` | `system`\|`light`\|`dark` | `system` | Colour scheme of the Settings window, the Tray icon, and the Recording indicator. `system` follows the desktop colour scheme: the window updates live, while the Tray icon and pill pick up a desktop change on the next Client start. `light` and `dark` pin it. Both palettes are warm: cream and terracotta in light, charcoal and amber in dark. |
+| `updates.check` | bool | `true` | Check GitHub Releases once about a minute after the Client starts. `false` makes no automatic GitHub requests; the manual "Check for updates" button and Tray item still work. Hot-applied without a restart. |
 | `initial_prompt` | string | `""` | Sent per request only when non-empty. |
 | `refine` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Refine per request; use the Server API directly if needed. |
 | `summarize` | bool | `false` | **Deprecated.** Accepted for one release and ignored with a warning. The Client never sends Summarize per request. |

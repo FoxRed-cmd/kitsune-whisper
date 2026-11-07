@@ -819,6 +819,17 @@ func updatesHTML(view UpdateView) string {
 	out.WriteString(`<div><dt>` + escape(view.Current) + `</dt><dd>` + escape(view.CurrentVersion) + `</dd></div>`)
 	out.WriteString(`<div><dt>` + escape(view.Latest) + `</dt><dd>` + escape(valueOr(view.LatestVersion, "—")) + `</dd></div>`)
 	out.WriteString(`</dl>`)
+	out.WriteString(`<div class="field field-toggle" data-field="client.updates.check">`)
+	out.WriteString(`<label class="toggle-row" for="field-client-updates-check">`)
+	out.WriteString(`<span class="toggle-label">` + escape(view.AutoCheck) + `</span>`)
+	out.WriteString(`<input type="checkbox" id="field-client-updates-check" class="switch" data-path="client.updates.check"`)
+	if view.CheckEnabled {
+		out.WriteString(` checked`)
+	}
+	out.WriteString(`>`)
+	out.WriteString(`</label>`)
+	out.WriteString(`<p class="help">` + escape(view.AutoCheckHelp) + `</p>`)
+	out.WriteString(`</div>`)
 	switch {
 	case view.Busy && view.Installing:
 		out.WriteString(`<p class="notice" data-update-busy="true">` + escape(view.Downloading) + `</p>`)
@@ -2018,7 +2029,7 @@ const pageHTML = `<!doctype html>
   // choice would contradict the failure message.
   function liveControl(el) {
     if (el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")) return true;
-    return el.dataset.path === "client.theme" || el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
+    return el.dataset.path === "client.theme" || el.dataset.path === "client.ui_language" || el.dataset.path === "client.language" || el.dataset.path === "client.updates.check";
   }
   function markRendered(root) {
     if (!root) return;
@@ -2623,6 +2634,10 @@ const pageHTML = `<!doctype html>
     if (!el) return;
     if (el.dataset.path === "client.ui_language") {
       sendIntent({ action: "save", patch: { ui_language: el.value } });
+    } else if (el.dataset.path === "client.updates.check") {
+      // The setting is hot-applied, so the toggle takes effect as soon as it
+      // changes instead of waiting for the global Save button.
+      sendIntent({ action: "save", patch: { updates: { check: el.checked } } });
     } else if (el.dataset.path === "client.language") {
       // The spoken language is per request. Saving it as soon as it changes
       // removes the chance that a user tests dictation with an unsaved value.

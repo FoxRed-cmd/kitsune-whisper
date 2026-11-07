@@ -1551,6 +1551,7 @@ func (s *Shell) save(patch map[string]any) {
 		if warning := s.syncGnomeShortcuts(); warning != "" {
 			failures = append(failures, warning)
 		}
+		s.reconcileAutoUpdates()
 		s.pushSettings()
 	}
 	s.pushMessages(notices, failures)
