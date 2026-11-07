@@ -111,6 +111,8 @@ type Desktop interface {
 	NewWindow(initial Snapshot, settings SettingsView, hidden bool) (Window, error)
 	// NewTray creates the Tray image and menu.
 	NewTray(initial Snapshot) (Tray, error)
+	// OpenURL opens an external link in the platform's default browser.
+	OpenURL(url string) error
 	// Run runs the platform event loop until Quit.
 	Run() error
 	// Quit stops the event loop.
@@ -257,11 +259,12 @@ type Snapshot struct {
 	ErrorAction Action `json:"errorAction,omitempty"`
 	// WizardError is Error translated for the wizard's try step, or "".
 	WizardError string `json:"wizardError,omitempty"`
-	// Server is the advisory reachability and authentication state of the
-	// active profile. It never changes routing.
+	// Server is the reachability and authentication state of the active
+	// profile. An offline result can move the active selection to another
+	// reachable profile; a single Utterance is never retried elsewhere.
 	Server trust.Status `json:"server"`
-	// Profiles lists every Server profile with its advisory health, for the
-	// Tray's profile submenu.
+	// Profiles lists every Server profile with its health, for the Tray's
+	// profile submenu.
 	Profiles []ProfileState `json:"profiles,omitempty"`
 	// ModelState is the active Server's loaded/cold/stopped state, when known.
 	ModelState string `json:"modelState,omitempty"`
@@ -430,6 +433,12 @@ type Options struct {
 	ServerLaunchError error
 	// CheckInterval is the slow health probe interval; 0 uses 30 seconds.
 	CheckInterval time.Duration
+	// LocalPairingRetryInterval is the delay between startup probes while the
+	// active Local Server is still pairing or starting; 0 uses 2 seconds. Tests
+	// shorten it.
+	LocalPairingRetryInterval time.Duration
+	// LocalPairingRetryAttempts bounds those startup probes; 0 uses 8.
+	LocalPairingRetryAttempts int
 	// RestartPollInterval is the delay between health probes after a Server
 	// restart; 0 uses 500 milliseconds. Tests shorten it.
 	RestartPollInterval time.Duration
@@ -464,16 +473,23 @@ type Shell struct {
 	// settingsPushMu keeps a settings render and its delivery in one order, so
 	// an older view cannot arrive after a newer one.
 	settingsPushMu sync.Mutex
-	snapshot       Snapshot
-	runtimeStatus  runtime.Status
-	server         trust.Status
-	window         Window
-	tray           Tray
-	levelTest      dictation.LevelStream
+	// saveMu serializes Client settings writes. The page saves each control as
+	// it changes, so two quick edits can arrive together; the store has no
+	// transaction of its own and would otherwise read the same base twice.
+	saveMu        sync.Mutex
+	snapshot      Snapshot
+	runtimeStatus runtime.Status
+	server        trust.Status
+	window        Window
+	tray          Tray
+	levelTest     dictation.LevelStream
 	// notifiedError is the last Dictation failure already announced.
 	notifiedError string
 	healthState   string
 	modelsLoaded  string
+	// serverLifecycleWait suppresses the health-driven switch while a
+	// Client-initiated start or restart is bringing the Server back.
+	serverLifecycleWait bool
 
 	updateInfo        update.Info
 	updateChecked     bool
@@ -789,8 +805,8 @@ func (s *Shell) failureLocked(status runtime.Status) *Notification {
 	}
 }
 
-// updateServer renders a new advisory Server state without disturbing the
-// Dictation status.
+// updateServer renders a new Server state without disturbing the Dictation
+// status.
 func (s *Shell) updateServer(status trust.Status) {
 	s.mu.Lock()
 	s.server = status
@@ -802,6 +818,21 @@ func (s *Shell) updateServer(status trust.Status) {
 	if tray != nil {
 		tray.Update(snapshot)
 	}
+}
+
+// setServerLifecycleWait marks a Client-initiated start or restart as in
+// flight, so the health probe does not mistake the expected offline window for
+// a lasting outage.
+func (s *Shell) setServerLifecycleWait(wait bool) {
+	s.mu.Lock()
+	s.serverLifecycleWait = wait
+	s.mu.Unlock()
+}
+
+func (s *Shell) serverLifecycleWaiting() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.serverLifecycleWait
 }
 
 // renderLocked builds the snapshot from the stored Dictation and Server state.
@@ -830,8 +861,8 @@ func (s *Shell) renderLocked() (Snapshot, Window, Tray) {
 	return snapshot, s.window, s.tray
 }
 
-// profileStatesLocked renders every Server profile and its advisory health for
-// the Tray's profile submenu. s.mu must be held.
+// profileStatesLocked renders every Server profile and its health for the
+// Tray's profile submenu. s.mu must be held.
 func (s *Shell) profileStatesLocked() []ProfileState {
 	if s.opts.Servers == nil {
 		return nil
@@ -868,13 +899,30 @@ func (s *Shell) activeProfileName() string {
 // it is not paired yet, retry quickly for a short window so a fresh install
 // heals without restarting the Client.
 func (s *Shell) monitorServer(ctx context.Context) {
-	s.checkServer(ctx)
-	for attempt := 0; attempt < 8 && s.localPairingPending(); attempt++ {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(2 * time.Second):
+	// A Local Server that is still pairing or starting has not failed yet.
+	// Probe it without switching profiles until the short startup retry window
+	// ends, so a routine launch race cannot move the user's selection away.
+	startup := s.localPairingPending()
+	attempts := s.opts.LocalPairingRetryAttempts
+	if attempts <= 0 {
+		attempts = 8
+	}
+	delay := s.opts.LocalPairingRetryInterval
+	if delay <= 0 {
+		delay = 2 * time.Second
+	}
+	s.checkServerMode(ctx, false, !startup)
+	if startup {
+		for attempt := 0; attempt < attempts && s.localPairingPending(); attempt++ {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(delay):
+			}
+			s.checkStartupServer(ctx)
 		}
+		// The grace is over: a still-unreachable Local Server may now yield to
+		// another reachable profile.
 		s.checkServer(ctx)
 	}
 	interval := s.opts.CheckInterval
@@ -955,19 +1003,26 @@ func (s *Shell) localProfilePinned() bool {
 }
 
 func (s *Shell) checkServer(ctx context.Context) {
-	s.checkServerMode(ctx, false)
+	s.checkServerMode(ctx, false, true)
 }
 
 // checkServerNow is the explicit Refresh path: it waits for the Device list so
 // the caller sees the newly paired Device in the same view, instead of racing
-// the background load.
+// the background load. Refreshing health never changes the selection; only the
+// background probe may switch away from an unreachable profile.
 func (s *Shell) checkServerNow(ctx context.Context) {
-	s.checkServerMode(ctx, true)
+	s.checkServerMode(ctx, true, false)
 }
 
-func (s *Shell) checkServerMode(ctx context.Context, syncDevices bool) {
+// checkStartupServer probes health during the Local Server startup grace. It
+// never switches profiles because a starting Server is not an outage.
+func (s *Shell) checkStartupServer(ctx context.Context) {
+	s.checkServerMode(ctx, false, false)
+}
+
+func (s *Shell) checkServerMode(ctx context.Context, syncDevices, allowSwitch bool) {
 	if s.opts.Servers != nil {
-		s.checkProfiles(ctx, syncDevices)
+		s.checkProfiles(ctx, syncDevices, allowSwitch)
 		return
 	}
 	status := s.probeActiveServer(ctx)
@@ -1016,21 +1071,53 @@ func (s *Shell) probeProfile(ctx context.Context, profileID string) trust.Status
 	return s.opts.Servers.CheckHealth(checkCtx, profileID)
 }
 
-// checkProfiles refreshes the advisory health of every Server profile. It never
-// changes the active profile and never applies a configuration; a changed
-// health only re-renders the profile list.
-func (s *Shell) checkProfiles(ctx context.Context, syncDevices bool) {
+// checkProfiles refreshes the health of every Server profile. When switching is
+// allowed and the active profile is unreachable while another profile answers,
+// the probe switches the active selection to the first available profile and
+// persists it. With no alternative it leaves the selection alone, so the user's
+// choice is never lost silently. A changed health otherwise only re-renders the
+// profile list.
+func (s *Shell) checkProfiles(ctx context.Context, syncDevices, allowSwitch bool) {
 	s.ensureLocalPairing(ctx)
 	view := s.opts.Servers.View()
+	statuses := make(map[string]trust.Status, len(view.Profiles))
+	for _, profile := range view.Profiles {
+		statuses[profile.ID] = s.probeProfile(ctx, profile.ID)
+	}
+	// The user may have switched profiles while the probes were in flight.
+	// Judge the selection that is current now, not the one this pass started
+	// with, so a switch made during the probes is not undone using stale
+	// per-profile results.
+	view = s.opts.Servers.View()
 	active := trust.Status{State: trust.StateUnknown}
 	for _, profile := range view.Profiles {
-		status := s.probeProfile(ctx, profile.ID)
-		if profile.Active {
+		status, known := statuses[profile.ID]
+		if !known {
+			status = profile.Health
+		}
+		statuses[profile.ID] = status
+		if profile.ID == view.ActiveID {
+			active = status
+		}
+	}
+	switched := false
+	if allowSwitch {
+		switched = s.switchFromUnreachableServer(view, statuses)
+	}
+	if switched {
+		view = s.opts.Servers.View()
+		if status, known := statuses[view.ActiveID]; known {
 			active = status
 		}
 	}
 	s.updateServer(active)
-	s.pushSettingsIfHealthChanged()
+	if switched {
+		// The active badge, the Tray name, and Diagnostics all moved even when
+		// the health labels did not.
+		s.pushSettings()
+	} else {
+		s.pushSettingsIfHealthChanged()
+	}
 	s.maybeAutoOpenWizard()
 	if active.State == trust.StateOnline {
 		// The Models and Devices screens follow the active profile's health:
@@ -1049,9 +1136,60 @@ func (s *Shell) checkProfiles(ctx context.Context, syncDevices bool) {
 	}
 }
 
+// switchFromUnreachableServer switches to the first reachable profile when the
+// active one is offline, and reports whether the persisted selection changed.
+// An authentication or certificate failure is not an outage: that profile is
+// still reachable, so the user gets the specific repair action instead of a
+// silent switch. Only the next Utterance moves; a failed one is never retried
+// on the new profile.
+func (s *Shell) switchFromUnreachableServer(view servers.View, statuses map[string]trust.Status) bool {
+	if s.opts.Servers == nil || view.ActiveID == "" || s.serverLifecycleWaiting() {
+		return false
+	}
+	if statuses[view.ActiveID].State != trust.StateOffline {
+		return false
+	}
+	var active, target *servers.Profile
+	for i := range view.Profiles {
+		profile := &view.Profiles[i]
+		if profile.ID == view.ActiveID {
+			active = profile
+			continue
+		}
+		status := statuses[profile.ID]
+		// A soft-stopped Server answers health checks but refuses
+		// transcription, so it cannot take over a Utterance.
+		if target == nil && status.State == trust.StateOnline && !serverSoftStopped(status) {
+			target = profile
+		}
+	}
+	if target == nil {
+		return false
+	}
+	activeName := view.ActiveID
+	if active != nil {
+		activeName = active.Name
+	}
+	if _, err := s.switchServerProfile(target.ID); err != nil {
+		s.log.Warning("servers: switch away from the unreachable %s: %v", activeName, err)
+		// A saved switch that could not be applied leaves the file ahead of the
+		// running Client. Restore the selection the runtime still uses; the
+		// next probe can try again.
+		var applyErr *serverApplyError
+		if errors.As(err, &applyErr) {
+			if _, revertErr := s.opts.Servers.SetActive(view.ActiveID); revertErr != nil {
+				s.log.Warning("servers: restore %s after a failed switch: %v", activeName, revertErr)
+			}
+		}
+		return false
+	}
+	s.log.Info("servers: %s is unreachable; switched to %s", activeName, target.Name)
+	return true
+}
+
 // pushSettingsIfHealthChanged re-renders the profile list only when the health
-// labels actually changed, so a slow background probe never rebuilds a form the
-// user is editing.
+// labels actually changed, so a health-only probe never rebuilds a form the
+// user is editing. A profile switch pushes the view separately.
 func (s *Shell) pushSettingsIfHealthChanged() {
 	view := s.opts.Servers.View()
 	var signature strings.Builder

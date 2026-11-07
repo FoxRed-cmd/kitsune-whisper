@@ -358,10 +358,12 @@ type fakeDesktop struct {
 	trayErr   error
 	runErr    error
 
-	window  *fakeWindow
-	tray    *fakeTray
-	hidden  bool
-	initial shell.SettingsView
+	window    *fakeWindow
+	tray      *fakeTray
+	hidden    bool
+	initial   shell.SettingsView
+	openedURL string
+	openErr   error
 
 	quitCh    chan struct{}
 	quitOnce  sync.Once
@@ -404,6 +406,22 @@ func (d *fakeDesktop) NewTray(shell.Snapshot) (shell.Tray, error) {
 		d.tray = &fakeTray{}
 	}
 	return d.tray, nil
+}
+
+func (d *fakeDesktop) OpenURL(url string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.openErr != nil {
+		return d.openErr
+	}
+	d.openedURL = url
+	return nil
+}
+
+func (d *fakeDesktop) lastOpenedURL() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.openedURL
 }
 
 func (d *fakeDesktop) Run() error {

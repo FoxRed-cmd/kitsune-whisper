@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -163,7 +164,6 @@ type ServerLabels struct {
 	ModelState      string `json:"modelState"`
 	SettingsTitle   string `json:"settingsTitle"`
 	SettingsHelp    string `json:"settingsHelp"`
-	SaveSettings    string `json:"saveSettings"`
 	AdvancedValue   string `json:"advancedValue"`
 	Source          string `json:"source"`
 	ModeRestart     string `json:"modeRestart"`
@@ -258,7 +258,6 @@ type ModelLabels struct {
 	IdleTitle         string `json:"idleTitle"`
 	IdleHelp          string `json:"idleHelp"`
 	IdleLabel         string `json:"idleLabel"`
-	IdleSave          string `json:"idleSave"`
 	AdvancedTitle     string `json:"advancedTitle"`
 	AdvancedHelp      string `json:"advancedHelp"`
 	LocalPath         string `json:"localPath"`
@@ -508,7 +507,6 @@ func (s *Shell) serverLabels() ServerLabels {
 		ModelState:      catalog.T("server.modelState"),
 		SettingsTitle:   catalog.T("server.settingsTitle"),
 		SettingsHelp:    catalog.T("server.settingsHelp"),
-		SaveSettings:    catalog.T("action.saveServer"),
 		AdvancedValue:   catalog.T("server.advancedValue"),
 		Source:          catalog.T("server.source"),
 		ModeRestart:     catalog.T("server.modeRestart"),
@@ -565,8 +563,8 @@ func (s *Shell) serverLabels() ServerLabels {
 	}
 }
 
-// serverStateLabels translates every advisory health state whose label the
-// profile rows render.
+// serverStateLabels translates every health state whose label the profile rows
+// render.
 func serverStateLabels(catalog i18n.Catalog) map[string]string {
 	states := []trust.ServerState{
 		trust.StateUnknown,
@@ -624,7 +622,6 @@ func (s *Shell) modelLabels() ModelLabels {
 		IdleTitle:         catalog.T("model.idleTitle"),
 		IdleHelp:          catalog.T("model.idleHelp"),
 		IdleLabel:         catalog.T("model.idleLabel"),
-		IdleSave:          catalog.T("action.saveIdleTimeout"),
 		AdvancedTitle:     catalog.T("model.advancedTitle"),
 		AdvancedHelp:      catalog.T("model.advancedHelp"),
 		LocalPath:         catalog.T("model.localPath"),
@@ -707,11 +704,9 @@ func collectViewErrors(view SettingsView) []ViewError {
 
 	add("dictation-microphone", view.DeviceError)
 	add("dictation-hotkeys", view.Gnome.Error)
-	for _, profile := range view.Servers.Profiles {
-		if profile.Health.State != trust.StateOnline {
-			add("servers", profile.Name+": "+profile.Health.Error)
-		}
-	}
+	// An unavailable Server profile is already labelled in its row. Turning the
+	// health detail into a banner would repeat one alert per profile on every
+	// background probe and bury the failures the user can act on.
 	add("servers", view.Servers.LifecycleError)
 	add("devices", view.Servers.PairingError)
 	add("devices", view.Servers.DevicesError)
@@ -821,6 +816,8 @@ type Intent struct {
 	Enabled bool `json:"enabled,omitempty"`
 	// Tail is the number of log lines for ActionLoadLogs; 0 uses 200.
 	Tail int `json:"tail,omitempty"`
+	// URL is an external link the page asks the desktop to open.
+	URL string `json:"url,omitempty"`
 	// Hotkey and Trigger carry the wizard's hotkey step values.
 	Hotkey  string `json:"hotkey,omitempty"`
 	Trigger string `json:"trigger,omitempty"`
@@ -837,6 +834,7 @@ type Intent struct {
 // Intent actions.
 const (
 	IntentSave               = "save"
+	IntentOpenURL            = "open-url"
 	IntentPreviewIndicator   = "preview-indicator"
 	IntentHideIndicator      = "hide-indicator-preview"
 	IntentValidate           = "validate"
@@ -932,6 +930,9 @@ func (s *Shell) HandleIntent(payload []byte) error {
 			}
 		}
 		s.save(patch)
+		return nil
+	case IntentOpenURL:
+		s.openExternalURL(intent.URL)
 		return nil
 	case IntentPreviewIndicator:
 		// A preview may only show while the Settings window is on screen. The
@@ -1339,6 +1340,31 @@ func (s *Shell) copyConnectAddress() {
 	s.pushMessages([]string{s.catalog().T("notice.server.copied", address)}, nil)
 }
 
+// serverApplyError marks a Server switch that was persisted but could not be
+// applied to the running Client.
+type serverApplyError struct{ err error }
+
+func (e *serverApplyError) Error() string { return e.err.Error() }
+func (e *serverApplyError) Unwrap() error { return e.err }
+
+// switchServerProfile makes one profile the persisted active Server and applies
+// the resulting configuration. It resets cached Devices and pushes no view;
+// callers decide what to report. A serverApplyError means the selection was
+// saved but the running Client still uses the previous configuration.
+func (s *Shell) switchServerProfile(profileID string) (servers.Profile, error) {
+	profile, err := s.opts.Servers.SetActive(profileID)
+	if err != nil {
+		return servers.Profile{}, err
+	}
+	s.resetDevices()
+	if s.opts.ApplyConfig != nil {
+		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
+			return profile, &serverApplyError{err: err}
+		}
+	}
+	return profile, nil
+}
+
 // useProfile makes one Server profile active, persists it, and applies the new
 // configuration to the running Client. The next Utterance uses it; nothing
 // retries on another profile.
@@ -1350,19 +1376,17 @@ func (s *Shell) useProfile(profileID string) {
 	if strings.TrimSpace(profileID) == "" {
 		return
 	}
-	profile, err := s.opts.Servers.SetActive(profileID)
-	if err != nil {
-		s.pushSettings()
-		s.pushMessages(nil, []string{s.catalog().T("error.server.select", err.Error())})
-		return
-	}
+	profile, err := s.switchServerProfile(profileID)
 	failures := []string{}
-	if s.opts.ApplyConfig != nil {
-		if err := s.opts.ApplyConfig(s.opts.Servers.Config()); err != nil {
-			failures = append(failures, s.catalog().T("error.server.apply", err.Error()))
+	if err != nil {
+		var applyErr *serverApplyError
+		if !errors.As(err, &applyErr) {
+			s.pushSettings()
+			s.pushMessages(nil, []string{s.catalog().T("error.server.select", err.Error())})
+			return
 		}
+		failures = append(failures, s.catalog().T("error.server.apply", applyErr.Error()))
 	}
-	s.resetDevices()
 	s.pushSettings()
 	s.pushMessages([]string{s.catalog().T("notice.server.selected", profile.Name)}, failures)
 	s.update(s.opts.Runtime.Status())
@@ -1548,8 +1572,30 @@ func modelWarnings(view servers.ModelsView) []string {
 	return []string{view.Warning}
 }
 
+// openExternalURL validates a web link from the page and hands it to the
+// platform adapter. Only http(s) links are accepted, so the page cannot ask the
+// desktop to open a local file or a command-line style URI.
+func (s *Shell) openExternalURL(raw string) {
+	link := strings.TrimSpace(raw)
+	parsed, err := url.Parse(link)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		s.pushMessages(nil, []string{s.catalog().T("error.openURL", link)})
+		return
+	}
+	if s.opts.Desktop == nil {
+		s.pushMessages(nil, []string{s.catalog().T("error.openURL", link)})
+		return
+	}
+	if err := s.opts.Desktop.OpenURL(link); err != nil {
+		s.log.Warning("open external link: %v", err)
+		s.pushMessages(nil, []string{s.catalog().T("error.openURL", err.Error())})
+	}
+}
+
 // save runs one settings save and pushes the resulting view and messages.
 func (s *Shell) save(patch map[string]any) {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	outcome, err := s.opts.Settings.Save(patch)
 	notices := outcome.Notices
 	failures := outcome.Errors

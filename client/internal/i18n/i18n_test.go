@@ -110,7 +110,6 @@ func TestRussianCatalogTranslatesTheSettingsScreen(t *testing.T) {
 	cases := map[string]string{
 		"section.dictation":    "Распознавание речи",
 		"field.hotkey":         "Горячая клавиша распознавания",
-		"action.save":          "Сохранить",
 		"action.restart":       "Перезапустить клиент",
 		"badge.restart":        "Нужен перезапуск",
 		"tray.quit":            "Выход",

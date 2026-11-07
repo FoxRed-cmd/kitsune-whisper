@@ -32,7 +32,7 @@ bash scripts/docker-smoke.sh --model tiny
 `e2e_live.py` covers the speech round trip, silence/VAD, undecodable media, the
 real Client, an unreachable Server, and latency. `e2e_trust.py` covers local
 auto-pairing over HTTPS, a remote Pairing code, Device revocation and re-pairing,
-the manual Server switch with no fallback, soft-stop/start, supervised restart,
+the Server switch with no per-utterance fallback, soft-stop/start, supervised restart,
 the persisted soft-stop, and Spool save/retry/delete through the real Client.
 `docker_smoke.py` covers the container contract: `docker exec` pairing, the
 writable `/config`, `/state` persistence, restart policy, and recreation.
@@ -90,8 +90,8 @@ failure opens a ticket; do not silently mark the row passed.
 | 20 | Remote pairing with a code from Settings pins the fingerprint and persists across both reboots | Pending | Pending | Pending |
 | 21 | A revoked Device gets `401` on its next dictation; a new code re-pairs it | Pending | Pending | Pending |
 | 22 | The Client's own Device is marked **This Device** and cannot be revoked from the Local Server settings | Pending | Pending | — |
-| 23 | An unreachable active profile reports one error and spools; it does not retry another profile | Pending | Pending | — |
-| 24 | The Tray/Settings manual switch changes routing; health is advisory and never switches by itself | Pending | Pending | — |
+| 23 | An unreachable active profile switches routing to another reachable profile; with no alternative it reports one error and spools, and never retries the failed utterance | Pending | Pending | — |
+| 24 | The Tray/Settings manual switch changes routing; a health probe only switches away from an unreachable profile and marks it unavailable on the Servers screen | Pending | Pending | — |
 | 25 | Soft-stop returns `503 stopped`, keeps Admin API/logs alive, and Start resumes | Pending | Pending | Pending |
 | 26 | Restart is a supervised self-exit; the Device token and a soft-stop flag survive | Pending | Pending | Pending |
 | 27 | Local Server Stop/Restart use the hard supervisor path (ADR 0012); a Remote Server uses soft-stop | Pending | Pending | — |
@@ -156,7 +156,7 @@ omissions.
 | Implementation decisions: HTML/TypeScript UI, Svelte suggested | Server-rendered HTML/JS in `internal/shell/page.go` | ADR 0010 keeps the Wails adapter thin without a Node build in release CI. |
 | Soft-stop is the uniform "stop" on native and Docker | Local Server Stop/Restart are **hard** supervisor operations; Remote/Docker use soft-stop | ADR 0012: the Client on the Server host can drive the OS supervisor. |
 | User stories 49/50/51/52/53: remote status, settings, models, logs, lifecycle | Implemented through the Admin API; the Server YAML is written only by that Server | Pairing grants a trusted Device the full Admin API (ADR 0008). |
-| "No automatic fallback" | Enforced in the Client and covered by `e2e_trust.py` | The active profile is always explicit. |
+| "No per-utterance fallback" | Enforced in the Client and covered by `e2e_trust.py` | The active profile is explicit; only an offline health result moves it, and a failed utterance is never retried. |
 | Multi-user isolation | Out of scope; the loopback limitation is documented | A local user still needs a Device token; see [security.md](../security.md). |
 | Windows code signing | Out of scope; SmartScreen is documented | v1 ships unsigned. |
 | macOS | Out of scope; nothing is built or tested | The Wails boundary does not block it. |

@@ -68,7 +68,6 @@ type Section struct {
 
 // Actions are the translated buttons and hints the Settings page renders.
 type Actions struct {
-	Save              string `json:"save"`
 	Restart           string `json:"restart"`
 	Test              string `json:"test"`
 	Stop              string `json:"stop"`
@@ -280,7 +279,6 @@ func (s *Service) View() View {
 		ConfigPath:  snapshot.Path,
 		ConfigTitle: catalog.T("settings.configPath"),
 		Actions: Actions{
-			Save:              catalog.T("action.save"),
 			Restart:           catalog.T("action.restart"),
 			Test:              catalog.T("action.test"),
 			Stop:              catalog.T("action.stop"),
