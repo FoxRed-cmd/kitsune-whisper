@@ -20,6 +20,7 @@ func windowsHelper(data helperData) string {
 	fmt.Fprintf(&out, "$ConfigPath = %s\n", powershellQuote(data.ConfigPath))
 	fmt.Fprintf(&out, "$ClientPid = %d\n", data.ClientPID)
 	fmt.Fprintf(&out, "$TimeoutSeconds = %d\n", data.TimeoutSeconds)
+	fmt.Fprintf(&out, "$ClientExitWaitSeconds = %d\n", data.ClientExitWaitSeconds)
 	if data.ClientOnly {
 		out.WriteString("$ClientOnly = $true\n")
 	} else {
@@ -42,11 +43,12 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $LogPath) | Out-Nu
   Out-File -FilePath $LogPath -Append -Encoding utf8
 
 # The Windows installer force-stops kitsune-client, so the helper waits for the
-# old Client to exit before the installer replaces its files.
-$waitDeadline = (Get-Date).AddMinutes(5)
+# old Client to exit before the installer replaces its files. The wait is fixed
+# by the Client so a stuck process cannot block the update forever.
+$waitDeadline = (Get-Date).AddSeconds($ClientExitWaitSeconds)
 while (Get-Process -Id $ClientPid -ErrorAction SilentlyContinue) {
   if ((Get-Date) -gt $waitDeadline) {
-    "the Client did not exit within 5 minutes" | Out-File -FilePath $LogPath -Append -Encoding utf8
+    "the Client did not exit within $ClientExitWaitSeconds seconds" | Out-File -FilePath $LogPath -Append -Encoding utf8
     break
   }
   Start-Sleep -Milliseconds 200

@@ -139,8 +139,8 @@ const (
 	ActionQuit Action = "quit"
 	// ActionCheckUpdates asks GitHub Releases for a newer build.
 	ActionCheckUpdates Action = "check-updates"
-	// ActionInstallUpdate starts the manual download; a ready set is left for
-	// the install step.
+	// ActionInstallUpdate downloads the staged set when necessary and then
+	// installs it through the update helper.
 	ActionInstallUpdate Action = "install-update"
 	// ActionCancelUpdate cancels an in-flight download.
 	ActionCancelUpdate Action = "cancel-update"
@@ -475,17 +475,16 @@ type Shell struct {
 	healthState   string
 	modelsLoaded  string
 
-	updateInfo         update.Info
-	updateChecked      bool
-	updateBusy         bool
-	updateDownloading  bool
-	updateInstalling   bool
-	updateReady        bool
-	updateStage        update.Stage
-	updateProgress     update.Progress
-	updateAutoDownload bool
-	updateCancel       context.CancelFunc
-	updateError        string
+	updateInfo        update.Info
+	updateChecked     bool
+	updateBusy        bool
+	updateDownloading bool
+	updateInstalling  bool
+	updateReady       bool
+	updateStage       update.Stage
+	updateProgress    update.Progress
+	updateCancel      context.CancelFunc
+	updateError       string
 
 	// updateResult is the persisted helper outcome shown until dismissed.
 	updateResult       update.Result
@@ -573,6 +572,7 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	}
 
 	s.loadUpdateResult()
+	s.loadLatestStaged()
 	s.update(s.opts.Runtime.Status())
 	s.maybeAutoOpenWizard()
 

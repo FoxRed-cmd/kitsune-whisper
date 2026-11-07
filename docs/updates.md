@@ -83,6 +83,11 @@ The Client stages one complete set for the release tag:
 | `kitsune-client_<platform>_<arch>.*` | The Client archive. |
 | `kitsune-server_<platform>_<arch>.tar.gz` | The Local Server bundle, only when the Local Server Component is installed. |
 
+`VERSION` is part of the Client's staged set, not a new release artifact: the
+published artifact set is unchanged. When a release does not attach `VERSION`,
+the Client writes the verified release tag into the stage; if a future release
+does attach it, the Client downloads and verifies it like every other file.
+
 The Client verifies each downloaded file against `checksums.txt` as it streams.
 The signature over `checksums.txt` is checked by the installer, so the trust
 chain is the same as a manual install. A checksum or signature failure aborts

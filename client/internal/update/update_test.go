@@ -637,6 +637,58 @@ func TestStagedReportsOnlyCompleteSets(t *testing.T) {
 	}
 }
 
+func TestLatestStagedReturnsTheNewestCompleteSet(t *testing.T) {
+	f := newFixtureWith(t, fixtureOptions{
+		tag: "v0.3.0", installerName: "install.sh", installerBody: "#!/bin/sh\nexit 0\n",
+	})
+	svc := service(t, f, update.Options{
+		Current: "v0.1.0", Platform: "linux", Arch: "amd64",
+		Components: components.Set{Client: true},
+	})
+	info := check(t, svc)
+	newStage, err := svc.Download(context.Background(), info, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Add an older complete set beside the newer one without Download's
+	// pruning, so the tag decides which one LatestStaged returns.
+	olderDir := filepath.Join(f.dir, "v0.1.5")
+	if err := os.MkdirAll(olderDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range newStage.Files {
+		body, err := os.ReadFile(filepath.Join(newStage.Dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(olderDir, name), body, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	older := newStage
+	older.Tag, older.Dir = "v0.1.5", olderDir
+	manifest, err := json.Marshal(older)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(olderDir, "stage.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	latest, ok := svc.LatestStaged()
+	if !ok || latest.Tag != newStage.Tag || latest.Dir != newStage.Dir {
+		t.Fatalf("LatestStaged = %+v, %t; want %s", latest, ok, newStage.Tag)
+	}
+
+	if err := os.Remove(filepath.Join(newStage.Dir, update.ChecksumsAsset)); err != nil {
+		t.Fatal(err)
+	}
+	if latest, ok := svc.LatestStaged(); !ok || latest.Tag != "v0.1.5" {
+		t.Fatalf("LatestStaged = %+v, %t; want the remaining v0.1.5", latest, ok)
+	}
+}
+
 func TestVerifyStagedAcceptsAndRejectsFiles(t *testing.T) {
 	f := newFixture(t, "install.sh", "#!/bin/sh\nexit 0\n", "")
 	svc := service(t, f, update.Options{

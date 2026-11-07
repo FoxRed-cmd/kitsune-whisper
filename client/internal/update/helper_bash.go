@@ -21,6 +21,7 @@ func unixHelper(data helperData) string {
 	fmt.Fprintf(&out, "CONFIG=%s\n", shellQuote(data.ConfigPath))
 	fmt.Fprintf(&out, "CLIENT_PID=%d\n", data.ClientPID)
 	fmt.Fprintf(&out, "TIMEOUT=%d\n", data.TimeoutSeconds)
+	fmt.Fprintf(&out, "CLIENT_EXIT_WAIT=%d\n", data.ClientExitWaitSeconds)
 	if data.ClientOnly {
 		out.WriteString("CLIENT_ONLY=1\n")
 	} else {
@@ -46,10 +47,12 @@ echo "== kitsune-whisper update $TAG started $(date -u +%Y-%m-%dT%H:%M:%SZ) =="
 
 # The installer on Windows force-stops kitsune-client. On both platforms the
 # helper waits for the old Client to exit and release the single-instance lock.
-wait_deadline=$(( $(date +%s) + 300 ))
+# CLIENT_EXIT_WAIT is fixed by the Client; the helper proceeds after it so a
+# stuck Client cannot block the update forever.
+wait_deadline=$(( $(date +%s) + CLIENT_EXIT_WAIT ))
 while kill -0 "$CLIENT_PID" 2>/dev/null; do
   if [ "$(date +%s)" -ge "$wait_deadline" ]; then
-    echo "the Client did not exit within 5 minutes"
+    echo "the Client did not exit within $CLIENT_EXIT_WAIT seconds"
     break
   fi
   sleep 0.2

@@ -928,9 +928,12 @@ func guiExit(runErr error) (code int, restartClient bool) {
 
 // updateSuppressesLocalStart reports whether the persisted update result means
 // this relaunch must leave the Local Server stopped. A partial install and a
-// Client-only install must not start a Server in an undefined state; a pending
-// marker means the outcome is unknown. The first ordinary launch after the
-// result was marked read follows the normal autostart rules again.
+// pending marker must never start a Server in an undefined state. When the
+// Server was stopped before the update, every unread outcome keeps it stopped:
+// a failed or timed-out install must not undo the user's choice. The Local
+// Server starts again only when it ran before a success, error, or timeout. The
+// first ordinary launch after the result was marked read follows the normal
+// autostart rules again.
 func updateSuppressesLocalStart(result update.Result, found bool) bool {
 	if !found || result.Consumed {
 		return false
@@ -938,10 +941,10 @@ func updateSuppressesLocalStart(result update.Result, found bool) bool {
 	switch result.Status {
 	case update.StatusPending, update.StatusPartial:
 		return true
-	case update.StatusSuccess:
+	case update.StatusSuccess, update.StatusError, update.StatusTimeout:
 		return !result.ServerWasRunning
 	default:
-		return false
+		return true
 	}
 }
 

@@ -345,7 +345,6 @@ var english = map[string]string{
 	"notice.logLevel":               "Log level: %s.",
 	"notice.update.available":       "%s is available. Its files are verified before installation.",
 	"notice.update.current":         "kitsune-whisper is up to date.",
-	"notice.update.launched":        "The verified update was handed to the installer. The Client will restart when it finishes.",
 	"error.update.unavailable":      "Update checking is not available in this build.",
 	"error.update.check":            "Could not check for updates: %s",
 	"error.update.none":             "No update is ready to install. Check again first.",
@@ -354,7 +353,6 @@ var english = map[string]string{
 
 	"page.restartHint":       "Restart the Client to apply changes marked “Restart required”.",
 	"update.title":           "Updates",
-	"update.help":            "The Client checks GitHub Releases about a minute after startup when automatic checks are on, and whenever you ask. It stages the verified installer, checksums, signature, VERSION, and the archives of the installed Components, then installs them quietly on request and restarts the Client.",
 	"update.autoCheck":       "Check for updates automatically",
 	"update.autoCheckHelp":   "Check GitHub Releases about a minute after the Client starts. Off means no automatic requests; the manual check still works.",
 	"update.current":         "Current version",
@@ -384,7 +382,6 @@ var english = map[string]string{
 	"update.details":         "Details",
 	"update.logPath":         "Update log",
 	"update.logUnavailable":  "The update log is empty or unavailable.",
-	"update.launched":        "The verified update was handed to the installer.",
 	"update.releasePage":     "Open the release page",
 	"update.devBuild":        "This is a local build, so no update is offered.",
 	"server.managementTitle": "Server management",

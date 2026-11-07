@@ -47,8 +47,12 @@ func TestUpdateResultSuppressesTheLocalServerStart(t *testing.T) {
 		{"pending", update.Result{Status: update.StatusPending}, true, true},
 		{"client-only success", update.Result{Status: update.StatusSuccess}, true, true},
 		{"server was running", update.Result{Status: update.StatusSuccess, ServerWasRunning: true}, true, false},
+		{"error with the server stopped", update.Result{Status: update.StatusError}, true, true},
+		{"error with the server running", update.Result{Status: update.StatusError, ServerWasRunning: true}, true, false},
+		{"timeout with the server stopped", update.Result{Status: update.StatusTimeout}, true, true},
+		{"timeout with the server running", update.Result{Status: update.StatusTimeout, ServerWasRunning: true}, true, false},
+		{"partial even when the server was running", update.Result{Status: update.StatusPartial, ServerWasRunning: true}, true, true},
 		{"already consumed", update.Result{Status: update.StatusPartial, Consumed: true}, true, false},
-		{"error", update.Result{Status: update.StatusError}, true, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
