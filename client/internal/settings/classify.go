@@ -54,6 +54,7 @@ var hotFields = map[string]struct{}{
 	"client.timeout_seconds":             {},
 	"client.spool_dir":                   {},
 	"client.active_server":               {},
+	"client.updates.check":               {},
 }
 
 // Classify reports whether a change to the given field path is hot-applied or

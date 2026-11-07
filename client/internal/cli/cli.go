@@ -687,18 +687,41 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 	bootstrap := prepareTrust(ctx, cfg, so, logger)
 	cfg = bootstrap.cfg
 
+	// The update helper stops the Local Server before replacing its files. A
+	// relaunch must not start it again unless it was running before the update.
+	configPath := so.configPath
+	if configPath != "" {
+		if absolute, err := filepath.Abs(configPath); err == nil {
+			configPath = absolute
+		}
+	}
+	resultPath := update.ResultPath(configPath)
+	logPath := update.UpdateLogPath(configPath)
+	updateResult, hasUpdateResult := update.ReadResult(resultPath)
+	suppressLocalStart := updateSuppressesLocalStart(updateResult, hasUpdateResult)
+
 	// The Client owns the Local Server lifecycle. Start it before the shell's
 	// first health probe when the install and the Autostart mode permit it, so
 	// the probe can observe the Server coming up. A failure never blocks the
 	// window: it is logged and shown in the window, and the Server stays
 	// reported offline.
-	startupController := startup.Default(so.configPath)
+	startupController := startup.Default(configPath)
 	localServer := localserver.Default()
-	launchErr := maybeStartLocalServer(
-		ctx, startupController.Status(), localServer, localServerReachable(cfg),
-	)
-	if launchErr != nil {
-		logger.Warning("Local Server: %v", launchErr)
+	var launchErr error
+	if suppressLocalStart {
+		logger.Info("update: the Local Server stays stopped after the update")
+	} else {
+		launchErr = maybeStartLocalServer(
+			ctx, startupController.Status(), localServer, localServerReachable(cfg),
+		)
+		if launchErr != nil {
+			logger.Warning("Local Server: %v", launchErr)
+		}
+	}
+	if hasUpdateResult && !updateResult.Consumed {
+		if err := update.ConsumeResult(resultPath); err != nil {
+			logger.Warning("update: mark the result read: %v", err)
+		}
 	}
 	if !so.gui {
 		if profile, ok := bootstrap.cfg.ActiveProfile(); ok && profile.AutoPair {
@@ -776,6 +799,10 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			// Server for the status card.
 			healthCheck = serverCheck(cfg, bootstrap.manager, nil)
 		}
+		// The Component set is read once per launch, before any step runs. The
+		// wizard and the update composition both use it; the active Server
+		// profile is irrelevant.
+		installed := components.Detect(components.Default())
 		// The Setup wizard keeps its resumable progress in a sibling
 		// wizard.json, never in the shared configuration file.
 		var wizardService *wizard.Service
@@ -786,7 +813,6 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			// The Component set is read once per launch, before any step runs.
 			// It stays out of wizard.json so upgrading a Client-only install
 			// with the Local Server brings its steps back on the next start.
-			installed := components.Detect(components.Default())
 			logger.Info("wizard: client=%t server=%t", installed.Client, installed.Server)
 			wizardService = wizard.Open(stateStore, wizard.Options{
 				OnLog:      func(message string) { logger.Warning("wizard: %s", message) },
@@ -822,9 +848,17 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 			Version:              Version,
 			Profile:              server.Name,
 			CheckServer:          healthCheck,
-			Updater:              update.New(update.Options{Current: Version}),
-			Notifier:             shellNotifier{send: newNotifier(logger)},
-			Logger:               logger,
+			Updater: update.New(update.Options{
+				Current:       Version,
+				Components:    installed,
+				ConfigPath:    configPath,
+				ClientPath:    clientExecutable(),
+				ResultPath:    resultPath,
+				LogPath:       logPath,
+				HelperTimeout: 15 * time.Minute,
+			}),
+			Notifier: shellNotifier{send: newNotifier(logger)},
+			Logger:   logger,
 		})
 	}
 
@@ -838,23 +872,23 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 
 	if sh != nil {
 		err := sh.Run(ctx, so.hidden)
-		// Restart must release the single-instance lock before the new process
-		// tries to acquire it.
+		// Restart and update-install must release the single-instance lock
+		// before a new process tries to acquire it.
 		if releaseErr := lock.Release(); releaseErr != nil {
 			logger.Warning("%v", releaseErr)
 		}
-		if errors.Is(err, shell.ErrRestart) {
+		code, restartClient := guiExit(err)
+		if restartClient {
 			if restartErr := restart.Exec(); restartErr != nil {
 				logger.Error("%v", restartErr)
 				return 1
 			}
 			return 0
 		}
-		if err != nil {
+		if err != nil && !errors.Is(err, shell.ErrUpdateInstall) {
 			logger.Error("%v", err)
-			return 1
 		}
-		return 0
+		return code
 	}
 
 	fmt.Fprintf(stderr, "kitsune-client: %s trigger on %s, cancel on %s\n", cfg.Trigger, cfg.Hotkey, cfg.CancelHotkey)
@@ -863,6 +897,55 @@ func serve(cfg config.ClientConfig, so serveOptions, lock *instance.Lock, stderr
 		return 1
 	}
 	return 0
+}
+
+// clientExecutable is the installed Client path handed to the helper. It is
+// empty when the operating system cannot name the current executable.
+func clientExecutable() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return executable
+}
+
+// guiExit maps the shell's Run result to the process exit code and whether the
+// Client must re-exec itself with restart.Exec.
+func guiExit(runErr error) (code int, restartClient bool) {
+	switch {
+	case errors.Is(runErr, shell.ErrUpdateInstall):
+		// The helper waits for this process and relaunches the installed
+		// binary itself. Re-exec here would run the old image and race it.
+		return 0, false
+	case errors.Is(runErr, shell.ErrRestart):
+		return 0, true
+	case runErr != nil:
+		return 1, false
+	default:
+		return 0, false
+	}
+}
+
+// updateSuppressesLocalStart reports whether the persisted update result means
+// this relaunch must leave the Local Server stopped. A partial install and a
+// pending marker must never start a Server in an undefined state. When the
+// Server was stopped before the update, every unread outcome keeps it stopped:
+// a failed or timed-out install must not undo the user's choice. The Local
+// Server starts again only when it ran before a success, error, or timeout. The
+// first ordinary launch after the result was marked read follows the normal
+// autostart rules again.
+func updateSuppressesLocalStart(result update.Result, found bool) bool {
+	if !found || result.Consumed {
+		return false
+	}
+	switch result.Status {
+	case update.StatusPending, update.StatusPartial:
+		return true
+	case update.StatusSuccess, update.StatusError, update.StatusTimeout:
+		return !result.ServerWasRunning
+	default:
+		return true
+	}
 }
 
 // runToggle sends one toggle command to a running Client over the control

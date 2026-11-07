@@ -266,7 +266,7 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --server-only
 
 # Зафиксировать версию
-curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --version v1.2.1
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --version v1.2.2
 ```
 
 Проверьте план или установленную версию, ничего не меняя:
@@ -525,6 +525,7 @@ udev-правило для `ydotool`; это нужно делать вручн�
 Подробные страницы документации пока на английском.
 
 - [Установка, флаги, пути, автозапуск, обновление](docs/install.md)
+- [Обновления: автоматическая проверка, фоновая загрузка, тихая установка](docs/updates.md)
 - [Полная матрица зависимостей и настройка вставки в Wayland](docs/dependencies.md)
 - [Справочник по конфигурации](docs/configuration.md)
 - [Безопасность: TLS, токены устройств, сопряжение](docs/security.md)

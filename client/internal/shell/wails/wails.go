@@ -506,12 +506,26 @@ func (t *trayPort) buildMenu(snapshot shell.Snapshot) *application.Menu {
 	menu.AddSeparator()
 	menu.Add(labels.Settings).OnClick(func(*application.Context) { t.do(shell.ActionSettings) })
 	switch {
-	case snapshot.Update.Busy && snapshot.Update.Installing:
+	case snapshot.Update.Installing:
 		item := menu.Add(labels.Updating)
+		item.SetEnabled(false)
+	case snapshot.Update.Downloading:
+		label := labels.Updating
+		if snapshot.Update.Total > 0 && labels.UpdateProgress != "" {
+			percent := shell.UpdatePercent(snapshot.Update.Received, snapshot.Update.Total)
+			label = fmt.Sprintf(labels.UpdateProgress, snapshot.Update.File, percent)
+		} else if snapshot.Update.File != "" && labels.UpdateFile != "" {
+			label = fmt.Sprintf(labels.UpdateFile, snapshot.Update.File)
+		}
+		item := menu.Add(label)
 		item.SetEnabled(false)
 	case snapshot.Update.Busy:
 		item := menu.Add(labels.CheckingUpdates)
 		item.SetEnabled(false)
+	case snapshot.Update.Ready && labels.UpdateReady != "":
+		menu.Add(fmt.Sprintf(labels.UpdateReady, snapshot.Update.Latest)).OnClick(func(*application.Context) {
+			t.do(shell.ActionInstallUpdate)
+		})
 	case snapshot.Update.Available && labels.UpdateTo != "":
 		menu.Add(fmt.Sprintf(labels.UpdateTo, snapshot.Update.Latest)).OnClick(func(*application.Context) {
 			t.do(shell.ActionInstallUpdate)

@@ -34,6 +34,11 @@ import (
 // caller releases the single-instance lock and re-executes the binary.
 var ErrRestart = errors.New("shell: restart requested")
 
+// ErrUpdateInstall is returned by Run when a staged update was handed to the
+// helper. The caller releases the single-instance lock and exits with code 0;
+// the helper waits for this process and relaunches the installed Client.
+var ErrUpdateInstall = errors.New("shell: update install requested")
+
 // Logger receives shell lifecycle and degradation messages. *logging.Logger
 // satisfies it.
 type Logger interface {
@@ -134,8 +139,15 @@ const (
 	ActionQuit Action = "quit"
 	// ActionCheckUpdates asks GitHub Releases for a newer build.
 	ActionCheckUpdates Action = "check-updates"
-	// ActionInstallUpdate downloads and launches the verified installer.
+	// ActionInstallUpdate downloads the staged set when necessary and then
+	// installs it through the update helper.
 	ActionInstallUpdate Action = "install-update"
+	// ActionCancelUpdate cancels an in-flight download.
+	ActionCancelUpdate Action = "cancel-update"
+	// ActionRetryUpdate retries a failed download or install.
+	ActionRetryUpdate Action = "retry-update"
+	// ActionDismissUpdate clears a displayed update result.
+	ActionDismissUpdate Action = "dismiss-update"
 )
 
 // profileActionPrefix marks a Tray menu click on one Server profile.
@@ -218,6 +230,9 @@ type Labels struct {
 	CheckUpdates    string `json:"checkUpdates"`
 	CheckingUpdates string `json:"checkingUpdates"`
 	UpdateTo        string `json:"updateTo"`
+	UpdateReady     string `json:"updateReady"`
+	UpdateProgress  string `json:"updateProgress"`
+	UpdateFile      string `json:"updateFile"`
 	Updating        string `json:"updating"`
 }
 
@@ -314,6 +329,9 @@ func labelsFor(catalog i18n.Catalog, snapshot Snapshot) Labels {
 		CheckUpdates:    catalog.T("tray.checkUpdates"),
 		CheckingUpdates: catalog.T("tray.checkingUpdates"),
 		UpdateTo:        catalog.T("tray.updateTo"),
+		UpdateReady:     catalog.T("tray.updateReady"),
+		UpdateProgress:  catalog.T("tray.updateProgress"),
+		UpdateFile:      catalog.T("tray.updateFile"),
 		Updating:        catalog.T("tray.updating"),
 	}
 }
@@ -426,6 +444,15 @@ type Options struct {
 	// Updater checks and installs releases. Nil hides the updates screen and
 	// the Tray item.
 	Updater Updater
+	// UpdateCheckDelay is the wait between startup and the first automatic
+	// release check; 0 uses 60 seconds. Tests shorten it.
+	UpdateCheckDelay time.Duration
+	// UpdateIdleTimeout bounds how long an install waits for the current
+	// dictation to finish; 0 uses 2 minutes.
+	UpdateIdleTimeout time.Duration
+	// UpdateIdlePoll is the poll interval while waiting for the dictation to
+	// become idle; 0 uses 200 milliseconds. Tests shorten it.
+	UpdateIdlePoll time.Duration
 }
 
 // Shell drives the desktop shell lifecycle.
@@ -448,12 +475,26 @@ type Shell struct {
 	healthState   string
 	modelsLoaded  string
 
-	updateInfo       update.Info
-	updateChecked    bool
-	updateBusy       bool
-	updateInstalling bool
-	updateLaunched   bool
-	updateError      string
+	updateInfo        update.Info
+	updateChecked     bool
+	updateBusy        bool
+	updateDownloading bool
+	updateInstalling  bool
+	updateReady       bool
+	updateStage       update.Stage
+	updateProgress    update.Progress
+	updateCancel      context.CancelFunc
+	updateError       string
+
+	// updateResult is the persisted helper outcome shown until dismissed.
+	updateResult       update.Result
+	updateResultSet    bool
+	updateResultDetail string
+	updateRetrying     bool
+
+	// autoUpdateSync wakes the automatic-check scheduler after a settings
+	// save, so a toggle change starts or cancels checks without a restart.
+	autoUpdateSync chan struct{}
 
 	// diagnosticsLoading guards the automatic Diagnostics preload so opening
 	// the window while the page is loading does not fetch twice.
@@ -474,11 +515,14 @@ type Shell struct {
 	// arrive after the user closed it.
 	windowVisible bool
 
-	quitCh    chan struct{}
-	restartCh chan struct{}
-	quitOnce  sync.Once
-	restart   bool
-	runtimeEr error
+	quitCh        chan struct{}
+	restartCh     chan struct{}
+	installCh     chan struct{}
+	quitOnce      sync.Once
+	installOnce   sync.Once
+	restart       bool
+	updateInstall bool
+	runtimeEr     error
 }
 
 // New builds a Shell. It performs no I/O; Run does.
@@ -489,12 +533,14 @@ func New(opts Options) *Shell {
 	}
 	server := trust.Status{State: trust.StateUnknown}
 	return &Shell{
-		opts:      opts,
-		log:       log,
-		quitCh:    make(chan struct{}),
-		restartCh: make(chan struct{}),
-		server:    server,
-		snapshot:  NewSnapshot(runtime.Status{}, opts.Version, opts.Profile),
+		opts:           opts,
+		log:            log,
+		quitCh:         make(chan struct{}),
+		restartCh:      make(chan struct{}),
+		installCh:      make(chan struct{}),
+		autoUpdateSync: make(chan struct{}, 1),
+		server:         server,
+		snapshot:       NewSnapshot(runtime.Status{}, opts.Version, opts.Profile),
 	}
 }
 
@@ -525,13 +571,17 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 		}()
 	}
 
+	s.loadUpdateResult()
+	s.loadLatestStaged()
 	s.update(s.opts.Runtime.Status())
 	s.maybeAutoOpenWizard()
 
 	if s.opts.Desktop == nil {
 		s.log.Warning("desktop shell is not available in this build; running headless")
 	} else {
-		s.open(s.opts.Desktop, hidden)
+		// An update result must be visible even when the Client was started
+		// hidden, so the user sees the outcome on the relaunch.
+		s.open(s.opts.Desktop, hidden && !s.updateResultVisible())
 	}
 
 	// A Local Server that launch could not start leaves the Server offline.
@@ -549,7 +599,7 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 		go s.monitorServer(monitorCtx)
 	}
 	if s.opts.Updater != nil {
-		go s.checkUpdates(monitorCtx, false)
+		go s.runAutoUpdates(monitorCtx)
 	}
 
 	runtimeDone := make(chan error, 1)
@@ -574,6 +624,9 @@ func (s *Shell) Run(ctx context.Context, hidden bool) error {
 	}
 
 	<-watchDone
+	if s.updateInstall {
+		return ErrUpdateInstall
+	}
 	if s.restart {
 		return ErrRestart
 	}
@@ -640,6 +693,11 @@ func (s *Shell) watch(ctx context.Context, runtimeDone <-chan error, done chan<-
 		stoppedByUser = true
 		s.mu.Lock()
 		s.restart = true
+		s.mu.Unlock()
+	case <-s.installCh:
+		stoppedByUser = true
+		s.mu.Lock()
+		s.updateInstall = true
 		s.mu.Unlock()
 	case err := <-runtimeDone:
 		s.mu.Lock()
@@ -1152,7 +1210,13 @@ func (s *Shell) handleAction(action Action) {
 	case ActionCheckUpdates:
 		go s.checkUpdates(context.Background(), true)
 	case ActionInstallUpdate:
-		s.installUpdate()
+		s.updateAction()
+	case ActionCancelUpdate:
+		s.cancelUpdate()
+	case ActionRetryUpdate:
+		s.retryUpdate()
+	case ActionDismissUpdate:
+		s.dismissUpdate()
 	case ActionQuit:
 		s.requestQuit()
 	}

@@ -178,28 +178,87 @@ reports the resolved `device` and `gpu` block.
 
 ## Updates
 
-**The update check says a newer version exists but nothing installs.** Updates
-are check-and-confirm by design. Press **Download and install**; the Client
-fetches the release installer and verifies its SHA-256 against
-`checksums.txt`; the installer then verifies `checksums.txt.sig` before
-installing anything.
+Updates run only when the user presses **Update to vX…**; the automatic setting
+only checks and stages a verified set. The result and the installer log are
+separate files:
 
-**The checksum does not match.** The download is corrupted or the release assets
-are inconsistent. Delete the partial download and retry. Do not bypass the
-check; report the release instead.
+| What | Linux | Windows |
+| --- | --- | --- |
+| Update result | `~/.config/kitsune-whisper/update.json` | `%APPDATA%\kitsune-whisper\update.json` |
+| Update log | `~/.config/kitsune-whisper/update.log` | `%APPDATA%\kitsune-whisper\update.log` |
+| Staged artifacts | `~/.cache/kitsune-whisper/updates/<tag>/` | `%LOCALAPPDATA%\kitsune-whisper\updates\<tag>\` |
+
+A custom `--config PATH` keeps `update.json` and `update.log` next to that
+file. The Updates card shows the last ~50 log lines and the log path under
+**Details**, so start there. The statuses mean:
+
+- `success` — the installer exited `0`; the Client is on the new version. A
+  selected Local Server was updated too and is started again only if it ran
+  before the update.
+- `partial` — the Client reports the new version but the installer failed and
+  the Local Server was selected. The Local Server stays stopped.
+- `error` — the installer failed or the Client was not updated. The helper
+  always starts the Client again so the error can be read and retried.
+- `timeout` — the installer exceeded the helper's 15-minute limit, was killed,
+  and the Client was started again.
+- `pending` — the Client wrote the pending marker but the helper never wrote a
+  final result. The Client shows that the update did not complete.
+
+**The Client makes no network requests when the setting is off.** That is the
+documented behaviour of `client.updates.check: false`. Turn it on in
+**Settings → Updates**, set `client.updates.check: true` in `kitsune.yaml`, or
+set `KITSUNE_CLIENT_UPDATES__CHECK=true`. The change is hot-applied. The manual
+**Check for updates** button and Tray item work even while the setting is off.
+
+**A newer version is shown but nothing is downloading.** A manual check only
+looks for a release. Press **Update to vX…**; when the set is not staged yet,
+the same button downloads it with progress and then installs it. Automatic
+checks stage in the background without installing.
+
+**The download is slow or should stop.** Press **Cancel download**. The partial
+files are removed, so the next attempt starts clean. A completed stage is reused
+after a restart; a newer release replaces it, and a successful install clears
+it.
+
+**A download or check failed.** Open **Settings → Updates**: the error stays in
+the card, not over the window, and the log has the detail. Press **Retry**.
+Background failures never affect the current Dictation cycle.
+
+**The checksum does not match.** The download is corrupted or the release
+assets are inconsistent. Press **Retry**; the Client discards the partial stage
+and checks every file again. Do not bypass the check; report the release
+instead.
 
 **The release signature failed to verify.** The installer aborts before
 extracting anything: `checksums.txt.sig` does not match the release public key
 pinned in the script, or the signature is missing. This is what a compromised
-download host or a corrupted asset looks like. Fetch the installer and the
-release from the official repository and retry; do not use `--insecure` /
-`-Insecure` to get past it unless you are testing locally signed artifacts you
-built yourself. On Linux, `openssl` must be installed for the check.
+download host or a corrupted asset looks like. Fetch the release from the
+official repository and retry; do not use `--insecure` / `-Insecure` in
+production. On Linux, `openssl` must be installed for the check.
 
-**An upgrade lost settings.** Re-running the installer preserves
-`kitsune.yaml`, models, Devices, and TLS. The installer keeps the previous config
-as `kitsune.yaml.bak` and runs `migrate-config`; inspect both files if a value
-looks wrong.
+**The helper did not start.** The Client does not exit when the helper cannot be
+launched: it stays open and shows the error at once. Check that the download
+cache is writable and that the platform tools are present (`openssl`, `tar`,
+`sha256sum`, `awk` on Linux; `pwsh.exe` on Windows), then press **Retry**.
+
+**The installer failed or timed out.** The helper still writes the result and
+starts the Client again, so the error is never hidden. Open **Details** for the
+last log lines and the log path, fix the reported cause, and press **Retry**.
+A timeout means the installer ran longer than 15 minutes; the log usually shows
+where it stopped.
+
+**The Local Server is still stopped after a partial failure.** That is
+deliberate. The result says the Client was updated but the Server was not, so
+the Client does not start an undefined mix. Update the Local Server manually or
+press **Retry**, then start the Server from the Tray or **Settings → Servers**.
+
+**The Remote Server was not updated.** The Client never updates a Remote
+Server. Update that host separately, or pull the newer Docker image there.
+
+**An upgrade lost settings.** Re-running the installer, including the update
+helper's run, preserves `kitsune.yaml`, models, Devices, and TLS. The installer
+keeps the previous config as `kitsune.yaml.bak` and runs `migrate-config`;
+inspect both files if a value looks wrong.
 
 ## Docker
 

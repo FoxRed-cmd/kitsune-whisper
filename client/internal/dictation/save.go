@@ -129,7 +129,8 @@ func (s *Service) Save(patch map[string]any) (Outcome, error) {
 // new value; they need no runtime adapter rebuilt. Rebuilding the hotkey and
 // the microphone just to change a label would interrupt dictation for nothing.
 var shellApplied = map[string]bool{
-	"client.ui_language": true,
+	"client.ui_language":   true,
+	"client.updates.check": true,
 }
 
 // validateDevicePatch checks a microphone change against the enumerated

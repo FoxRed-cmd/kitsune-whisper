@@ -807,7 +807,8 @@ func startupModeText(labels ServerLabels, mode components.Mode) (label, help str
 	return translated[labelKey], translated[helpKey]
 }
 
-// updatesHTML renders the release check and the verified installer action.
+// updatesHTML renders the release check, the staged download, and the verified
+// update action.
 func updatesHTML(view UpdateView) string {
 	if view.Title == "" {
 		return ""
@@ -819,11 +820,27 @@ func updatesHTML(view UpdateView) string {
 	out.WriteString(`<div><dt>` + escape(view.Current) + `</dt><dd>` + escape(view.CurrentVersion) + `</dd></div>`)
 	out.WriteString(`<div><dt>` + escape(view.Latest) + `</dt><dd>` + escape(valueOr(view.LatestVersion, "—")) + `</dd></div>`)
 	out.WriteString(`</dl>`)
+	out.WriteString(`<div class="field field-toggle" data-field="client.updates.check">`)
+	out.WriteString(`<label class="toggle-row" for="field-client-updates-check">`)
+	out.WriteString(`<span class="toggle-label">` + escape(view.AutoCheck) + `</span>`)
+	out.WriteString(`<input type="checkbox" id="field-client-updates-check" class="switch" data-path="client.updates.check"`)
+	if view.CheckEnabled {
+		out.WriteString(` checked`)
+	}
+	out.WriteString(`>`)
+	out.WriteString(`</label>`)
+	out.WriteString(`<p class="help">` + escape(view.AutoCheckHelp) + `</p>`)
+	out.WriteString(`</div>`)
 	switch {
-	case view.Busy && view.Installing:
-		out.WriteString(`<p class="notice" data-update-busy="true">` + escape(view.Downloading) + `</p>`)
+	case view.Downloading:
+		out.WriteString(`<p class="notice" data-update-downloading="true">` + escape(downloadProgressText(view)) + `</p>`)
+		out.WriteString(updateMeterHTML(view))
+	case view.Installing:
+		out.WriteString(`<p class="notice" data-update-installing="true">` + escape(view.InstallingMessage) + `</p>`)
 	case view.Busy:
 		out.WriteString(`<p class="notice" data-update-busy="true">` + escape(view.Checking) + `</p>`)
+	case view.Ready:
+		out.WriteString(`<p class="notice" data-update-ready="true">` + escape(view.ReadyMessage) + `</p>`)
 	case view.Available && view.Installable:
 		out.WriteString(`<p class="notice">` + escape(view.AvailableMessage) + `</p>`)
 	case view.Available:
@@ -834,13 +851,40 @@ func updatesHTML(view UpdateView) string {
 	case view.Checked:
 		out.WriteString(`<p class="help">` + escape(view.UpToDateMessage) + `</p>`)
 	}
-	if view.Launched {
-		out.WriteString(`<p class="notice">` + escape(view.LaunchedMessage) + `</p>`)
+	if view.ResultStatus != "" {
+		out.WriteString(`<p class="notice" data-update-result="` + escape(view.ResultStatus) + `">` + escape(view.ResultMessage) + `</p>`)
+		if view.resultFailure() {
+			out.WriteString(`<details class="update-details" data-update-details="true">`)
+			out.WriteString(`<summary>` + escape(view.Details) + `</summary>`)
+			if view.ResultDetail != "" {
+				out.WriteString(`<pre class="update-log" data-update-log="true">` + escape(view.ResultDetail) + `</pre>`)
+			} else {
+				out.WriteString(`<p class="help">` + escape(view.LogUnavailable) + `</p>`)
+			}
+			if view.ResultLogPath != "" {
+				out.WriteString(`<p class="help update-log-path" data-update-log-path="true">` +
+					escape(view.LogPath) + `: <code>` + escape(view.ResultLogPath) + `</code></p>`)
+			}
+			out.WriteString(`</details>`)
+		}
+	}
+	if view.Error != "" {
+		out.WriteString(`<p class="notice" data-update-error="true">` + escape(view.Error) + `</p>`)
 	}
 	out.WriteString(`<div class="actions-inline">`)
 	out.WriteString(`<button type="button" data-action="check-updates">` + pageIcon("download") + escape(view.Check) + `</button>`)
-	if view.Available && view.Installable && !view.Busy && !view.Launched {
-		out.WriteString(`<button type="button" class="primary" data-action="install-update">` + pageIcon("download") + escape(view.Download) + `</button>`)
+	if view.Cancelable {
+		out.WriteString(`<button type="button" data-action="cancel-update">` + pageIcon("close") + escape(view.Cancel) + `</button>`)
+	}
+	if view.Available && view.Installable && !view.Busy && !view.Downloading && !view.Installing {
+		out.WriteString(`<button type="button" class="primary" data-action="install-update">` + pageIcon("download") + escape(updateActionLabel(view)) + `</button>`)
+	}
+	retryable := view.resultFailure() || (view.Error != "" && view.Available && view.Installable)
+	if retryable && !view.Busy && !view.Downloading && !view.Installing {
+		out.WriteString(`<button type="button" data-action="retry-update">` + pageIcon("download") + escape(view.Retry) + `</button>`)
+	}
+	if view.ResultStatus != "" {
+		out.WriteString(`<button type="button" data-action="dismiss-update">` + pageIcon("close") + escape(view.Dismiss) + `</button>`)
 	}
 	out.WriteString(`</div>`)
 	if view.ReleaseURL != "" {
@@ -849,6 +893,46 @@ func updatesHTML(view UpdateView) string {
 	}
 	out.WriteString(`</section>`)
 	return out.String()
+}
+
+// updateActionLabel formats the "Update to vX…" button label.
+func updateActionLabel(view UpdateView) string {
+	label := view.UpdateTo
+	if label == "" {
+		return view.Download
+	}
+	if strings.Contains(label, "%s") {
+		return fmt.Sprintf(label, view.LatestVersion)
+	}
+	return label
+}
+
+// downloadProgressText renders aggregate bytes, percentage, and the current
+// file. An unknown total omits the percentage and byte counts.
+func downloadProgressText(view UpdateView) string {
+	if view.TotalBytes > 0 {
+		percent := UpdatePercent(view.ReceivedBytes, view.TotalBytes)
+		template := view.DownloadProgress
+		if template == "" {
+			return view.DownloadingMessage
+		}
+		return fmt.Sprintf(template, view.CurrentFile, percent, humanize.Bytes(view.ReceivedBytes), humanize.Bytes(view.TotalBytes))
+	}
+	if view.CurrentFile != "" && view.DownloadingFile != "" {
+		return fmt.Sprintf(view.DownloadingFile, view.CurrentFile)
+	}
+	return view.DownloadingMessage
+}
+
+// updateMeterHTML renders the determinate or indeterminate download bar.
+func updateMeterHTML(view UpdateView) string {
+	if view.TotalBytes <= 0 {
+		return `<div class="meter update-meter is-indeterminate" role="progressbar" aria-valuemin="0" aria-valuemax="100" data-update-indeterminate="true"><div class="meter-fill"></div></div>`
+	}
+	percent := UpdatePercent(view.ReceivedBytes, view.TotalBytes)
+	value := strconv.FormatInt(percent, 10)
+	return `<div class="meter update-meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="` + value +
+		`" data-update-percent="` + value + `"><div class="meter-fill" style="width:` + value + `%"></div></div>`
 }
 
 // serverSettingsHTML renders the active Server's effective configuration as an
@@ -1566,6 +1650,9 @@ const pageHTML = `<!doctype html>
   .meter { height:7px; border-radius:999px; background:var(--line-soft); overflow:hidden; margin-top:6px; }
   .meter-fill { height:100%; width:0; background:linear-gradient(90deg, var(--accent), var(--ok)); transition:width 60ms linear; }
   .meter.is-live { outline:2px solid var(--accent); outline-offset:2px; }
+  .update-meter { margin:8px 0 2px; }
+  .meter.is-indeterminate .meter-fill { width:38%; animation:update-meter-slide 1.1s ease-in-out infinite; }
+  @keyframes update-meter-slide { 0% { margin-left:-38%; } 100% { margin-left:100%; } }
   .gnome-offer { margin:6px 0 2px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:var(--card-2); }
   .gnome-head { display:flex; align-items:center; gap:7px; margin-bottom:2px; }
   .gnome-head .icon { color:var(--accent); }
@@ -2018,7 +2105,7 @@ const pageHTML = `<!doctype html>
   // choice would contradict the failure message.
   function liveControl(el) {
     if (el.closest("[data-startup-switch], [data-startup-mode], [data-log-level]")) return true;
-    return el.dataset.path === "client.theme" || el.dataset.path === "client.ui_language" || el.dataset.path === "client.language";
+    return el.dataset.path === "client.theme" || el.dataset.path === "client.ui_language" || el.dataset.path === "client.language" || el.dataset.path === "client.updates.check";
   }
   function markRendered(root) {
     if (!root) return;
@@ -2516,6 +2603,12 @@ const pageHTML = `<!doctype html>
       sendIntent({ action: "check-updates" }, button);
     } else if (action === "install-update") {
       sendIntent({ action: "install-update" }, button);
+    } else if (action === "cancel-update") {
+      sendIntent({ action: "cancel-update" }, button);
+    } else if (action === "retry-update") {
+      sendIntent({ action: "retry-update" }, button);
+    } else if (action === "dismiss-update") {
+      sendIntent({ action: "dismiss-update" }, button);
     } else if (action === "wizard-open") {
       sendIntent({ action: "wizard-open" }, button);
     } else if (action === "wizard-close") {
@@ -2623,6 +2716,10 @@ const pageHTML = `<!doctype html>
     if (!el) return;
     if (el.dataset.path === "client.ui_language") {
       sendIntent({ action: "save", patch: { ui_language: el.value } });
+    } else if (el.dataset.path === "client.updates.check") {
+      // The setting is hot-applied, so the toggle takes effect as soon as it
+      // changes instead of waiting for the global Save button.
+      sendIntent({ action: "save", patch: { updates: { check: el.checked } } });
     } else if (el.dataset.path === "client.language") {
       // The spoken language is per request. Saving it as soon as it changes
       // removes the chance that a user tests dictation with an unsaved value.

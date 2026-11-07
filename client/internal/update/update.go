@@ -1,11 +1,14 @@
 // Package update checks GitHub Releases for a newer kitsune-whisper build,
-// downloads the checksummed installer on request, verifies its SHA-256, and
-// launches it.
+// stages a verified set of artifacts for the installed Components, and installs
+// that set through a generated helper.
 //
 // The package performs no work at construction time. Check is one unauthenticated
-// GitHub API request; Install downloads only the asset this platform can run.
-// The HTTP client, release base URL, download directory, and process launcher
-// are injectable so tests never touch the network or start an installer.
+// GitHub API request; Download streams every selected artifact, verifies its
+// SHA-256 against the release checksums, and keeps the set in a per-tag
+// directory. Install re-verifies the staged set, writes a pending marker, and
+// starts the helper, which runs the installer after the Client exits. The HTTP
+// client, release base URL, download directory, and helper runner are injectable
+// so tests never touch the network or start a real installer.
 package update
 
 import (
@@ -20,9 +23,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/components"
 	"github.com/FoxRed-cmd/kitsune-whisper/client/internal/version"
 )
 
@@ -31,7 +36,11 @@ const (
 	DefaultRepository = "FoxRed-cmd/kitsune-whisper"
 	// ChecksumsAsset is the release file that names every artifact's SHA-256.
 	ChecksumsAsset = "checksums.txt"
-	// DownloadLimit bounds one installer download. The Server bundle and the
+	// SignatureAsset is the detached signature over ChecksumsAsset.
+	SignatureAsset = "checksums.txt.sig"
+	// VersionAsset is the release's VERSION file.
+	VersionAsset = "VERSION"
+	// DownloadLimit bounds one artifact download. The Server bundle and the
 	// Windows Client are tens of megabytes; this leaves room without allowing a
 	// hostile response to fill the disk.
 	DownloadLimit = 512 << 20
@@ -66,11 +75,51 @@ type Info struct {
 	AssetURL string `json:"-"`
 	// ChecksumsURL is the release checksums file's download URL.
 	ChecksumsURL string `json:"-"`
+	// Assets is the full release asset list, so Download can find the
+	// signature, VERSION, and the Component archives as well as the installer.
+	Assets []Asset `json:"-"`
 }
 
-// Runner launches an installer. Production starts the process detached;
-// tests record the call.
-type Runner func(path string, args []string, env []string) error
+// Asset is one file attached to the release.
+type Asset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+	Size int64  `json:"size"`
+}
+
+// Stage is a complete, checksum-verified update set for one release tag.
+type Stage struct {
+	Tag        string         `json:"tag"`
+	Dir        string         `json:"dir"`
+	Components components.Set `json:"components"`
+	Files      []string       `json:"files"`
+}
+
+// HasClient reports whether the staged set covers the Client.
+func (s Stage) HasClient() bool { return s.Components.Client }
+
+// HasServer reports whether the staged set covers the Local Server.
+func (s Stage) HasServer() bool { return s.Components.Server }
+
+// InstallerPath returns the staged installer for either platform, or "" when
+// the manifest lists none.
+func (s Stage) InstallerPath() string {
+	for _, name := range s.Files {
+		if name == "install.sh" || name == "install.ps1" {
+			return filepath.Join(s.Dir, name)
+		}
+	}
+	return ""
+}
+
+// Progress is one aggregate download sample. Received and Total are summed over
+// every file in the set; Total is 0 when any selected file's size is unknown.
+// File is the artifact currently being written.
+type Progress struct {
+	File     string
+	Received int64
+	Total    int64
+}
 
 // Downloader fetches one URL into w. Nil uses the Service's HTTP client.
 type Downloader func(ctx context.Context, url string, w io.Writer) error
@@ -88,13 +137,32 @@ type Options struct {
 	Client *http.Client
 	// APIBase is the GitHub API origin; "" uses https://api.github.com.
 	APIBase string
-	// DownloadDir holds the verified installer; "" uses the OS temporary
-	// directory.
+	// DownloadDir holds the staged update sets, one subdirectory per release
+	// tag. "" uses the per-user cache under <os.UserCacheDir>/kitsune-whisper.
 	DownloadDir string
-	// Run launches the verified installer. Nil uses startDetached.
-	Run Runner
 	// Download fetches an asset. Nil uses Client.
 	Download Downloader
+	// Components is the set installed on this machine. It selects the
+	// Component archives to stage; the active Server profile is irrelevant.
+	// The zero value means Client-only.
+	Components components.Set
+	// ConfigPath is the explicit --config path. The helper passes it to the
+	// relaunched Client and the result/log paths sit next to it.
+	ConfigPath string
+	// ClientPath is the installed Client the helper relaunches. "" uses
+	// os.Executable().
+	ClientPath string
+	// ResultPath persists the pending marker and the final result. "" uses
+	// ResultPath(ConfigPath).
+	ResultPath string
+	// LogPath receives the helper and installer output. "" uses
+	// UpdateLogPath(ConfigPath).
+	LogPath string
+	// HelperTimeout bounds one installer run; 0 uses 15 minutes.
+	HelperTimeout time.Duration
+	// StartHelper launches the generated helper. Nil uses the hidden platform
+	// launcher.
+	StartHelper Runner
 }
 
 // Service checks and installs updates.
@@ -118,6 +186,21 @@ func New(opts Options) *Service {
 	}
 	if opts.APIBase == "" {
 		opts.APIBase = "https://api.github.com"
+	}
+	opts.Components = effectiveComponents(opts.Components)
+	if opts.ClientPath == "" {
+		if executable, err := os.Executable(); err == nil {
+			opts.ClientPath = executable
+		}
+	}
+	if opts.ResultPath == "" {
+		opts.ResultPath = ResultPath(opts.ConfigPath)
+	}
+	if opts.LogPath == "" {
+		opts.LogPath = UpdateLogPath(opts.ConfigPath)
+	}
+	if opts.HelperTimeout <= 0 {
+		opts.HelperTimeout = 15 * time.Minute
 	}
 	return &Service{opts: opts}
 }
@@ -178,6 +261,10 @@ func (s *Service) Check(ctx context.Context) (Info, error) {
 		Notes:   published.Body,
 	}
 	info.Available = version.Newer(published.TagName, s.opts.Current)
+	info.Assets = make([]Asset, 0, len(published.Assets))
+	for _, candidate := range published.Assets {
+		info.Assets = append(info.Assets, Asset(candidate))
+	}
 	name, err := InstallerAsset(s.opts.Platform, s.opts.Arch)
 	if err == nil {
 		for _, candidate := range published.Assets {
@@ -213,66 +300,508 @@ func InstallerAsset(platform, arch string) (string, error) {
 	return "", fmt.Errorf("%w: %s/%s", ErrUnsupportedPlatform, platform, arch)
 }
 
-// Install downloads the release's installer, verifies it against checksums.txt,
-// and launches it. The returned path is the verified file.
-func (s *Service) Install(ctx context.Context, info Info) (string, error) {
-	if !info.Installable || info.Asset == "" {
-		return "", ErrUnsupportedPlatform
-	}
-	if info.Tag == "" {
-		return "", errors.New("update: the release tag is missing")
-	}
-	if info.AssetURL == "" || info.ChecksumsURL == "" {
-		return "", errors.New("update: the release has no installer or checksums URL; check again")
-	}
-	checksums, err := s.fetchChecksums(ctx, info.ChecksumsURL)
-	if err != nil {
-		return "", err
-	}
-	expected, ok := checksums[info.Asset]
-	if !ok {
-		return "", fmt.Errorf("update: %s has no checksum in %s", info.Asset, ChecksumsAsset)
-	}
-	if err := os.MkdirAll(s.downloadDir(), 0o700); err != nil {
-		return "", fmt.Errorf("update: create %s: %w", s.downloadDir(), err)
-	}
-	if err := os.Chmod(s.downloadDir(), 0o700); err != nil {
-		return "", fmt.Errorf("update: secure %s: %w", s.downloadDir(), err)
-	}
-	path := filepath.Join(s.downloadDir(), info.Asset)
-	if err := s.downloadVerified(ctx, info.AssetURL, path, expected); err != nil {
-		return "", err
-	}
-	if s.opts.Platform != "windows" {
-		if err := os.Chmod(path, 0o700); err != nil {
-			return "", fmt.Errorf("update: make %s executable: %w", path, err)
+// ComponentAssets names the Client and Local Server archives for a platform.
+// The Local Server bundle is a tar.gz on both platforms.
+func ComponentAssets(platform, arch string) (client, server string, err error) {
+	switch platform {
+	case "windows":
+		if arch == "amd64" {
+			return "kitsune-client_windows_amd64.zip", "kitsune-server_windows_amd64.tar.gz", nil
+		}
+	case "linux":
+		if arch == "amd64" {
+			return "kitsune-client_linux_amd64.tar.gz", "kitsune-server_linux_amd64.tar.gz", nil
 		}
 	}
-	run := s.opts.Run
-	if run == nil {
-		run = startDetached
-	}
-	var args []string
-	if s.opts.Platform == "windows" {
-		// The updater downloaded a script, not an executable: PowerShell runs
-		// it pinned to the release that was just verified.
-		args = []string{"-Version", info.Tag}
-	}
-	if err := run(path, args, launchEnv(s.opts.Platform, info.Tag)); err != nil {
-		return "", fmt.Errorf("update: launch %s: %w", path, err)
-	}
-	return path, nil
+	return "", "", fmt.Errorf("%w: %s/%s", ErrUnsupportedPlatform, platform, arch)
 }
 
-// fetchChecksums downloads checksums.txt and parses "digest  name" lines.
-func (s *Service) fetchChecksums(ctx context.Context, url string) (map[string]string, error) {
-	var buffer strings.Builder
-	err := s.download(ctx, url, &limitedWriter{w: &buffer, left: ChecksumLimit})
-	if err != nil {
-		return nil, fmt.Errorf("update: download %s: %w", ChecksumsAsset, err)
+// downloadItem is one artifact Download will fetch into the stage.
+type downloadItem struct {
+	name       string
+	url        string
+	size       int64
+	verify     bool
+	synthesize bool
+}
+
+// Download stages every artifact needed to install info's release on this
+// machine: the installer, checksums.txt, its signature, VERSION, and the
+// archives of the installed Components. Each file is checked against the
+// release checksums while it streams. Nothing is installed.
+func (s *Service) Download(ctx context.Context, info Info, progress func(Progress)) (Stage, error) {
+	if !info.Available || !info.Installable {
+		return Stage{}, errors.New("update: no installable release is available to download")
 	}
+	if !validTag(info.Tag) {
+		return Stage{}, errors.New("update: the release tag is missing or invalid")
+	}
+	if info.Asset == "" || info.AssetURL == "" || info.ChecksumsURL == "" {
+		return Stage{}, errors.New("update: the release has no installer or checksums URL; check again")
+	}
+	clientAsset, serverAsset, err := ComponentAssets(s.opts.Platform, s.opts.Arch)
+	if err != nil {
+		return Stage{}, err
+	}
+
+	byName := make(map[string]Asset, len(info.Assets))
+	for _, asset := range info.Assets {
+		byName[asset.Name] = asset
+	}
+	lookup := func(name, fallbackURL string) (Asset, bool) {
+		if asset, ok := byName[name]; ok && asset.URL != "" {
+			return asset, true
+		}
+		if fallbackURL == "" {
+			return Asset{}, false
+		}
+		return Asset{Name: name, URL: fallbackURL}, true
+	}
+
+	set := effectiveComponents(s.opts.Components)
+
+	items := make([]downloadItem, 0, 6)
+	add := func(name, fallbackURL string, verify bool) error {
+		asset, ok := lookup(name, fallbackURL)
+		if !ok {
+			return fmt.Errorf("update: the release does not list %s", name)
+		}
+		items = append(items, downloadItem{name: name, url: asset.URL, size: asset.Size, verify: verify})
+		return nil
+	}
+
+	// checksums.txt must arrive first: every other verified file is checked
+	// against it as it streams.
+	if err := add(ChecksumsAsset, info.ChecksumsURL, false); err != nil {
+		return Stage{}, err
+	}
+	if err := add(info.Asset, info.AssetURL, true); err != nil {
+		return Stage{}, err
+	}
+	if err := add(SignatureAsset, "", false); err != nil {
+		return Stage{}, err
+	}
+	versionBody := strings.TrimPrefix(strings.TrimPrefix(info.Latest, "v"), "V") + "\n"
+	if _, ok := byName[VersionAsset]; ok {
+		if err := add(VersionAsset, "", true); err != nil {
+			return Stage{}, err
+		}
+	} else {
+		items = append(items, downloadItem{
+			name: VersionAsset, size: int64(len(versionBody)), verify: false, synthesize: true,
+		})
+	}
+	if err := add(clientAsset, "", true); err != nil {
+		return Stage{}, err
+	}
+	if set.Server {
+		if err := add(serverAsset, "", true); err != nil {
+			return Stage{}, err
+		}
+	}
+
+	root := s.downloadDir()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return Stage{}, fmt.Errorf("update: create %s: %w", root, err)
+	}
+	if err := os.Chmod(root, 0o700); err != nil {
+		return Stage{}, fmt.Errorf("update: secure %s: %w", root, err)
+	}
+	tempDir, err := os.MkdirTemp(root, info.Tag+".tmp-*")
+	if err != nil {
+		return Stage{}, fmt.Errorf("update: create a temporary stage: %w", err)
+	}
+	// A failed or cancelled download must never leave partial files behind. A
+	// complete stage for the same tag is replaced only after the whole new set
+	// has been verified.
+	complete := false
+	defer func() {
+		if !complete {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+
+	state := &progressState{progress: progress}
+	for _, item := range items {
+		if item.size > 0 {
+			state.total += item.size
+		} else {
+			state.unknown = true
+		}
+	}
+	if state.unknown {
+		state.total = 0
+	}
+	if progress != nil {
+		progress(Progress{Total: state.total})
+	}
+
+	var checksums map[string]string
+	for _, item := range items {
+		path := filepath.Join(tempDir, item.name)
+		if item.synthesize {
+			if err := os.WriteFile(path, []byte(versionBody), 0o600); err != nil {
+				return Stage{}, fmt.Errorf("update: write %s: %w", VersionAsset, err)
+			}
+			state.advance(item.name, int64(len(versionBody)))
+			continue
+		}
+		if item.name == ChecksumsAsset {
+			if err := s.downloadStageFile(ctx, item.url, path, "", state); err != nil {
+				return Stage{}, err
+			}
+			parsed, err := readChecksums(path)
+			if err != nil {
+				return Stage{}, err
+			}
+			checksums = parsed
+			continue
+		}
+		expected := ""
+		if item.verify {
+			found, ok := checksums[item.name]
+			if !ok {
+				return Stage{}, fmt.Errorf("update: %s has no checksum in %s", item.name, ChecksumsAsset)
+			}
+			expected = found
+		}
+		if err := s.downloadStageFile(ctx, item.url, path, expected, state); err != nil {
+			return Stage{}, err
+		}
+	}
+
+	if s.opts.Platform != "windows" {
+		installer := filepath.Join(tempDir, info.Asset)
+		if err := os.Chmod(installer, 0o700); err != nil {
+			return Stage{}, fmt.Errorf("update: make %s executable: %w", installer, err)
+		}
+	}
+
+	files := make([]string, 0, len(items))
+	for _, item := range items {
+		files = append(files, item.name)
+	}
+	sort.Strings(files)
+	finalDir := s.stageDir(info.Tag)
+	stage := Stage{Tag: info.Tag, Dir: finalDir, Components: set, Files: files}
+	if err := writeStageManifest(filepath.Join(tempDir, stageManifest), stage); err != nil {
+		return Stage{}, err
+	}
+	// Move an existing set aside instead of deleting it first, so a failed
+	// publish restores the complete set that was already there.
+	backup := ""
+	if _, err := os.Stat(finalDir); err == nil {
+		backup = tempDir + ".previous"
+		if err := os.Rename(finalDir, backup); err != nil {
+			return Stage{}, fmt.Errorf("update: replace the stage: %w", err)
+		}
+	}
+	if err := os.Rename(tempDir, finalDir); err != nil {
+		if backup != "" {
+			_ = os.Rename(backup, finalDir)
+		}
+		return Stage{}, fmt.Errorf("update: publish the stage: %w", err)
+	}
+	complete = true
+	if backup != "" {
+		_ = os.RemoveAll(backup)
+	}
+	s.pruneStages(info.Tag)
+	return stage, nil
+}
+
+// progressState accumulates aggregate bytes across the selected files.
+type progressState struct {
+	total    int64
+	received int64
+	unknown  bool
+	file     string
+	progress func(Progress)
+}
+
+func (p *progressState) writer(file string, w io.Writer) io.Writer {
+	return writerFunc(func(chunk []byte) (int, error) {
+		n, err := w.Write(chunk)
+		p.advance(file, int64(n))
+		return n, err
+	})
+}
+
+func (p *progressState) advance(file string, n int64) {
+	p.file = file
+	p.received += n
+	if p.progress == nil {
+		return
+	}
+	total := p.total
+	if p.unknown {
+		total = 0
+	}
+	p.progress(Progress{File: file, Received: p.received, Total: total})
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (w writerFunc) Write(p []byte) (int, error) { return w(p) }
+
+// downloadStageFile streams one artifact into the temporary stage and verifies
+// its SHA-256 when expected is non-empty.
+func (s *Service) downloadStageFile(ctx context.Context, url, path, expected string, state *progressState) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".part-*")
+	if err != nil {
+		return fmt.Errorf("update: create %s: %w", filepath.Base(path), err)
+	}
+	name := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		_ = os.Remove(name)
+	}()
+	hash := sha256.New()
+	writer := state.writer(filepath.Base(path), io.MultiWriter(temp, hash))
+	if err := s.download(ctx, url, writer); err != nil {
+		return fmt.Errorf("update: download %s: %w", url, err)
+	}
+	if err := temp.Sync(); err != nil {
+		return fmt.Errorf("update: sync %s: %w", filepath.Base(path), err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("update: close %s: %w", filepath.Base(path), err)
+	}
+	if expected != "" {
+		actual := hex.EncodeToString(hash.Sum(nil))
+		if !strings.EqualFold(actual, expected) {
+			return fmt.Errorf(
+				"update: checksum mismatch for %s: expected %s, got %s",
+				filepath.Base(path),
+				expected,
+				actual,
+			)
+		}
+	}
+	if err := os.Chmod(name, 0o600); err != nil {
+		return fmt.Errorf("update: secure %s: %w", filepath.Base(path), err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("update: finish %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+// stageManifest is the file that marks a directory as a complete staged set.
+const stageManifest = "stage.json"
+
+// Staged returns the complete set for tag. A missing, corrupt, mismatched, or
+// incomplete directory is reported as absent so the Client downloads again.
+func (s *Service) Staged(tag string) (Stage, bool) {
+	if !validTag(tag) {
+		return Stage{}, false
+	}
+	stage, ok := readStage(s.stageDir(tag))
+	if !ok || stage.Tag != tag {
+		return Stage{}, false
+	}
+	return stage, true
+}
+
+// LatestStaged returns the newest complete staged set under the download root.
+// The tag decides the order; the manifest modification time breaks a tie or
+// orders tags that do not parse as a release version. It lets a restarted Client
+// show a ready update without a release check.
+func (s *Service) LatestStaged() (Stage, bool) {
+	entries, err := os.ReadDir(s.downloadDir())
+	if err != nil {
+		return Stage{}, false
+	}
+	var (
+		best     Stage
+		bestTime time.Time
+		found    bool
+	)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		stage, ok := readStage(filepath.Join(s.downloadDir(), entry.Name()))
+		if !ok {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if !found {
+			best, bestTime, found = stage, info.ModTime(), true
+			continue
+		}
+		switch {
+		case version.Newer(stage.Tag, best.Tag):
+			best, bestTime = stage, info.ModTime()
+		case !version.Newer(best.Tag, stage.Tag) && info.ModTime().After(bestTime):
+			best, bestTime = stage, info.ModTime()
+		}
+	}
+	return best, found
+}
+
+// readStage loads and validates one staged-set directory. A missing, corrupt,
+// or incomplete directory is reported as absent.
+func readStage(dir string) (Stage, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, stageManifest))
+	if err != nil {
+		return Stage{}, false
+	}
+	var stage Stage
+	if err := json.Unmarshal(data, &stage); err != nil {
+		return Stage{}, false
+	}
+	if stage.Tag == "" || len(stage.Files) == 0 || !validTag(stage.Tag) {
+		return Stage{}, false
+	}
+	for _, name := range stage.Files {
+		if !validFileName(name) {
+			return Stage{}, false
+		}
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil || !info.Mode().IsRegular() {
+			return Stage{}, false
+		}
+	}
+	stage.Dir = dir
+	return stage, true
+}
+
+// effectiveComponents applies the Client-only default once, for construction,
+// download, and install.
+func effectiveComponents(set components.Set) components.Set {
+	if !set.Any() {
+		return components.Set{Client: true}
+	}
+	return set
+}
+
+// VerifyStaged re-reads checksums.txt from the stage and re-verifies every
+// listed file. The signature is verified by the installer, not here.
+func (s *Service) VerifyStaged(ctx context.Context, stage Stage) error {
+	if stage.Dir == "" || !validTag(stage.Tag) {
+		return errors.New("update: the staged set is invalid")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	checksums, err := readChecksums(filepath.Join(stage.Dir, ChecksumsAsset))
+	if err != nil {
+		return err
+	}
+	for _, name := range stage.Files {
+		if name == ChecksumsAsset || name == SignatureAsset {
+			continue
+		}
+		if !validFileName(name) {
+			return fmt.Errorf("update: the staged set lists an invalid file %q", name)
+		}
+		expected, ok := checksums[name]
+		if !ok {
+			// VERSION may be synthesized when the release does not list it.
+			if name == VersionAsset {
+				continue
+			}
+			return fmt.Errorf("update: %s has no checksum in %s", name, ChecksumsAsset)
+		}
+		if err := verifyFile(filepath.Join(stage.Dir, name), expected); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ClearStaged removes a staged set. It is harmless when the set is absent.
+func (s *Service) ClearStaged(tag string) error {
+	if !validTag(tag) {
+		return fmt.Errorf("update: invalid release tag %q", tag)
+	}
+	return os.RemoveAll(s.stageDir(tag))
+}
+
+// pruneStages removes every other staged set under the download root so the
+// newest tag replaces an older one.
+func (s *Service) pruneStages(keep string) {
+	entries, err := os.ReadDir(s.downloadDir())
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || entry.Name() == keep {
+			continue
+		}
+		_ = os.RemoveAll(filepath.Join(s.downloadDir(), entry.Name()))
+	}
+}
+
+func (s *Service) stageDir(tag string) string {
+	return filepath.Join(s.downloadDir(), tag)
+}
+
+func validTag(tag string) bool {
+	if tag == "" || tag == "." || tag == ".." {
+		return false
+	}
+	return tag == filepath.Base(tag) && !strings.ContainsAny(tag, `/\`)
+}
+
+func validFileName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return name == filepath.Base(name) && !strings.ContainsAny(name, `/\`)
+}
+
+func writeStageManifest(path string, stage Stage) error {
+	data, err := json.MarshalIndent(stage, "", "  ")
+	if err != nil {
+		return fmt.Errorf("update: encode the stage manifest: %w", err)
+	}
+	data = append(data, '\n')
+	temp, err := os.CreateTemp(filepath.Dir(path), ".stage-*")
+	if err != nil {
+		return fmt.Errorf("update: create the stage manifest: %w", err)
+	}
+	name := temp.Name()
+	defer func() {
+		_ = temp.Close()
+		_ = os.Remove(name)
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		return fmt.Errorf("update: secure the stage manifest: %w", err)
+	}
+	if _, err := temp.Write(data); err != nil {
+		return fmt.Errorf("update: write the stage manifest: %w", err)
+	}
+	if err := temp.Sync(); err != nil {
+		return fmt.Errorf("update: sync the stage manifest: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("update: close the stage manifest: %w", err)
+	}
+	if err := os.Rename(name, path); err != nil {
+		return fmt.Errorf("update: publish the stage manifest: %w", err)
+	}
+	return nil
+}
+
+func readChecksums(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("update: read %s: %w", filepath.Base(path), err)
+	}
+	return parseChecksums(string(data))
+}
+
+func parseChecksums(data string) (map[string]string, error) {
 	checksums := map[string]string{}
-	for _, line := range strings.Split(buffer.String(), "\n") {
+	for _, line := range strings.Split(data, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -286,27 +815,15 @@ func (s *Service) fetchChecksums(ctx context.Context, url string) (map[string]st
 	return checksums, nil
 }
 
-// downloadVerified streams one asset to path and rejects a checksum mismatch.
-func (s *Service) downloadVerified(ctx context.Context, url, path, expected string) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), ".kitsune-update-*")
+func verifyFile(path, expected string) error {
+	file, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("update: create %s: %w", path, err)
+		return fmt.Errorf("update: verify %s: %w", filepath.Base(path), err)
 	}
-	name := temp.Name()
-	defer func() {
-		_ = temp.Close()
-		_ = os.Remove(name)
-	}()
+	defer file.Close()
 	hash := sha256.New()
-	writer := io.MultiWriter(temp, hash)
-	if err := s.download(ctx, url, writer); err != nil {
-		return fmt.Errorf("update: download %s: %w", url, err)
-	}
-	if err := temp.Sync(); err != nil {
-		return fmt.Errorf("update: sync %s: %w", name, err)
-	}
-	if err := temp.Close(); err != nil {
-		return fmt.Errorf("update: close %s: %w", name, err)
+	if _, err := io.Copy(hash, io.LimitReader(file, DownloadLimit+1)); err != nil {
+		return fmt.Errorf("update: verify %s: %w", filepath.Base(path), err)
 	}
 	actual := hex.EncodeToString(hash.Sum(nil))
 	if !strings.EqualFold(actual, expected) {
@@ -316,9 +833,6 @@ func (s *Service) downloadVerified(ctx context.Context, url, path, expected stri
 			expected,
 			actual,
 		)
-	}
-	if err := os.Rename(name, path); err != nil {
-		return fmt.Errorf("update: replace %s: %w", path, err)
 	}
 	return nil
 }
@@ -359,20 +873,6 @@ func (s *Service) downloadDir() string {
 		base = os.TempDir()
 	}
 	return filepath.Join(base, "kitsune-whisper", "updates")
-}
-
-// launchEnv pins the Linux installer to the release that was checked. Windows
-// passes the same tag as an argument because install.ps1 is a script.
-func launchEnv(platform, tag string) []string {
-	if platform == "windows" {
-		return nil
-	}
-	return []string{"KITSUNE_VERSION=" + tag}
-}
-
-func startDetached(path string, args []string, env []string) error {
-	// Implemented per platform in run_*.go.
-	return start(path, args, env)
 }
 
 type limitedWriter struct {

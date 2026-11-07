@@ -564,7 +564,15 @@ def test_release_workflow_publishes_scripts_and_archives_only() -> None:
 def test_ci_windows_job_parses_only_the_remaining_scripts() -> None:
     workflow = yaml.safe_load(read(CI_WORKFLOW))
     job = workflow["jobs"]["packaging-windows"]
-    parse = next(step for step in job["steps"] if step.get("name", "").startswith("Parse"))
+    # The generated update helper has its own Go test; this step parses the
+    # committed PowerShell entry points with pwsh. Match it by name: the job
+    # also has a step that parses the generated helper.
+    assert any(step.get("name") == "Parse the generated update helper" for step in job["steps"])
+    parse = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Parse the remaining PowerShell entry points"
+    )
     run = parse["run"]
     assert "install.ps1" in run
     assert "build-client.ps1" in run

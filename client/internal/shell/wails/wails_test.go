@@ -39,6 +39,20 @@ func TestTraySignatureChangesOnlyWithRenderedFields(t *testing.T) {
 	if traySignature(changed) == signature {
 		t.Fatal("a changed menu label did not change the signature")
 	}
+
+	changed = snapshot
+	changed.Update.Downloading = true
+	changed.Update.Received = 512
+	changed.Update.Total = 1024
+	if traySignature(changed) == signature {
+		t.Fatal("download progress did not change the signature")
+	}
+
+	changed = snapshot
+	changed.Update.Ready = true
+	if traySignature(changed) == signature {
+		t.Fatal("the ready state did not change the signature")
+	}
 }
 
 // fakeTray records the calls the port makes without a display.

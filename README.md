@@ -260,7 +260,7 @@ curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/ins
 curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --server-only
 
 # Pin a release
-curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --version v1.2.1
+curl -fsSL https://raw.githubusercontent.com/FoxRed-cmd/kitsune-whisper/main/install.sh | bash -s -- --version v1.2.2
 ```
 
 Check the plan or the installed version without changing anything:
@@ -516,6 +516,7 @@ More detail is in [docs/troubleshooting.md](docs/troubleshooting.md).
 ## Documentation
 
 - [Install, flags, paths, autostart, upgrade](docs/install.md)
+- [Updates: automatic check, staged download, quiet install](docs/updates.md)
 - [Full dependency matrix and Wayland injection setup](docs/dependencies.md)
 - [Configuration reference](docs/configuration.md)
 - [Security: TLS, Device tokens, pairing](docs/security.md)

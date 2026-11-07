@@ -400,6 +400,28 @@ func TestSaveOfOnlyTheInterfaceLanguageDoesNotRebuildAdapters(t *testing.T) {
 	}
 }
 
+func TestSaveOfTheAutomaticUpdateCheckDoesNotRebuildAdapters(t *testing.T) {
+	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
+	runtime := &fakeRuntime{}
+	service := newService(t, path, map[string]string{"LANG": "en_US.UTF-8"}, runtime)
+
+	outcome, err := service.Save(map[string]any{"updates": map[string]any{"check": false}})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if !outcome.Written || len(outcome.Errors) != 0 {
+		t.Fatalf("outcome = %+v", outcome)
+	}
+	if len(outcome.Applied) != 1 || outcome.Applied[0].Path != "client.updates.check" {
+		t.Fatalf("applied = %+v, want the update check itself", outcome.Applied)
+	}
+	// The shell starts or cancels the automatic check itself; rebuilding the
+	// hotkey and microphone would interrupt dictation for nothing.
+	if runtime.count() != 0 {
+		t.Fatalf("an update-check save rebuilt runtime adapters %d times", runtime.count())
+	}
+}
+
 func TestSaveOfTheSpokenLanguageRebuildsAdapters(t *testing.T) {
 	path := configFile(t, "client:\n  hotkey: Ctrl+Alt+D\n")
 	runtime := &fakeRuntime{}
